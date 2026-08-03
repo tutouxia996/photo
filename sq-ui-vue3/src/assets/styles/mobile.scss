@@ -1,0 +1,140 @@
+@media screen and (max-width: 992px) {
+  .app-container {
+    padding: 12px;
+    overflow-x: hidden;
+  }
+
+  .components-container {
+    margin: 12px;
+  }
+
+  .filter-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 8px;
+    width: 100%;
+
+    .filter-item {
+      width: 100%;
+      margin-right: 0 !important;
+      margin-bottom: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .el-form-item {
+      width: 100%;
+    }
+
+    .el-form-item__label {
+      width: 90px;
+      flex: 0 0 90px;
+      text-align: right;
+    }
+
+    .el-form-item__content {
+      width: 100%;
+      flex: 1 1 auto;
+    }
+
+    .el-input,
+    .el-select,
+    .el-date-editor,
+    .el-range-editor {
+      width: 100% !important;
+      max-width: 100%;
+    }
+
+    .el-button {
+      width: auto !important;
+      margin-left: 0 !important;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+
+    .el-button:first-of-type {
+      margin-left: auto !important;
+    }
+
+    .el-button + .el-button {
+      margin-left: 8px !important;
+    }
+  }
+
+  .el-form--inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    .el-form-item {
+      display: flex;
+      width: 100%;
+      margin-right: 0;
+      margin-bottom: 8px;
+    }
+
+    .el-form-item__content,
+    .el-input,
+    .el-select,
+    .el-date-editor,
+    .el-range-editor,
+    .el-cascader {
+      width: 100% !important;
+      max-width: 100%;
+    }
+  }
+
+  .el-table {
+    width: 100% !important;
+    overflow-x: auto;
+  }
+
+  .el-table__body-wrapper,
+  .el-table__header-wrapper,
+  .el-scrollbar__wrap {
+    overflow-x: auto;
+  }
+
+  .pagination-container,
+  .el-pagination {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    overflow-x: auto;
+    white-space: normal;
+  }
+
+  .el-dialog {
+    width: 92vw !important;
+    margin-top: 8vh !important;
+  }
+
+  .el-dialog__body {
+    max-height: 68vh;
+    overflow-y: auto;
+  }
+
+  .el-dialog__footer {
+    .dialog-footer,
+    .el-button + .el-button {
+      margin-top: 8px;
+    }
+  }
+
+  .el-drawer {
+    width: 88vw !important;
+  }
+
+  .drawer-footer {
+    position: sticky;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+
+    .el-button + .el-button {
+      margin-left: 0;
+    }
+  }
+}

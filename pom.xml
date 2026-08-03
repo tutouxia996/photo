@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.sq</groupId>
+    <artifactId>hgtruck-goods</artifactId>
+    <version>${revision}</version>
+
+    <description>SQ业务管理系统</description>
+
+    <properties>
+        <revision>1.1.0</revision>
+        <sq-dependencies-core.version>1.1.0</sq-dependencies-core.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <java.version>1.8</java.version>
+        <maven-jar-plugin.version>3.1.1</maven-jar-plugin.version>
+        <!-- Redisson 版本锁定：sq-dependencies-core 管理 3.36.0（需 Spring Boot 3.x），
+             本项目使用 Spring Boot 2.5.14 / Spring Data 2.5.11，故覆盖为兼容版本 -->
+        <redisson.version>3.16.8</redisson.version>
+
+    </properties>
+
+    <!--仓库路径 -->
+    <repositories>
+        <repository>
+            <id>nexus</id>
+            <name>Public Repository of sq</name>
+            <url>http://10.11.20.32:8081/repository/maven-public/</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+
+        <repository>
+            <id>public</id>
+            <name>aliyun nexus</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+        </repository>
+    </repositories>
+
+    <!-- 依赖声明 -->
+    <dependencyManagement>
+        <dependencies>
+
+            <!-- 覆盖 sq-dependencies-core 中 Redisson 版本：3.36.0→3.16.8 以兼容 Spring Boot 2.5.x -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+
+            <!-- SpringBoot的依赖配置-->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>2.5.14</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- sq-dependencies-core 版本管理（redisson, BC, mybatis-plus 等） -->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-dependencies-core</artifactId>
+                <version>${sq-dependencies-core.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- 定时任务-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-quartz</artifactId>
+                <version>${sq-dependencies-core.version}</version>
+            </dependency>
+
+            <!-- 代码生成-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-generator</artifactId>
+                <version>${sq-dependencies-core.version}</version>
+            </dependency>
+
+            <!-- 核心模块-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-framework</artifactId>
+                <version>${sq-dependencies-core.version}</version>
+            </dependency>
+
+            <!-- 系统模块-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-system</artifactId>
+                <version>${revision}</version>
+            </dependency>
+
+            <!-- 业务模块-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-business</artifactId>
+                <version>${revision}</version>
+            </dependency>
+
+            <!-- 通用工具-->
+            <dependency>
+                <groupId>com.sq</groupId>
+                <artifactId>sq-common</artifactId>
+                <version>${sq-dependencies-core.version}</version>
+            </dependency>
+
+        </dependencies>
+    </dependencyManagement>
+
+    <modules>
+        <module>sq-admin-server</module>
+        <module>sq-system</module>
+        <module>sq-business</module>
+    </modules>
+    <packaging>pom</packaging>
+
+
+    <dependencies>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.1</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.5.0</version>
+                <configuration>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                    <updatePomFile>true</updatePomFile>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+        <resources>
+            <resource>
+                <directory>src/main/java</directory>
+                <includes>
+                    <include>**/*.xml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+        </resources>
+    </build>
+
+</project>
