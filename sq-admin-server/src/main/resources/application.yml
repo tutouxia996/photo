@@ -41,8 +41,8 @@ spring:
 
 # 开发环境配置
 server:
-  # 服务器的HTTP端口，默认为9080
-  port: 9080
+  # 服务器的HTTP端口（避开本机动态端口范围 1024+，避免 PortInUse）
+  port: 18080
   servlet:
     # 应用的访问路径
     context-path: /
