@@ -52,9 +52,26 @@ export function updateAlbum(data) {
   })
 }
 
+/** 放入回收站 */
 export function delAlbum(albumId) {
   return request({
     url: '/album/album/' + albumId,
+    method: 'delete'
+  })
+}
+
+/** 从回收站恢复 */
+export function restoreAlbum(albumId) {
+  return request({
+    url: '/album/album/restore/' + albumId,
+    method: 'put'
+  })
+}
+
+/** 彻底删除 */
+export function purgeAlbum(albumId) {
+  return request({
+    url: '/album/album/purge/' + albumId,
     method: 'delete'
   })
 }

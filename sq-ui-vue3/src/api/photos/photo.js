@@ -23,9 +23,26 @@ export function updatePhoto(data) {
   })
 }
 
+/** 放入回收站 */
 export function delPhoto(photoId) {
   return request({
     url: '/album/photo/' + photoId,
+    method: 'delete'
+  })
+}
+
+/** 从回收站恢复 */
+export function restorePhoto(photoId) {
+  return request({
+    url: '/album/photo/restore/' + photoId,
+    method: 'put'
+  })
+}
+
+/** 彻底删除 */
+export function purgePhoto(photoId) {
+  return request({
+    url: '/album/photo/purge/' + photoId,
     method: 'delete'
   })
 }

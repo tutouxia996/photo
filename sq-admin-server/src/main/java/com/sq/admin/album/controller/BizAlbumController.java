@@ -1,6 +1,7 @@
 package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizScanPath;
 import com.sq.bus.service.IBizAlbumService;
@@ -39,9 +40,11 @@ public class BizAlbumController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo list(BizAlbum query) {
         startPage();
+        int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizAlbum> wrapper = new LambdaQueryWrapper<BizAlbum>()
                 .like(StringUtils.isNotEmpty(query.getAlbumName()), BizAlbum::getAlbumName, query.getAlbumName())
                 .eq(query.getIsPublic() != null, BizAlbum::getIsPublic, query.getIsPublic())
+                .eq(BizAlbum::getDeleted, deleted)
                 .orderByAsc(BizAlbum::getSortOrder)
                 .orderByDesc(BizAlbum::getAlbumId);
         List<BizAlbum> list = albumService.list(wrapper);
@@ -51,7 +54,11 @@ public class BizAlbumController extends BaseController {
     @PreAuthorize("@ss.hasPermi('album:album:query')")
     @GetMapping("/{albumId}")
     public AjaxResult getInfo(@PathVariable Long albumId) {
-        return success(albumService.getById(albumId));
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在或已删除");
+        }
+        return success(album);
     }
 
     @PreAuthorize("@ss.hasPermi('album:album:add')")
@@ -69,6 +76,7 @@ public class BizAlbumController extends BaseController {
         if (album.getSortOrder() == null) {
             album.setSortOrder(0);
         }
+        album.setDeleted(AlbumDeleted.NORMAL);
         albumService.save(album);
         return success(album);
     }
@@ -117,6 +125,7 @@ public class BizAlbumController extends BaseController {
         album.setIsPublic(isPublic);
         album.setPhotoCount(0);
         album.setSortOrder(0);
+        album.setDeleted(AlbumDeleted.NORMAL);
         album.setCreateBy(getUsername());
         album.setCreateTime(new Date());
         albumService.save(album);
@@ -153,7 +162,21 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{albumIds}")
     public AjaxResult remove(@PathVariable Long[] albumIds) {
-        return toAjax(albumService.removeAlbums(Arrays.asList(albumIds)));
+        return toAjax(albumService.trashAlbums(Arrays.asList(albumIds)));
+    }
+
+    @PreAuthorize("@ss.hasPermi('album:album:edit')")
+    @Log(title = "相册恢复", businessType = BusinessType.UPDATE)
+    @PutMapping("/restore/{albumIds}")
+    public AjaxResult restore(@PathVariable Long[] albumIds) {
+        return toAjax(albumService.restoreAlbums(Arrays.asList(albumIds)));
+    }
+
+    @PreAuthorize("@ss.hasPermi('album:album:remove')")
+    @Log(title = "相册彻底删除", businessType = BusinessType.DELETE)
+    @DeleteMapping("/purge/{albumIds}")
+    public AjaxResult purge(@PathVariable Long[] albumIds) {
+        return toAjax(albumService.purgeAlbums(Arrays.asList(albumIds)));
     }
 
     @PreAuthorize("@ss.hasPermi('album:album:edit')")

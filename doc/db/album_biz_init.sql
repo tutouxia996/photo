@@ -25,7 +25,9 @@ CREATE TABLE `biz_album` (
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (`album_id`)
+  `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除 2回收站',
+  PRIMARY KEY (`album_id`),
+  KEY `idx_deleted` (`deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相册表';
 
 -- ----------------------------
@@ -62,10 +64,12 @@ CREATE TABLE `biz_photo` (
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除 2回收站',
   PRIMARY KEY (`photo_id`),
   KEY `idx_album_id` (`album_id`),
   KEY `idx_shoot_time` (`shoot_time`),
-  KEY `idx_md5` (`md5`)
+  KEY `idx_md5` (`md5`),
+  KEY `idx_deleted` (`deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='图片表';
 
 -- ----------------------------

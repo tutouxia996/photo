@@ -13,7 +13,22 @@ public interface IBizAlbumService extends IService<BizAlbum> {
     void refreshAlbumStats(Long albumId);
 
     /**
-     * 删除相册并级联清理照片、扫描目录、轨迹等关联数据
+     * 放入回收站（deleted=2），其下正常照片一并入回收站
+     */
+    boolean trashAlbums(Collection<Long> albumIds);
+
+    /**
+     * 从回收站恢复（deleted=0）
+     */
+    boolean restoreAlbums(Collection<Long> albumIds);
+
+    /**
+     * 彻底删除标记（deleted=1）
+     */
+    boolean purgeAlbums(Collection<Long> albumIds);
+
+    /**
+     * 兼容旧接口：等同于 trashAlbums
      */
     boolean removeAlbums(Collection<Long> albumIds);
 }

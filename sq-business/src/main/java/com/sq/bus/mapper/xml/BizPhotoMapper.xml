@@ -7,6 +7,7 @@
                COUNT(1) AS photoCount
         FROM biz_photo
         WHERE album_id = #{albumId}
+          AND deleted = 0
           AND shoot_time IS NOT NULL
         GROUP BY DATE_FORMAT(shoot_time, '%Y-%m-%d')
         ORDER BY shootDate DESC

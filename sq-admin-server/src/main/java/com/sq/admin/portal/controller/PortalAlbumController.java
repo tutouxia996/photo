@@ -1,6 +1,7 @@
 package com.sq.admin.portal.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
@@ -49,6 +50,7 @@ public class PortalAlbumController extends BaseController {
         startPage();
         LambdaQueryWrapper<BizAlbum> wrapper = new LambdaQueryWrapper<BizAlbum>()
                 .eq(BizAlbum::getIsPublic, 1)
+                .eq(BizAlbum::getDeleted, AlbumDeleted.NORMAL)
                 .like(StringUtils.isNotEmpty(query.getAlbumName()), BizAlbum::getAlbumName, query.getAlbumName())
                 .orderByAsc(BizAlbum::getSortOrder)
                 .orderByDesc(BizAlbum::getAlbumId);
@@ -61,7 +63,8 @@ public class PortalAlbumController extends BaseController {
     @GetMapping("/album/{id}")
     public AjaxResult albumDetail(@PathVariable("id") Long id) {
         BizAlbum album = albumService.getById(id);
-        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1) {
+        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
+                || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在或未公开");
         }
         return success(album);
@@ -73,7 +76,8 @@ public class PortalAlbumController extends BaseController {
     @GetMapping("/photo/groupByDate")
     public AjaxResult groupByDate(@RequestParam Long albumId) {
         BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1) {
+        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
+                || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在或未公开");
         }
         return success(photoService.groupCountByDate(albumId));
@@ -86,12 +90,14 @@ public class PortalAlbumController extends BaseController {
     public TableDataInfo photoList(@RequestParam Long albumId,
                                    @RequestParam(required = false) String shootDate) {
         BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1) {
+        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
+                || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return getDataTable(java.util.Collections.<BizPhoto>emptyList());
         }
         startPage();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getAlbumId, albumId)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .apply(StringUtils.isNotEmpty(shootDate), "DATE_FORMAT(shoot_time,'%Y-%m-%d') = {0}", shootDate)
                 .orderByDesc(BizPhoto::getShootTime)
                 .orderByDesc(BizPhoto::getPhotoId);
@@ -106,6 +112,7 @@ public class PortalAlbumController extends BaseController {
                                 @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date startTime,
                                 @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime) {
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .isNotNull(BizPhoto::getLatitude)
                 .isNotNull(BizPhoto::getLongitude)
                 .eq(albumId != null, BizPhoto::getAlbumId, albumId)
@@ -114,12 +121,15 @@ public class PortalAlbumController extends BaseController {
                 .orderByAsc(BizPhoto::getShootTime);
         if (albumId != null) {
             BizAlbum album = albumService.getById(albumId);
-            if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1) {
+            if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
+                    || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
                 return error("相册不存在或未公开");
             }
         } else {
             // 仅公开相册的图片
-            List<BizAlbum> publicAlbums = albumService.list(new LambdaQueryWrapper<BizAlbum>().eq(BizAlbum::getIsPublic, 1));
+            List<BizAlbum> publicAlbums = albumService.list(new LambdaQueryWrapper<BizAlbum>()
+                    .eq(BizAlbum::getIsPublic, 1)
+                    .eq(BizAlbum::getDeleted, AlbumDeleted.NORMAL));
             if (publicAlbums.isEmpty()) {
                 return success(java.util.Collections.emptyList());
             }
@@ -138,7 +148,8 @@ public class PortalAlbumController extends BaseController {
     @GetMapping("/track/listByAlbum")
     public AjaxResult trackList(@RequestParam Long albumId) {
         BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1) {
+        if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
+                || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在或未公开");
         }
         List<BizTrack> list = trackService.list(new LambdaQueryWrapper<BizTrack>()

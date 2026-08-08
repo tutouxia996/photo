@@ -2,6 +2,8 @@ package com.sq.bus.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.config.AlbumProperties;
+import com.sq.bus.constants.AlbumDeleted;
+import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizScanLog;
 import com.sq.bus.domain.BizScanPath;
@@ -117,22 +119,32 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             counter.total++;
             try {
                 String md5 = md5Of(file);
+                int fileType = IMAGE_EXT.contains(ext) ? 1 : 2;
                 BizPhoto exists = photoService.findByMd5(md5);
                 if (exists != null) {
                     Long existsAlbumId = exists.getAlbumId();
                     boolean sameAlbum = existsAlbumId != null
                             && existsAlbumId.equals(scanPath.getDefaultAlbumId());
-                    boolean albumAlive = existsAlbumId != null
-                            && albumService.getById(existsAlbumId) != null;
+                    BizAlbum owner = existsAlbumId == null ? null : albumService.getById(existsAlbumId);
+                    boolean albumAlive = owner != null
+                            && (owner.getDeleted() == null || owner.getDeleted() == AlbumDeleted.NORMAL);
                     if (sameAlbum || albumAlive) {
                         // 已在当前/其他有效相册中：按内容去重跳过
                         counter.skipped++;
                         continue;
                     }
-                    // 相册已删留下的孤儿记录，清理后允许重新导入
-                    photoService.removeById(exists.getPhotoId());
+                    // 所属相册已不在正常态：回收该记录到当前相册
+                    reclaimPhoto(exists, file, scanPath, md5, fileType);
+                    counter.created++;
+                    continue;
                 }
-                importFile(file, scanPath, md5, IMAGE_EXT.contains(ext) ? 1 : 2);
+                BizPhoto reusable = photoService.findReusableByMd5(md5);
+                if (reusable != null) {
+                    reclaimPhoto(reusable, file, scanPath, md5, fileType);
+                    counter.created++;
+                    continue;
+                }
+                importFile(file, scanPath, md5, fileType);
                 counter.created++;
             } catch (Exception ex) {
                 counter.failed++;
@@ -192,8 +204,62 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         photo.setFocalLength(exif.getFocalLength());
         photo.setMd5(md5);
         photo.setSortOrder(0);
+        photo.setDeleted(AlbumDeleted.NORMAL);
         photo.setCreateTime(new Date());
         photoService.save(photo);
+    }
+
+    private void reclaimPhoto(BizPhoto photo, File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
+        ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(file);
+        String relativeName = file.getName();
+        String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
+        String thumbUrl = photo.getThumbUrl();
+        File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
+        String thumbName = fileType == 2
+                ? "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg"
+                : "s_" + relativeName;
+        File thumbFile = new File(thumbDir, thumbName);
+        try {
+            if (fileType == 1) {
+                ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
+                if (thumbFile.exists()) {
+                    thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
+                }
+            } else if (fileType == 2) {
+                if (ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+                    thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        Long oldAlbumId = photo.getAlbumId();
+        photo.setAlbumId(scanPath.getDefaultAlbumId());
+        photo.setFileName(relativeName);
+        photo.setFilePath(file.getAbsolutePath());
+        photo.setFileUrl(fileUrl);
+        photo.setThumbUrl(thumbUrl);
+        photo.setFileSize(file.length());
+        photo.setFileType(fileType);
+        if (fileType == 2) {
+            photo.setDuration(ThumbUtils.getVideoDurationSeconds(file));
+        }
+        photo.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date(file.lastModified()));
+        photo.setLatitude(exif.getLatitude());
+        photo.setLongitude(exif.getLongitude());
+        photo.setCameraModel(exif.getCameraModel());
+        photo.setLensInfo(exif.getLensInfo());
+        photo.setAperture(exif.getAperture());
+        photo.setShutterSpeed(exif.getShutterSpeed());
+        photo.setIso(exif.getIso());
+        photo.setFocalLength(exif.getFocalLength());
+        photo.setMd5(md5);
+        photo.setDeleted(AlbumDeleted.NORMAL);
+        photo.setUpdateTime(new Date());
+        photoService.updateById(photo);
+        if (oldAlbumId != null && !oldAlbumId.equals(scanPath.getDefaultAlbumId())) {
+            albumService.refreshAlbumStats(oldAlbumId);
+        }
     }
 
     private static String extension(String name) {

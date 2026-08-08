@@ -16,11 +16,20 @@ export function delPhoto(photoId) {
   return request({ url: '/album/photo/' + photoId, method: 'delete' })
 }
 
+export function restorePhoto(photoId) {
+  return request({ url: '/album/photo/restore/' + photoId, method: 'put' })
+}
+
+export function purgePhoto(photoId) {
+  return request({ url: '/album/photo/purge/' + photoId, method: 'delete' })
+}
+
 export function uploadPhoto(data) {
   return request({
     url: '/album/photo/upload',
     method: 'post',
     headers: { 'Content-Type': 'multipart/form-data' },
-    data
+    data,
+    timeout: 600000
   })
 }

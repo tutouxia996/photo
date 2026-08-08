@@ -20,6 +20,14 @@ export function delAlbum(albumId) {
   return request({ url: '/album/album/' + albumId, method: 'delete' })
 }
 
+export function restoreAlbum(albumId) {
+  return request({ url: '/album/album/restore/' + albumId, method: 'put' })
+}
+
+export function purgeAlbum(albumId) {
+  return request({ url: '/album/album/purge/' + albumId, method: 'delete' })
+}
+
 export function refreshAlbumStats(albumId) {
   return request({ url: '/album/album/refreshStats/' + albumId, method: 'put' })
 }

@@ -101,6 +101,13 @@ export const constantRoutes = [
         name: 'PhotosAlbumDetail',
         hidden: true,
         meta: { title: '相册详情', activeMenu: '/photos/index', noCache: true }
+      },
+      {
+        path: 'recycle',
+        component: () => import('@/views/photos/recycle'),
+        name: 'PhotosRecycle',
+        hidden: true,
+        meta: { title: '回收站', activeMenu: '/photos/index', noCache: true }
       }
     ]
   }

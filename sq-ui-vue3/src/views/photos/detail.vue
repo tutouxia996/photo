@@ -1002,10 +1002,10 @@ function onMediaDelete() {
     return
   }
   const id = item.photoId
-  confirmAboveMedia('确认删除当前项吗？')
+  confirmAboveMedia('确认将当前项放入回收站吗？')
     .then(() => delPhoto(String(id)))
     .then(() => {
-      proxy.$modal.msgSuccess('删除成功')
+      proxy.$modal.msgSuccess('已放入回收站')
       removePhotosFromViewer([id])
     })
     .catch(() => {})
@@ -1046,8 +1046,8 @@ function onItemCtxRemoveFromAlbum() {
   closeCtxMenu()
   deletePhotosByIds(
     ids,
-    `确认从当前相册移除选中的 ${ids.length} 项吗？`,
-    '已从当前相册移除'
+    `确认将选中的 ${ids.length} 项放入回收站吗？`,
+    '已放入回收站'
   )
 }
 
@@ -1555,10 +1555,10 @@ async function submitAddToAlbum() {
 
 function removeSelected() {
   if (!selectedIds.value.length) return
-  proxy.$modal.confirm(`确认删除选中的 ${selectedIds.value.length} 项吗？`)
+  proxy.$modal.confirm(`确认将选中的 ${selectedIds.value.length} 项放入回收站吗？`)
     .then(() => delPhoto(selectedIds.value.join(',')))
     .then(() => {
-      proxy.$modal.msgSuccess('删除成功')
+      proxy.$modal.msgSuccess('已放入回收站')
       cancelMultiSelect()
       reload()
     })
@@ -1566,9 +1566,14 @@ function removeSelected() {
 }
 
 function loadAlbum() {
-  return getAlbum(albumId.value).then(res => {
-    album.value = res.data || {}
-  })
+  return getAlbum(albumId.value)
+    .then(res => {
+      album.value = res.data || {}
+    })
+    .catch(() => {
+      proxy.$modal.msgError('相册不存在或已放入回收站')
+      proxy.$tab.closeOpenPage({ path: '/photos/index' })
+    })
 }
 
 function loadPhotos(reset = false) {

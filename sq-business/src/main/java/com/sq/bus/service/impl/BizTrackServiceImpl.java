@@ -40,6 +40,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
         LambdaQueryWrapper<BizPhoto> query = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getAlbumId, albumId)
+                .eq(BizPhoto::getDeleted, com.sq.bus.constants.AlbumDeleted.NORMAL)
                 .isNotNull(BizPhoto::getLatitude)
                 .isNotNull(BizPhoto::getLongitude)
                 .orderByAsc(BizPhoto::getShootTime)

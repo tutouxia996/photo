@@ -81,4 +81,7 @@ public class BizPhoto implements Serializable {
     private Date updateTime;
 
     private String remark;
+
+    /** 0未删除 1已删除 2回收站 */
+    private Integer deleted;
 }

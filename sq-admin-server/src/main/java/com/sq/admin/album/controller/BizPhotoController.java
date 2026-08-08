@@ -2,6 +2,8 @@ package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.config.AlbumProperties;
+import com.sq.bus.constants.AlbumDeleted;
+import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
@@ -57,7 +59,7 @@ public class BizPhotoController extends BaseController {
                       HttpServletRequest request,
                       HttpServletResponse response) throws Exception {
         BizPhoto photo = photoService.getById(photoId);
-        if (photo == null) {
+        if (photo == null || photo.getDeleted() != null && photo.getDeleted() == AlbumDeleted.PURGED) {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;
         }
@@ -82,10 +84,12 @@ public class BizPhotoController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo list(BizPhoto query) {
         startPage();
+        int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(query.getAlbumId() != null, BizPhoto::getAlbumId, query.getAlbumId())
                 .eq(query.getFileType() != null, BizPhoto::getFileType, query.getFileType())
                 .like(StringUtils.isNotEmpty(query.getFileName()), BizPhoto::getFileName, query.getFileName())
+                .eq(BizPhoto::getDeleted, deleted)
                 .orderByDesc(BizPhoto::getShootTime)
                 .orderByDesc(BizPhoto::getPhotoId);
         return getDataTable(photoService.list(wrapper));
@@ -94,7 +98,11 @@ public class BizPhotoController extends BaseController {
     @PreAuthorize("@ss.hasPermi('album:photo:query')")
     @GetMapping("/{photoId}")
     public AjaxResult getInfo(@PathVariable Long photoId) {
-        return success(photoService.getById(photoId));
+        BizPhoto photo = photoService.getById(photoId);
+        if (photo == null || photo.getDeleted() != null && photo.getDeleted() == AlbumDeleted.PURGED) {
+            return error("图片不存在或已删除");
+        }
+        return success(photo);
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:upload')")
@@ -105,7 +113,8 @@ public class BizPhotoController extends BaseController {
         if (file == null || file.isEmpty()) {
             return error("上传文件不能为空");
         }
-        if (albumService.getById(albumId) == null) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在");
         }
         String original = file.getOriginalFilename();
@@ -121,14 +130,48 @@ public class BizPhotoController extends BaseController {
         String md5 = md5Of(dest);
         BizPhoto exists = photoService.findByMd5(md5);
         if (exists != null) {
-            boolean albumAlive = exists.getAlbumId() != null
-                    && albumService.getById(exists.getAlbumId()) != null;
-            if (albumAlive) {
-                dest.delete();
-                return error("文件已存在，跳过重复上传");
+            dest.delete();
+            return error("文件已存在，跳过重复上传");
+        }
+        BizPhoto reusable = photoService.findReusableByMd5(md5);
+        if (reusable != null) {
+            ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
+            String fileUrl = "/album/files/upload/" + datePath + "/" + savedName;
+            String thumbUrl = null;
+            try {
+                File thumbDir = new File(albumProperties.getThumbPath(), datePath);
+                File thumbFile = new File(thumbDir, "s_" + savedName);
+                ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
+                thumbUrl = "/album/files/thumb/" + datePath + "/s_" + savedName;
+            } catch (Exception ignored) {
             }
-            // 相册已删留下的孤儿记录，清理后允许重新上传
-            photoService.removeById(exists.getPhotoId());
+            Long oldAlbumId = reusable.getAlbumId();
+            reusable.setAlbumId(albumId);
+            reusable.setFileName(original);
+            reusable.setFilePath(dest.getAbsolutePath());
+            reusable.setFileUrl(fileUrl);
+            reusable.setThumbUrl(thumbUrl);
+            reusable.setFileSize(dest.length());
+            reusable.setFileType(1);
+            reusable.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date());
+            reusable.setLatitude(exif.getLatitude());
+            reusable.setLongitude(exif.getLongitude());
+            reusable.setCameraModel(exif.getCameraModel());
+            reusable.setLensInfo(exif.getLensInfo());
+            reusable.setAperture(exif.getAperture());
+            reusable.setShutterSpeed(exif.getShutterSpeed());
+            reusable.setIso(exif.getIso());
+            reusable.setFocalLength(exif.getFocalLength());
+            reusable.setMd5(md5);
+            reusable.setDeleted(AlbumDeleted.NORMAL);
+            reusable.setUpdateBy(getUsername());
+            reusable.setUpdateTime(new Date());
+            photoService.updateById(reusable);
+            if (oldAlbumId != null && !oldAlbumId.equals(albumId)) {
+                albumService.refreshAlbumStats(oldAlbumId);
+            }
+            albumService.refreshAlbumStats(albumId);
+            return success(reusable);
         }
 
         ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
@@ -161,6 +204,7 @@ public class BizPhotoController extends BaseController {
         photo.setFocalLength(exif.getFocalLength());
         photo.setMd5(md5);
         photo.setSortOrder(0);
+        photo.setDeleted(AlbumDeleted.NORMAL);
         photo.setCreateBy(getUsername());
         photo.setCreateTime(new Date());
         photoService.save(photo);
@@ -182,17 +226,24 @@ public class BizPhotoController extends BaseController {
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:remove')")
-    @Log(title = "图片管理", businessType = BusinessType.DELETE)
+    @Log(title = "图片回收站", businessType = BusinessType.DELETE)
     @DeleteMapping("/{photoIds}")
     public AjaxResult remove(@PathVariable Long[] photoIds) {
-        List<BizPhoto> photos = photoService.listByIds(Arrays.asList(photoIds));
-        boolean ok = photoService.removeByIds(Arrays.asList(photoIds));
-        if (ok) {
-            for (BizPhoto photo : photos) {
-                albumService.refreshAlbumStats(photo.getAlbumId());
-            }
-        }
-        return toAjax(ok);
+        return toAjax(photoService.trashPhotos(Arrays.asList(photoIds)));
+    }
+
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "图片恢复", businessType = BusinessType.UPDATE)
+    @PutMapping("/restore/{photoIds}")
+    public AjaxResult restore(@PathVariable Long[] photoIds) {
+        return toAjax(photoService.restorePhotos(Arrays.asList(photoIds)));
+    }
+
+    @PreAuthorize("@ss.hasPermi('album:photo:remove')")
+    @Log(title = "图片彻底删除", businessType = BusinessType.DELETE)
+    @DeleteMapping("/purge/{photoIds}")
+    public AjaxResult purge(@PathVariable Long[] photoIds) {
+        return toAjax(photoService.purgePhotos(Arrays.asList(photoIds)));
     }
 
     private File resolveMediaFile(BizPhoto photo, boolean original) {

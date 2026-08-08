@@ -7,6 +7,10 @@
     <div class="photos-toolbar">
       <span class="photos-count">共 {{ albumList.length }} 项</span>
       <div class="photos-tools">
+        <button type="button" class="tool-btn" @click="openRecycle">
+          <el-icon><Delete /></el-icon>
+          <span>回收站</span>
+        </button>
         <el-dropdown trigger="click" @command="handleFilter">
           <button type="button" class="tool-btn">
             <el-icon><Operation /></el-icon>
@@ -63,7 +67,7 @@
             <div v-if="menuAlbumId === item.albumId" class="album-more-menu">
               <button type="button" class="album-more-item" @click="openEdit(item)">编辑</button>
               <div class="album-more-divider"></div>
-              <button type="button" class="album-more-item danger" @click="handleDelete(item)">删除</button>
+              <button type="button" class="album-more-item danger" @click="handleDelete(item)">放入回收站</button>
             </div>
           </div>
         </div>
@@ -368,12 +372,16 @@ function submitEdit() {
   })
 }
 
+function openRecycle() {
+  proxy.$tab.closeOpenPage({ path: '/photos/recycle' })
+}
+
 function handleDelete(item) {
   menuAlbumId.value = null
-  proxy.$modal.confirm(`确认删除相册「${item.albumName}」吗？`)
+  proxy.$modal.confirm(`确认将相册「${item.albumName}」放入回收站吗？`)
     .then(() => delAlbum(item.albumId))
     .then(() => {
-      proxy.$modal.msgSuccess('删除成功')
+      proxy.$modal.msgSuccess('已放入回收站')
       getList()
     })
     .catch(() => {})

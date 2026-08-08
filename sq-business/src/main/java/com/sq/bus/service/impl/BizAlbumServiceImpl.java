@@ -1,19 +1,13 @@
 package com.sq.bus.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
-import com.sq.bus.domain.BizScanLog;
-import com.sq.bus.domain.BizScanPath;
-import com.sq.bus.domain.BizTrack;
-import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.mapper.BizAlbumMapper;
 import com.sq.bus.mapper.BizPhotoMapper;
-import com.sq.bus.mapper.BizScanLogMapper;
-import com.sq.bus.mapper.BizScanPathMapper;
-import com.sq.bus.mapper.BizTrackMapper;
-import com.sq.bus.mapper.BizTrackPointMapper;
 import com.sq.bus.service.IBizAlbumService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -32,18 +26,6 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
     @Autowired
     private BizPhotoMapper photoMapper;
 
-    @Autowired
-    private BizScanPathMapper scanPathMapper;
-
-    @Autowired
-    private BizScanLogMapper scanLogMapper;
-
-    @Autowired
-    private BizTrackMapper trackMapper;
-
-    @Autowired
-    private BizTrackPointMapper trackPointMapper;
-
     @Override
     public void refreshAlbumStats(Long albumId) {
         if (albumId == null) {
@@ -51,6 +33,7 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
         }
         List<BizPhoto> photos = photoMapper.selectList(new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getAlbumId, albumId)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .orderByAsc(BizPhoto::getShootTime));
         BizAlbum album = getById(albumId);
         if (album == null) {
@@ -96,28 +79,71 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public boolean removeAlbums(Collection<Long> albumIds) {
+    public boolean trashAlbums(Collection<Long> albumIds) {
         if (albumIds == null || albumIds.isEmpty()) {
             return false;
         }
-        photoMapper.delete(new LambdaQueryWrapper<BizPhoto>().in(BizPhoto::getAlbumId, albumIds));
+        Date now = new Date();
+        boolean ok = update(new LambdaUpdateWrapper<BizAlbum>()
+                .in(BizAlbum::getAlbumId, albumIds)
+                .eq(BizAlbum::getDeleted, AlbumDeleted.NORMAL)
+                .set(BizAlbum::getDeleted, AlbumDeleted.TRASH)
+                .set(BizAlbum::getUpdateTime, now));
+        photoMapper.update(null, new LambdaUpdateWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                .set(BizPhoto::getDeleted, AlbumDeleted.TRASH)
+                .set(BizPhoto::getUpdateTime, now));
+        return ok;
+    }
 
-        List<BizScanPath> scanPaths = scanPathMapper.selectList(new LambdaQueryWrapper<BizScanPath>()
-                .in(BizScanPath::getDefaultAlbumId, albumIds));
-        if (!scanPaths.isEmpty()) {
-            List<Long> pathIds = scanPaths.stream().map(BizScanPath::getPathId).collect(Collectors.toList());
-            scanLogMapper.delete(new LambdaQueryWrapper<BizScanLog>().in(BizScanLog::getPathId, pathIds));
-            scanPathMapper.delete(new LambdaQueryWrapper<BizScanPath>().in(BizScanPath::getPathId, pathIds));
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean restoreAlbums(Collection<Long> albumIds) {
+        if (albumIds == null || albumIds.isEmpty()) {
+            return false;
         }
-
-        List<BizTrack> tracks = trackMapper.selectList(new LambdaQueryWrapper<BizTrack>()
-                .in(BizTrack::getAlbumId, albumIds));
-        if (!tracks.isEmpty()) {
-            List<Long> trackIds = tracks.stream().map(BizTrack::getTrackId).collect(Collectors.toList());
-            trackPointMapper.delete(new LambdaQueryWrapper<BizTrackPoint>().in(BizTrackPoint::getTrackId, trackIds));
-            trackMapper.delete(new LambdaQueryWrapper<BizTrack>().in(BizTrack::getTrackId, trackIds));
+        Date now = new Date();
+        boolean ok = update(new LambdaUpdateWrapper<BizAlbum>()
+                .in(BizAlbum::getAlbumId, albumIds)
+                .eq(BizAlbum::getDeleted, AlbumDeleted.TRASH)
+                .set(BizAlbum::getDeleted, AlbumDeleted.NORMAL)
+                .set(BizAlbum::getUpdateTime, now));
+        photoMapper.update(null, new LambdaUpdateWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.TRASH)
+                .set(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                .set(BizPhoto::getUpdateTime, now));
+        if (ok) {
+            for (Long albumId : albumIds) {
+                refreshAlbumStats(albumId);
+            }
         }
+        return ok;
+    }
 
-        return removeByIds(albumIds);
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean purgeAlbums(Collection<Long> albumIds) {
+        if (albumIds == null || albumIds.isEmpty()) {
+            return false;
+        }
+        Date now = new Date();
+        boolean ok = update(new LambdaUpdateWrapper<BizAlbum>()
+                .in(BizAlbum::getAlbumId, albumIds)
+                .in(BizAlbum::getDeleted, AlbumDeleted.TRASH, AlbumDeleted.NORMAL)
+                .set(BizAlbum::getDeleted, AlbumDeleted.PURGED)
+                .set(BizAlbum::getUpdateTime, now));
+        photoMapper.update(null, new LambdaUpdateWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds)
+                .ne(BizPhoto::getDeleted, AlbumDeleted.PURGED)
+                .set(BizPhoto::getDeleted, AlbumDeleted.PURGED)
+                .set(BizPhoto::getUpdateTime, now));
+        return ok;
+    }
+
+    @Override
+    public boolean removeAlbums(Collection<Long> albumIds) {
+        return trashAlbums(albumIds);
     }
 }
