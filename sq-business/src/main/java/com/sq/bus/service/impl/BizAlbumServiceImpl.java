@@ -9,6 +9,7 @@ import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.mapper.BizAlbumMapper;
 import com.sq.bus.mapper.BizPhotoMapper;
 import com.sq.bus.service.IBizAlbumService;
+import com.sq.bus.utils.PhotoFieldUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -66,7 +67,8 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
         album.setStartTime(start);
         album.setEndTime(end);
         if (!locations.isEmpty()) {
-            album.setLocationSummary(locations.stream().limit(5).collect(Collectors.joining("、")));
+            album.setLocationSummary(PhotoFieldUtils.trim(
+                    locations.stream().limit(5).collect(Collectors.joining("、")), 200));
         }
         if (coverPhotoId != null) {
             album.setCoverUrl("/album/photo/media/" + coverPhotoId);

@@ -8,6 +8,7 @@ import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.utils.ExifParseUtils;
+import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
 import com.sq.common.annotation.Log;
 import com.sq.common.core.controller.BaseController;
@@ -140,7 +141,7 @@ public class BizPhotoController extends BaseController {
         if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在");
         }
-        String original = file.getOriginalFilename();
+        String original = PhotoFieldUtils.safeFileName(file.getOriginalFilename(), 160);
         String datePath = new SimpleDateFormat("yyyy/MM/dd").format(new Date());
         File dir = new File(albumProperties.getUploadPath(), datePath);
         if (!dir.exists()) {
@@ -189,6 +190,7 @@ public class BizPhotoController extends BaseController {
             reusable.setDeleted(AlbumDeleted.NORMAL);
             reusable.setUpdateBy(getUsername());
             reusable.setUpdateTime(new Date());
+            PhotoFieldUtils.clamp(reusable);
             photoService.updateById(reusable);
             if (oldAlbumId != null && !oldAlbumId.equals(albumId)) {
                 albumService.refreshAlbumStats(oldAlbumId);
@@ -230,6 +232,7 @@ public class BizPhotoController extends BaseController {
         photo.setDeleted(AlbumDeleted.NORMAL);
         photo.setCreateBy(getUsername());
         photo.setCreateTime(new Date());
+        PhotoFieldUtils.clamp(photo);
         photoService.save(photo);
         albumService.refreshAlbumStats(albumId);
         return success(photo);
@@ -239,6 +242,7 @@ public class BizPhotoController extends BaseController {
     @Log(title = "图片管理", businessType = BusinessType.UPDATE)
     @PutMapping
     public AjaxResult edit(@RequestBody BizPhoto photo) {
+        PhotoFieldUtils.clamp(photo);
         photo.setUpdateBy(getUsername());
         photo.setUpdateTime(new Date());
         boolean ok = photoService.updateById(photo);
