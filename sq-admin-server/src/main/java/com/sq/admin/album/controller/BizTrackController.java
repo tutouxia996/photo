@@ -1,8 +1,11 @@
 package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
+import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.common.annotation.Log;
@@ -21,6 +24,9 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 轨迹管理
@@ -35,6 +41,9 @@ public class BizTrackController extends BaseController {
     @Autowired
     private IBizTrackPointService trackPointService;
 
+    @Autowired
+    private IBizPhotoService photoService;
+
     @PreAuthorize("@ss.hasPermi('album:track:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizTrack query) {
@@ -43,6 +52,7 @@ public class BizTrackController extends BaseController {
                 .eq(query.getAlbumId() != null, BizTrack::getAlbumId, query.getAlbumId())
                 .like(StringUtils.isNotEmpty(query.getTrackName()), BizTrack::getTrackName, query.getTrackName())
                 .eq(query.getIsPublic() != null, BizTrack::getIsPublic, query.getIsPublic())
+                .eq(BizTrack::getDeleted, 0)
                 .orderByDesc(BizTrack::getTrackId);
         return getDataTable(trackService.list(wrapper));
     }
@@ -51,13 +61,47 @@ public class BizTrackController extends BaseController {
     @GetMapping("/{trackId}")
     public AjaxResult getInfo(@PathVariable Long trackId) {
         BizTrack track = trackService.getById(trackId);
+        if (track == null || track.getDeleted() != null && track.getDeleted() == 1) {
+            return error("轨迹不存在或已删除");
+        }
         List<BizTrackPoint> points = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
                 .eq(BizTrackPoint::getTrackId, trackId)
                 .orderByAsc(BizTrackPoint::getSequence));
+        fillPointMedia(points);
         Map<String, Object> data = new HashMap<String, Object>();
         data.put("track", track);
         data.put("points", points);
         return success(data);
+    }
+
+    /**
+     * 轨迹点关联填充媒体信息，供地图 Marker / 预览使用
+     */
+    private void fillPointMedia(List<BizTrackPoint> points) {
+        if (points == null || points.isEmpty()) {
+            return;
+        }
+        Set<Long> photoIds = points.stream()
+                .map(BizTrackPoint::getPhotoId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (photoIds.isEmpty()) {
+            return;
+        }
+        Map<Long, BizPhoto> photoMap = photoService.listByIds(photoIds).stream()
+                .collect(Collectors.toMap(BizPhoto::getPhotoId, p -> p, (a, b) -> a));
+        for (BizTrackPoint point : points) {
+            BizPhoto photo = photoMap.get(point.getPhotoId());
+            if (photo == null) {
+                continue;
+            }
+            point.setFileType(photo.getFileType());
+            point.setFileName(photo.getFileName());
+            point.setThumbUrl(photo.getThumbUrl());
+            point.setFileUrl(photo.getFileUrl());
+            point.setAddress(photo.getAddress());
+            point.setDuration(photo.getDuration());
+        }
     }
 
     @PreAuthorize("@ss.hasPermi('album:track:generate')")
@@ -86,9 +130,11 @@ public class BizTrackController extends BaseController {
     @Log(title = "轨迹管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{trackIds}")
     public AjaxResult remove(@PathVariable Long[] trackIds) {
-        for (Long trackId : trackIds) {
-            trackPointService.remove(new LambdaQueryWrapper<BizTrackPoint>().eq(BizTrackPoint::getTrackId, trackId));
-        }
-        return toAjax(trackService.removeByIds(Arrays.asList(trackIds)));
+        return toAjax(trackService.update(new LambdaUpdateWrapper<BizTrack>()
+                .in(BizTrack::getTrackId, Arrays.asList(trackIds))
+                .eq(BizTrack::getDeleted, 0)
+                .set(BizTrack::getDeleted, 1)
+                .set(BizTrack::getUpdateBy, getUsername())
+                .set(BizTrack::getUpdateTime, new Date())));
     }
 }

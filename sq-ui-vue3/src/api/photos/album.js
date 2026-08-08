@@ -33,14 +33,15 @@ export function addAlbum(data) {
   })
 }
 
-/** 从服务器磁盘目录创建相册并扫描（不上传/复制原图） */
+/** 从服务器磁盘目录创建相册并异步启动扫描（不上传/复制原图） */
 export function importAlbumFromDisk(data) {
   return request({
     url: '/album/album/importFromDisk',
     method: 'post',
     data,
-    // 扫描含 MD5/缩略图，大目录可能远超默认 10s
-    timeout: 600000
+    // 仅创建相册并启动异步扫描，进度另接口轮询
+    timeout: 60000,
+    showActionLoading: false
   })
 }
 

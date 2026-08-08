@@ -135,17 +135,19 @@ public class BizAlbumController extends BaseController {
         scanPath.setLocalPath(dir.getAbsolutePath());
         scanPath.setDefaultAlbumId(album.getAlbumId());
         scanPath.setStatus(1);
+        scanPath.setDeleted(0);
         scanPath.setCreateBy(getUsername());
         scanPath.setCreateTime(new Date());
         scanPathService.save(scanPath);
 
-        Long logId = scanPathService.runScan(scanPath.getPathId(), true);
-        BizAlbum refreshed = albumService.getById(album.getAlbumId());
+        // 异步扫描，前端按 scanLogId 轮询进度
+        Long logId = scanPathService.startScanAsync(scanPath.getPathId(), true);
 
         Map<String, Object> data = new HashMap<String, Object>();
-        data.put("album", refreshed);
+        data.put("album", album);
         data.put("scanPathId", scanPath.getPathId());
         data.put("scanLogId", logId);
+        data.put("async", true);
         return success(data);
     }
 

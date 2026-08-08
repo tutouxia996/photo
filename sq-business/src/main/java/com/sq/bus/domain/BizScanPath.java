@@ -45,4 +45,7 @@ public class BizScanPath implements Serializable {
     private Date updateTime;
 
     private String remark;
+
+    /** 0未删除 1已删除 */
+    private Integer deleted;
 }

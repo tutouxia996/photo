@@ -1,5 +1,10 @@
 <template>
-  <div class="album-detail" v-loading="loading" @contextmenu="onPageContextMenu" @click="closeCtxMenu">
+  <div
+    class="album-detail"
+    v-loading="loading"
+    @contextmenu="onPageContextMenu"
+    @click="closeCtxMenu"
+  >
     <header class="detail-header">
       <div class="header-left">
         <button type="button" class="back-btn" title="返回" @click="goBack">
@@ -165,7 +170,9 @@
     </div>
 
     <div v-if="photoList.length" class="detail-footer">
-      <el-button v-if="hasMore" text :loading="loadingMore" @click="loadMore">加载更多</el-button>
+      <div v-if="hasMore" ref="loadMoreSentinel" class="load-more-sentinel">
+        <span v-if="loadingMore">加载中…</span>
+      </div>
       <span v-else>没有更多了</span>
     </div>
 
@@ -230,6 +237,43 @@
           <button type="button" class="ctx-item danger" @click="onItemCtxTrash">放入回收站</button>
         </template>
       </div>
+    </teleport>
+
+    <!-- 上传进度 -->
+    <teleport to="body">
+      <transition name="upload-fade">
+        <div v-if="uploading" class="upload-progress-mask" @click.stop @contextmenu.prevent>
+          <div class="upload-progress-panel" role="dialog" aria-label="上传进度">
+            <div class="upload-progress-title">正在上传</div>
+            <div class="upload-progress-summary">
+              <span>{{ uploadProgress.done }}/{{ uploadProgress.total }}</span>
+              <span>{{ uploadPercent }}%</span>
+            </div>
+            <el-progress
+              :percentage="uploadPercent"
+              :stroke-width="10"
+              :show-text="false"
+              striped
+              striped-flow
+            />
+            <div class="upload-progress-current" :title="uploadCurrentName">
+              {{ uploadStatusText }}
+            </div>
+            <ul v-if="uploadItems.length" class="upload-progress-list">
+              <li
+                v-for="item in uploadItemsVisible"
+                :key="item.id"
+                class="upload-progress-item"
+                :class="'is-' + item.status"
+              >
+                <span class="upload-item-name" :title="item.name">{{ item.name }}</span>
+                <span class="upload-item-meta">{{ uploadItemLabel(item) }}</span>
+              </li>
+            </ul>
+            <div class="upload-progress-tip">上传完成前请勿关闭或刷新页面</div>
+          </div>
+        </div>
+      </transition>
     </teleport>
 
     <el-dialog
@@ -552,6 +596,9 @@ const photoList = ref([])
 const total = ref(0)
 const pageNum = ref(1)
 const pageSize = ref(60)
+/** 下滑自动加载哨兵 */
+const loadMoreSentinel = ref(null)
+let loadMoreObserver = null
 const typeFilter = ref('all')
 const sizeMode = ref('small')
 /** 顶部按钮开启的持续多选模式（等同常按 Ctrl） */
@@ -581,6 +628,54 @@ const createAlbumRules = {
 }
 const mediaIndex = ref(0)
 const uploading = ref(false)
+const uploadProgress = reactive({ done: 0, total: 0, ok: 0, fail: 0 })
+const uploadItems = ref([])
+/** 同时上传数，避免一次打满服务器 */
+const UPLOAD_CONCURRENCY = 3
+
+const uploadPercent = computed(() => {
+  const items = uploadItems.value
+  if (!items.length) return 0
+  let loaded = 0
+  let total = 0
+  for (const item of items) {
+    const size = Math.max(item.size || 0, 1)
+    total += size
+    if (item.status === 'done' || item.status === 'fail') {
+      loaded += size
+    } else if (item.status === 'processing') {
+      // 字节已传完，等待服务端入库/生成缩略图
+      loaded += size * 0.92
+    } else {
+      loaded += Math.min(item.loaded || 0, size) * 0.9
+    }
+  }
+  return Math.min(100, Math.max(0, Math.round((loaded / total) * 100)))
+})
+
+const uploadCurrentName = computed(() => {
+  const active = uploadItems.value.find(i => i.status === 'uploading' || i.status === 'processing')
+  return active?.name || ''
+})
+
+const uploadStatusText = computed(() => {
+  if (!uploading.value) return ''
+  if (uploadCurrentName.value) {
+    const active = uploadItems.value.find(i => i.name === uploadCurrentName.value && (i.status === 'uploading' || i.status === 'processing'))
+    if (active?.status === 'processing') return `服务端处理中：${uploadCurrentName.value}`
+    return `正在上传：${uploadCurrentName.value}`
+  }
+  if (uploadProgress.done >= uploadProgress.total) return '正在完成收尾…'
+  return '准备上传…'
+})
+
+const uploadItemsVisible = computed(() => {
+  // 优先展示进行中/失败，其次最近完成的，最多 6 条
+  const list = [...uploadItems.value]
+  const active = list.filter(i => i.status === 'uploading' || i.status === 'processing' || i.status === 'fail')
+  const rest = list.filter(i => !active.includes(i)).slice(-Math.max(0, 6 - active.length))
+  return [...active, ...rest].slice(0, 6)
+})
 const clickTimer = ref(null)
 const brokenThumbs = ref(new Set())
 const addToOpen = ref(false)
@@ -813,7 +908,38 @@ function triggerFolderUpload() {
   folderInputRef.value?.click?.()
 }
 
-function onFilesSelected(e) {
+function formatUploadSize(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function uploadItemLabel(item) {
+  if (item.status === 'done') return '完成'
+  if (item.status === 'fail') return '失败'
+  if (item.status === 'processing') return '处理中'
+  if (item.status === 'uploading') {
+    const size = Math.max(item.size || 0, 1)
+    const pct = Math.min(100, Math.round(((item.loaded || 0) / size) * 100))
+    return `${pct}%`
+  }
+  return formatUploadSize(item.size)
+}
+
+function runWithConcurrency(items, worker, concurrency) {
+  let index = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (index < items.length) {
+      const current = index++
+      await worker(items[current], current)
+    }
+  })
+  return Promise.all(runners)
+}
+
+async function onFilesSelected(e) {
   const raw = Array.from(e.target.files || [])
   e.target.value = ''
   const files = raw.filter(isMediaFile)
@@ -821,24 +947,68 @@ function onFilesSelected(e) {
     if (raw.length) proxy.$modal.msgWarning('所选内容中没有可上传的照片或视频')
     return
   }
+  if (uploading.value) {
+    proxy.$modal.msgWarning('仍有上传任务进行中，请稍候')
+    return
+  }
+
   uploading.value = true
-  const tasks = files.map(file => {
+  uploadProgress.done = 0
+  uploadProgress.ok = 0
+  uploadProgress.fail = 0
+  uploadProgress.total = files.length
+  uploadItems.value = files.map((file, id) => ({
+    id,
+    name: file.name,
+    size: file.size || 0,
+    loaded: 0,
+    status: 'pending',
+    file
+  }))
+
+  await runWithConcurrency(uploadItems.value, async (item) => {
+    item.status = 'uploading'
+    item.loaded = 0
     const form = new FormData()
-    form.append('file', file)
+    form.append('file', item.file)
     form.append('albumId', albumId.value)
-    return uploadPhoto(form)
-  })
-  Promise.allSettled(tasks)
-    .then(results => {
-      const ok = results.filter(r => r.status === 'fulfilled').length
-      const fail = results.length - ok
-      if (ok) proxy.$modal.msgSuccess(`成功添加 ${ok} 个文件${fail ? `，失败 ${fail}` : ''}`)
-      else proxy.$modal.msgError('添加失败')
-      if (ok) reload()
-    })
-    .finally(() => {
-      uploading.value = false
-    })
+    try {
+      await uploadPhoto(form, {
+        showActionLoading: false,
+        onUploadProgress: (evt) => {
+          const total = evt.total || item.size || 0
+          if (total > 0) {
+            item.size = total
+            item.loaded = evt.loaded || 0
+            if (evt.loaded >= total) {
+              item.status = 'processing'
+            }
+          }
+        }
+      })
+      item.loaded = item.size || item.loaded
+      item.status = 'done'
+      uploadProgress.ok += 1
+    } catch (err) {
+      item.status = 'fail'
+      uploadProgress.fail += 1
+    } finally {
+      uploadProgress.done += 1
+      item.file = null
+    }
+  }, UPLOAD_CONCURRENCY)
+
+  const ok = uploadProgress.ok
+  const fail = uploadProgress.fail
+  if (ok) proxy.$modal.msgSuccess(`成功添加 ${ok} 个文件${fail ? `，失败 ${fail}` : ''}`)
+  else proxy.$modal.msgError('添加失败')
+  if (ok) reload()
+  uploading.value = false
+  uploadItems.value = []
+  uploadProgress.done = 0
+  uploadProgress.total = 0
+  uploadProgress.ok = 0
+  uploadProgress.fail = 0
 }
 
 function closeCtxMenu() {
@@ -1603,10 +1773,42 @@ function loadPhotos(reset = false) {
     })
 }
 
+function isSentinelInView() {
+  const el = loadMoreSentinel.value
+  if (!el) return false
+  const rect = el.getBoundingClientRect()
+  return rect.top < window.innerHeight + 240
+}
+
 function loadMore() {
-  if (!hasMore.value || loadingMore.value) return
+  if (!hasMore.value || loadingMore.value || loading.value) return
   pageNum.value += 1
-  loadPhotos(false)
+  loadPhotos(false).then(() => {
+    // 首屏未撑满视口时继续拉下一页，避免停在半屏不触发滚动
+    nextTick(() => {
+      if (hasMore.value && isSentinelInView()) loadMore()
+    })
+  })
+}
+
+function teardownLoadMoreObserver() {
+  if (loadMoreObserver) {
+    loadMoreObserver.disconnect()
+    loadMoreObserver = null
+  }
+}
+
+function setupLoadMoreObserver() {
+  teardownLoadMoreObserver()
+  const el = loadMoreSentinel.value
+  if (!el) return
+  loadMoreObserver = new IntersectionObserver(
+    entries => {
+      if (entries.some(e => e.isIntersecting)) loadMore()
+    },
+    { root: null, rootMargin: '240px 0px', threshold: 0 }
+  )
+  loadMoreObserver.observe(el)
 }
 
 function reload() {
@@ -1659,6 +1861,18 @@ watch(detailOpen, () => {
   })
 })
 
+watch(
+  [hasMore, () => photoList.value.length, loading],
+  async () => {
+    await nextTick()
+    if (hasMore.value && photoList.value.length && !loading.value) {
+      setupLoadMoreObserver()
+    } else {
+      teardownLoadMoreObserver()
+    }
+  }
+)
+
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('scroll', onWindowBlurOrScroll, true)
@@ -1670,6 +1884,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', onWindowBlurOrScroll, true)
   window.removeEventListener('resize', onWindowBlurOrScroll)
   window.removeEventListener('blur', onWindowBlurOrScroll)
+  teardownLoadMoreObserver()
   if (clickTimer.value) clearTimeout(clickTimer.value)
   if (imagePaintRaf) cancelAnimationFrame(imagePaintRaf)
   if (wheelZoomRaf) cancelAnimationFrame(wheelZoomRaf)
@@ -1994,6 +2209,13 @@ init()
   text-align: center;
   font-size: 13px;
   color: var(--muted);
+}
+
+.load-more-sentinel {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .selection-bar {
@@ -2577,5 +2799,115 @@ body > .el-overlay:has(.above-media-msgbox) {
     color: #333;
     word-break: break-all;
   }
+}
+</style>
+
+<style lang="scss">
+.upload-progress-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.upload-progress-panel {
+  width: min(440px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  padding: 22px 24px 18px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+}
+
+.upload-progress-title {
+  font-size: 17px;
+  font-weight: 650;
+  color: #1a1a1a;
+  margin-bottom: 14px;
+}
+
+.upload-progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #666;
+}
+
+.upload-progress-current {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upload-progress-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  max-height: 168px;
+  overflow: auto;
+  border-top: 1px solid #f0f0f0;
+}
+
+.upload-progress-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 12px;
+  border-bottom: 1px solid #f7f7f7;
+
+  &.is-fail .upload-item-meta {
+    color: #f56c6c;
+  }
+
+  &.is-done .upload-item-meta {
+    color: #67c23a;
+  }
+
+  &.is-uploading .upload-item-meta,
+  &.is-processing .upload-item-meta {
+    color: #4c8dff;
+  }
+}
+
+.upload-item-name {
+  min-width: 0;
+  flex: 1;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upload-item-meta {
+  flex-shrink: 0;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-progress-tip {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #999;
+  line-height: 1.4;
+}
+
+.upload-fade-enter-active,
+.upload-fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.upload-fade-enter-from,
+.upload-fade-leave-to {
+  opacity: 0;
 }
 </style>

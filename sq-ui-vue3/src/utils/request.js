@@ -9,13 +9,24 @@ import useUserStore from '@/store/modules/user'
 
 let downloadLoadingInstance;
 let actionLoadingInstance;
-let actionLoadingTimer;
 let actionLoadingCount = 0;
 const actionMethods = ['post', 'put', 'delete', 'patch'];
 
 function showActionLoading(config) {
+  // 优先读 config 自身标记（勿放 HTTP headers，避免被序列化/发出）
+  if (config.showActionLoading === false) {
+    return false;
+  }
   const headers = config.headers || {};
-  return headers.showActionLoading !== false && actionMethods.includes((config.method || '').toLowerCase()) && config.responseType !== 'blob' && config.responseType !== 'arraybuffer';
+  if (headers.showActionLoading === false || headers.showActionLoading === 'false') {
+    return false;
+  }
+  return actionMethods.includes((config.method || '').toLowerCase()) && config.responseType !== 'blob' && config.responseType !== 'arraybuffer';
+}
+
+function resolveActionLoadingText(config) {
+  const text = config.actionLoadingText || (config.headers || {}).actionLoadingText;
+  return text ? String(text) : '处理中，请稍候...';
 }
 
 function startActionLoading(config) {
@@ -25,14 +36,12 @@ function startActionLoading(config) {
   config.actionLoading = true;
   actionLoadingCount++;
   if (!actionLoadingInstance) {
-    actionLoadingInstance = ElLoading.service({ text: "处理中，请稍候...", background: "rgba(0, 0, 0, 0.7)", })
-    actionLoadingTimer = setTimeout(() => {
-      if (actionLoadingInstance) {
-        actionLoadingInstance.close();
-        actionLoadingInstance = null;
-      }
-      actionLoadingTimer = null;
-    }, 5000);
+    // 与请求生命周期绑定，勿限时自动关闭；长耗时扫描/上传中需锁住页面，避免点遮罩误关业务弹窗
+    actionLoadingInstance = ElLoading.service({
+      lock: true,
+      text: resolveActionLoadingText(config),
+      background: 'rgba(0, 0, 0, 0.7)'
+    })
   }
 }
 
@@ -43,10 +52,6 @@ function closeActionLoading(config) {
   actionLoadingCount--;
   if (actionLoadingCount <= 0) {
     actionLoadingCount = 0;
-    if (actionLoadingTimer) {
-      clearTimeout(actionLoadingTimer);
-      actionLoadingTimer = null;
-    }
     if (actionLoadingInstance) {
       actionLoadingInstance.close();
       actionLoadingInstance = null;

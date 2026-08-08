@@ -47,13 +47,16 @@ export function purgePhoto(photoId) {
   })
 }
 
-export function uploadPhoto(data) {
+export function uploadPhoto(data, options = {}) {
   return request({
     url: '/album/photo/upload',
     method: 'post',
     headers: { 'Content-Type': 'multipart/form-data' },
     data,
     // 大视频上传可能远超默认 10s
-    timeout: 600000
+    timeout: 600000,
+    showActionLoading: options.showActionLoading !== false,
+    actionLoadingText: '正在处理照片/视频，请勿关闭…',
+    onUploadProgress: options.onUploadProgress
   })
 }

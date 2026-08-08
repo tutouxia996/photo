@@ -1,6 +1,7 @@
 package com.sq.bus.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -35,4 +36,23 @@ public class BizTrackPoint implements Serializable {
     private Integer sequence;
 
     private BigDecimal altitude;
+
+    /** 非表字段：关联媒体展示用 */
+    @TableField(exist = false)
+    private Integer fileType;
+
+    @TableField(exist = false)
+    private String fileName;
+
+    @TableField(exist = false)
+    private String thumbUrl;
+
+    @TableField(exist = false)
+    private String fileUrl;
+
+    @TableField(exist = false)
+    private String address;
+
+    @TableField(exist = false)
+    private Integer duration;
 }

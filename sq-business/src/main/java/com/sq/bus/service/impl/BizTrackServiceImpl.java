@@ -2,10 +2,12 @@ package com.sq.bus.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.mapper.BizTrackMapper;
+import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
@@ -31,6 +33,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
 
     @Autowired
     private IBizTrackPointService trackPointService;
+
+    @Autowired
+    private IBizAlbumService albumService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -91,7 +96,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
 
         BizTrack track = new BizTrack();
         track.setAlbumId(albumId);
-        track.setTrackName(trackName == null || trackName.isEmpty() ? "相册轨迹-" + albumId : trackName);
+        track.setTrackName(resolveTrackName(albumId, trackName));
         track.setStartTime(first.getShootTime());
         track.setEndTime(last.getShootTime());
         track.setTotalDistance(BigDecimal.valueOf(totalDistance).setScale(2, BigDecimal.ROUND_HALF_UP));
@@ -99,6 +104,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         track.setPointCount(points.size());
         track.setTrackColor("#3B82F6");
         track.setIsPublic(1);
+        track.setDeleted(0);
         track.setCreateTime(new Date());
         save(track);
 
@@ -107,5 +113,22 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
         trackPointService.saveBatch(points);
         return track;
+    }
+
+    /**
+     * 默认名称：相册名称 + 相册轨迹 + 序号（如「天坛公园相册轨迹1」）
+     */
+    private String resolveTrackName(Long albumId, String trackName) {
+        if (trackName != null && !trackName.trim().isEmpty()) {
+            return trackName.trim();
+        }
+        BizAlbum album = albumService.getById(albumId);
+        String albumName = album != null && album.getAlbumName() != null && !album.getAlbumName().isEmpty()
+                ? album.getAlbumName()
+                : "相册" + albumId;
+        long count = count(new LambdaQueryWrapper<BizTrack>()
+                .eq(BizTrack::getAlbumId, albumId)
+                .eq(BizTrack::getDeleted, 0));
+        return albumName + "相册轨迹" + (count + 1);
     }
 }

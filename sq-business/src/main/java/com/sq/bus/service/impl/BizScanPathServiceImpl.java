@@ -1,5 +1,6 @@
 package com.sq.bus.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
@@ -15,7 +16,11 @@ import com.sq.bus.service.IBizScanPathService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.ThumbUtils;
 import com.sq.common.exception.ServiceException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -26,14 +31,20 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizScanPath> implements IBizScanPathService {
+
+    private static final Logger log = LoggerFactory.getLogger(BizScanPathServiceImpl.class);
 
     private static final Set<String> IMAGE_EXT = new HashSet<String>(Arrays.asList(
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "tif", "tiff"));
     private static final Set<String> VIDEO_EXT = new HashSet<String>(Arrays.asList(
             "mp4", "mov", "avi", "mkv", "wmv"));
+
+    /** 同一目录同时只允许一个进行中的扫描 */
+    private final Set<Long> runningPathIds = ConcurrentHashMap.newKeySet();
 
     @Autowired
     private IBizScanLogService scanLogService;
@@ -47,11 +58,26 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     @Autowired
     private AlbumProperties albumProperties;
 
+    @Autowired
+    @Qualifier("threadPoolTaskExecutor")
+    private ThreadPoolTaskExecutor threadPoolTaskExecutor;
+
     @Override
     public Long runScan(Long pathId, boolean fullScan) {
+        Long logId = prepareAndStart(pathId, fullScan, false);
+        waitUntilFinished(logId);
+        return logId;
+    }
+
+    @Override
+    public Long startScanAsync(Long pathId, boolean fullScan) {
+        return prepareAndStart(pathId, fullScan, true);
+    }
+
+    private Long prepareAndStart(Long pathId, boolean fullScan, boolean async) {
         BizScanPath scanPath = getById(pathId);
-        if (scanPath == null) {
-            throw new ServiceException("扫描目录不存在");
+        if (scanPath == null || (scanPath.getDeleted() != null && scanPath.getDeleted() == 1)) {
+            throw new ServiceException("扫描目录不存在或已删除");
         }
         if (scanPath.getStatus() != null && scanPath.getStatus() == 0) {
             throw new ServiceException("扫描目录已禁用");
@@ -63,53 +89,137 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (!root.exists() || !root.isDirectory()) {
             throw new ServiceException("本地目录不存在或不可访问：" + scanPath.getLocalPath());
         }
+        if (!runningPathIds.add(pathId)) {
+            throw new ServiceException("该目录正在扫描中，请稍后再试");
+        }
+        // 清理异常中断遗留的“进行中”日志，避免永久卡住
+        scanLogService.update(new LambdaUpdateWrapper<BizScanLog>()
+                .eq(BizScanLog::getPathId, pathId)
+                .eq(BizScanLog::getStatus, 0)
+                .set(BizScanLog::getStatus, 2)
+                .set(BizScanLog::getMessage, "扫描已中断")
+                .set(BizScanLog::getEndTime, new Date()));
 
-        BizScanLog log = new BizScanLog();
-        log.setPathId(pathId);
-        log.setScanType(fullScan ? 2 : 1);
-        log.setStatus(0);
-        log.setStartTime(new Date());
-        log.setCreateTime(new Date());
-        log.setTotalCount(0);
-        log.setNewCount(0);
-        log.setSkipCount(0);
-        log.setFailCount(0);
-        scanLogService.save(log);
+        BizScanLog scanLog = new BizScanLog();
+        scanLog.setPathId(pathId);
+        scanLog.setScanType(fullScan ? 2 : 1);
+        scanLog.setStatus(0);
+        scanLog.setStartTime(new Date());
+        scanLog.setCreateTime(new Date());
+        scanLog.setTotalCount(0);
+        scanLog.setNewCount(0);
+        scanLog.setSkipCount(0);
+        scanLog.setFailCount(0);
+        scanLog.setMessage("正在统计文件…");
+        scanLogService.save(scanLog);
 
+        final Long logId = scanLog.getLogId();
+        Runnable task = () -> {
+            try {
+                executeScan(logId, scanPath, root, fullScan);
+            } finally {
+                runningPathIds.remove(pathId);
+            }
+        };
+
+        if (async) {
+            threadPoolTaskExecutor.execute(task);
+        } else {
+            task.run();
+        }
+        return logId;
+    }
+
+    private void waitUntilFinished(Long logId) {
+        while (true) {
+            BizScanLog current = scanLogService.getById(logId);
+            if (current == null || current.getStatus() == null || current.getStatus() != 0) {
+                return;
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    private void executeScan(Long logId, BizScanPath scanPath, File root, boolean fullScan) {
+        BizScanLog scanLog = scanLogService.getById(logId);
+        if (scanLog == null) {
+            return;
+        }
         StringBuilder failMsg = new StringBuilder();
         ScanCounter counter = new ScanCounter();
         try {
-            doWalk(root, scanPath, fullScan, counter, failMsg);
+            int estimated = countMediaFiles(root);
+            counter.estimated = estimated;
+            scanLog.setTotalCount(estimated);
+            scanLog.setMessage(estimated == 0 ? "目录中未发现媒体文件" : "开始扫描…");
+            scanLogService.updateById(scanLog);
+
+            if (estimated > 0) {
+                doWalk(root, scanPath, fullScan, counter, failMsg, logId);
+            }
         } catch (Exception e) {
             counter.failed++;
             failMsg.append(e.getMessage());
+            log.error("扫描失败 pathId={} logId={}", scanPath.getPathId(), logId, e);
         }
 
-        albumService.refreshAlbumStats(scanPath.getDefaultAlbumId());
+        try {
+            albumService.refreshAlbumStats(scanPath.getDefaultAlbumId());
+        } catch (Exception e) {
+            log.warn("刷新相册统计失败 albumId={}", scanPath.getDefaultAlbumId(), e);
+        }
 
         scanPath.setLastScanTime(new Date());
         scanPath.setUpdateTime(new Date());
         updateById(scanPath);
 
-        log.setTotalCount(counter.total);
-        log.setNewCount(counter.created);
-        log.setSkipCount(counter.skipped);
-        log.setFailCount(counter.failed);
-        log.setStatus(counter.failed > 0 && counter.created == 0 ? 2 : 1);
-        log.setMessage(failMsg.length() == 0 ? "扫描完成" : failMsg.toString());
-        log.setEndTime(new Date());
-        scanLogService.updateById(log);
-        return log.getLogId();
+        BizScanLog finished = scanLogService.getById(logId);
+        if (finished == null) {
+            return;
+        }
+        finished.setTotalCount(Math.max(counter.estimated, counter.total));
+        finished.setNewCount(counter.created);
+        finished.setSkipCount(counter.skipped);
+        finished.setFailCount(counter.failed);
+        finished.setStatus(counter.failed > 0 && counter.created == 0 && counter.skipped == 0 ? 2 : 1);
+        finished.setMessage(failMsg.length() == 0 ? "扫描完成" : failMsg.toString());
+        finished.setEndTime(new Date());
+        scanLogService.updateById(finished);
     }
 
-    private void doWalk(File dir, BizScanPath scanPath, boolean fullScan, ScanCounter counter, StringBuilder failMsg) {
+    private int countMediaFiles(File dir) {
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return 0;
+        }
+        int count = 0;
+        for (File file : children) {
+            if (file.isDirectory()) {
+                count += countMediaFiles(file);
+                continue;
+            }
+            String ext = extension(file.getName());
+            if (IMAGE_EXT.contains(ext) || VIDEO_EXT.contains(ext)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void doWalk(File dir, BizScanPath scanPath, boolean fullScan, ScanCounter counter,
+                        StringBuilder failMsg, Long logId) {
         File[] children = dir.listFiles();
         if (children == null) {
             return;
         }
         for (File file : children) {
             if (file.isDirectory()) {
-                doWalk(file, scanPath, fullScan, counter, failMsg);
+                doWalk(file, scanPath, fullScan, counter, failMsg, logId);
                 continue;
             }
             String ext = extension(file.getName());
@@ -151,8 +261,31 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 if (failMsg.length() < 800) {
                     failMsg.append(file.getName()).append(':').append(ex.getMessage()).append(';');
                 }
+            } finally {
+                // 每个文件处理后刷新计数，供前端轮询
+                persistProgress(logId, counter, file.getName());
             }
         }
+    }
+
+    private void persistProgress(Long logId, ScanCounter counter, String currentFile) {
+        long now = System.currentTimeMillis();
+        int processed = counter.created + counter.skipped + counter.failed;
+        boolean finishedAll = counter.estimated > 0 && processed >= counter.estimated;
+        // 节流写库，避免大目录每个文件都更新；收尾必写
+        if (!finishedAll && now - counter.lastPersistAt < 400L) {
+            return;
+        }
+        counter.lastPersistAt = now;
+        BizScanLog progress = new BizScanLog();
+        progress.setLogId(logId);
+        progress.setTotalCount(Math.max(counter.estimated, counter.total));
+        progress.setNewCount(counter.created);
+        progress.setSkipCount(counter.skipped);
+        progress.setFailCount(counter.failed);
+        progress.setStatus(0);
+        progress.setMessage("正在处理(" + processed + "/" + Math.max(counter.estimated, counter.total) + ")：" + currentFile);
+        scanLogService.updateById(progress);
     }
 
     private void importFile(File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
@@ -288,9 +421,11 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private static class ScanCounter {
+        private int estimated;
         private int total;
         private int created;
         private int skipped;
         private int failed;
+        private long lastPersistAt;
     }
 }

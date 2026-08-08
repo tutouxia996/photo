@@ -92,8 +92,10 @@ CREATE TABLE `biz_track` (
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除',
   PRIMARY KEY (`track_id`),
-  KEY `idx_track_album_id` (`album_id`)
+  KEY `idx_track_album_id` (`album_id`),
+  KEY `idx_track_deleted` (`deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='轨迹表';
 
 -- ----------------------------
@@ -131,7 +133,9 @@ CREATE TABLE `biz_scan_path` (
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (`path_id`)
+  `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除',
+  PRIMARY KEY (`path_id`),
+  KEY `idx_scan_path_deleted` (`deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='扫描目录配置表';
 
 -- ----------------------------

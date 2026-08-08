@@ -54,7 +54,9 @@
           <div v-else class="album-cover-placeholder">
             <el-icon :size="36"><PictureFilled /></el-icon>
           </div>
-          <span class="album-badge">{{ item.photoCount ?? 0 }}</span>
+          <span class="album-badge" :class="{ scanning: isAlbumScanning(item.albumId) }">
+            {{ isAlbumScanning(item.albumId) ? '扫描中' : (item.photoCount ?? 0) }}
+          </span>
           <div class="album-more" @click.stop>
             <button
               type="button"
@@ -109,13 +111,24 @@
       </button>
     </div>
 
-    <el-dialog v-model="createOpen" :title="createDialogTitle" width="520px" append-to-body @closed="resetCreateForm">
+    <el-dialog
+      v-model="createOpen"
+      :title="createDialogTitle"
+      width="520px"
+      append-to-body
+      :close-on-click-modal="!creating"
+      :close-on-press-escape="!creating"
+      :show-close="!creating"
+      :before-close="beforeCreateClose"
+      @closed="resetCreateForm"
+    >
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="96px">
         <el-form-item label="磁盘目录" prop="localPath">
           <el-input
             v-model="createForm.localPath"
             placeholder="服务器本地路径，如 D:/photos/天坛公园"
             clearable
+            :disabled="creating"
             @input="onLocalPathInput"
           />
           <div class="form-tip">从磁盘扫描索引，不会上传或复制原图；填写后默认用文件夹名作为相册名。照片较多时扫描可能需数分钟，请耐心等待</div>
@@ -125,28 +138,59 @@
             v-model="createForm.albumName"
             maxlength="50"
             placeholder="默认同文件夹名，可修改"
+            :disabled="creating"
             @input="albumNameManual = true"
           />
         </el-form-item>
         <el-form-item label="描述" prop="albumDesc">
-          <el-input v-model="createForm.albumDesc" type="textarea" :rows="3" placeholder="可选" />
+          <el-input v-model="createForm.albumDesc" type="textarea" :rows="3" placeholder="可选" :disabled="creating" />
         </el-form-item>
         <el-form-item label="公开状态" prop="isPublic">
-          <el-radio-group v-model="createForm.isPublic">
+          <el-radio-group v-model="createForm.isPublic" :disabled="creating">
             <el-radio :value="1">公开</el-radio>
             <el-radio :value="0">私有</el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createOpen = false">取消</el-button>
+        <el-button :disabled="creating" @click="createOpen = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="submitCreate">
           {{ createForm.localPath ? '创建并扫描' : '确定' }}
         </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="editOpen" title="编辑相册" width="460px" append-to-body @closed="resetEditForm">
+    <!-- 磁盘扫描进度 -->
+    <teleport to="body">
+      <transition name="scan-fade">
+        <div v-if="scanUi.visible" class="scan-progress-mask" @click.stop @contextmenu.prevent>
+          <div class="scan-progress-panel" role="dialog" aria-label="扫描进度">
+            <div class="scan-progress-title">正在扫描磁盘</div>
+            <div class="scan-progress-summary">
+              <span>{{ scanProcessedText }}</span>
+              <span>{{ scanPercent }}%</span>
+            </div>
+            <el-progress
+              :percentage="scanPercent"
+              :stroke-width="10"
+              :show-text="false"
+              striped
+              striped-flow
+              :status="scanUi.status === 2 ? 'exception' : undefined"
+            />
+            <div class="scan-progress-stats">
+              <span>新增 {{ scanUi.newCount }}</span>
+              <span>跳过 {{ scanUi.skipCount }}</span>
+              <span>失败 {{ scanUi.failCount }}</span>
+            </div>
+            <div class="scan-progress-current" :title="scanUi.message">{{ scanUi.message || '准备中…' }}</div>
+            <div class="scan-progress-tip">扫描在后台进行，完成后会自动刷新相册；请勿关闭或刷新页面</div>
+          </div>
+        </div>
+      </transition>
+    </teleport>
+
+    <el-dialog v-model="editOpen" title="编辑相册" width="460px" append-to-body :close-on-click-modal="!editing" @closed="resetEditForm">
       <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-width="88px">
         <el-form-item label="相册名称" prop="albumName">
           <el-input v-model="editForm.albumName" maxlength="50" placeholder="请输入相册名称" />
@@ -176,6 +220,7 @@
 import { ClickOutside as vClickOutside } from 'element-plus'
 import { isExternal } from '@/utils/validate'
 import { listAlbum, addAlbum, importAlbumFromDisk, updateAlbum, delAlbum } from '@/api/photos/album'
+import { pollScanProgress } from '@/api/album/scan'
 
 const { proxy } = getCurrentInstance()
 
@@ -191,6 +236,18 @@ const preferImport = ref(false)
 const menuAlbumId = ref(null)
 const editOpen = ref(false)
 const editing = ref(false)
+const scanningAlbumIds = ref([])
+const scanAbortController = ref(null)
+const scanUi = reactive({
+  visible: false,
+  albumId: null,
+  status: 0,
+  totalCount: 0,
+  newCount: 0,
+  skipCount: 0,
+  failCount: 0,
+  message: ''
+})
 const createFormRef = ref()
 const editFormRef = ref()
 const createForm = reactive({
@@ -223,6 +280,46 @@ const editRules = {
 }
 
 const createDialogTitle = computed(() => (preferImport.value || createForm.localPath ? '导入文件夹创建相册' : '创建相册'))
+
+const scanPercent = computed(() => {
+  const total = Number(scanUi.totalCount) || 0
+  if (total <= 0) {
+    return scanUi.status === 0 ? 0 : 100
+  }
+  const processed = (Number(scanUi.newCount) || 0) + (Number(scanUi.skipCount) || 0) + (Number(scanUi.failCount) || 0)
+  return Math.min(100, Math.max(0, Math.round((processed / total) * 100)))
+})
+
+const scanProcessedText = computed(() => {
+  const total = Number(scanUi.totalCount) || 0
+  const processed = (Number(scanUi.newCount) || 0) + (Number(scanUi.skipCount) || 0) + (Number(scanUi.failCount) || 0)
+  if (!total && scanUi.status === 0) return '统计文件中…'
+  return `${processed}/${total || processed}`
+})
+
+function isAlbumScanning(albumId) {
+  return scanningAlbumIds.value.some(id => String(id) === String(albumId))
+}
+
+function applyScanProgress(log) {
+  scanUi.status = Number(log.status ?? 0)
+  scanUi.totalCount = Number(log.totalCount) || 0
+  scanUi.newCount = Number(log.newCount) || 0
+  scanUi.skipCount = Number(log.skipCount) || 0
+  scanUi.failCount = Number(log.failCount) || 0
+  scanUi.message = log.message || ''
+}
+
+function resetScanUi() {
+  scanUi.visible = false
+  scanUi.albumId = null
+  scanUi.status = 0
+  scanUi.totalCount = 0
+  scanUi.newCount = 0
+  scanUi.skipCount = 0
+  scanUi.failCount = 0
+  scanUi.message = ''
+}
 
 const filterLabel = computed(() => {
   const map = { all: '全部', public: '公开', private: '私有' }
@@ -421,9 +518,60 @@ function resetCreateForm() {
   createFormRef.value?.resetFields?.()
 }
 
+function beforeCreateClose(done) {
+  if (creating.value) {
+    proxy.$modal.msgWarning('正在创建中，请稍候')
+    return
+  }
+  done()
+}
+
 function onUploadPhotos() {
   fabOpen.value = false
   proxy.$modal.msg('上传照片/视频：请在图片管理中使用上传功能')
+}
+
+async function trackDiskScan(scanLogId, albumId) {
+  if (!scanLogId) return
+  scanAbortController.value?.abort?.()
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null
+  scanAbortController.value = ac
+  scanUi.visible = true
+  scanUi.albumId = albumId
+  applyScanProgress({ status: 0, totalCount: 0, newCount: 0, skipCount: 0, failCount: 0, message: '正在启动扫描…' })
+  if (albumId != null) {
+    scanningAlbumIds.value = [...new Set([...scanningAlbumIds.value, albumId])]
+  }
+  try {
+    const finalLog = await pollScanProgress(scanLogId, {
+      interval: 800,
+      onProgress: applyScanProgress,
+      signal: ac?.signal
+    })
+    applyScanProgress(finalLog)
+    const added = Number(finalLog.newCount) || 0
+    if (Number(finalLog.status) === 2) {
+      proxy.$modal.msgError(finalLog.message || '扫描失败')
+    } else {
+      proxy.$modal.msgSuccess(`扫描完成，新增 ${added} 项`)
+    }
+  } catch (e) {
+    if (e?.message !== 'aborted') {
+      proxy.$modal.msgError('扫描进度获取失败，请稍后刷新相册列表')
+    }
+  } finally {
+    if (scanAbortController.value === ac) {
+      scanAbortController.value = null
+    }
+    if (albumId != null) {
+      scanningAlbumIds.value = scanningAlbumIds.value.filter(id => String(id) !== String(albumId))
+    }
+    await getList()
+    // 稍留完成态再关闭，避免进度条瞬间消失
+    setTimeout(() => {
+      if (!scanningAlbumIds.value.length) resetScanUi()
+    }, 600)
+  }
 }
 
 function submitCreate() {
@@ -440,21 +588,32 @@ function submitCreate() {
       albumDesc: createForm.albumDesc,
       isPublic: createForm.isPublic
     }
-    const req = localPath
-      ? importAlbumFromDisk({ ...payload, localPath })
-      : addAlbum(payload)
-    req
-      .then(res => {
-        const count = res.data?.album?.photoCount
-        proxy.$modal.msgSuccess(
-          localPath
-            ? `创建成功${count != null ? `，已索引 ${count} 项` : '，磁盘扫描已完成'}`
-            : '创建成功'
-        )
+    if (!localPath) {
+      addAlbum(payload)
+        .then(() => {
+          proxy.$modal.msgSuccess('创建成功')
+          createOpen.value = false
+          getList()
+        })
+        .finally(() => {
+          creating.value = false
+        })
+      return
+    }
+    importAlbumFromDisk({ ...payload, localPath })
+      .then(async res => {
+        const album = res.data?.album
+        const scanLogId = res.data?.scanLogId
         createOpen.value = false
-        getList()
+        creating.value = false
+        await getList()
+        if (scanLogId) {
+          await trackDiskScan(scanLogId, album?.albumId)
+        } else {
+          proxy.$modal.msgSuccess('创建成功')
+        }
       })
-      .finally(() => {
+      .catch(() => {
         creating.value = false
       })
   })
@@ -462,7 +621,7 @@ function submitCreate() {
 
 function getList() {
   loading.value = true
-  listAlbum({ pageNum: 1, pageSize: 200 })
+  return listAlbum({ pageNum: 1, pageSize: 200 })
     .then(res => {
       albumList.value = res.rows || []
     })
@@ -473,6 +632,14 @@ function getList() {
       loading.value = false
     })
 }
+
+onActivated(() => {
+  getList()
+})
+
+onBeforeUnmount(() => {
+  scanAbortController.value?.abort?.()
+})
 
 getList()
 </script>
@@ -496,6 +663,11 @@ getList()
   font-size: 12px;
   line-height: 1.4;
   color: var(--photos-muted);
+}
+
+.album-badge.scanning {
+  min-width: 44px;
+  background: rgba(76, 141, 255, 0.9);
 }
 
 .photos-header {
@@ -822,5 +994,76 @@ getList()
     right: 20px;
     bottom: 24px;
   }
+}
+</style>
+
+<style lang="scss">
+.scan-progress-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.scan-progress-panel {
+  width: min(440px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  padding: 22px 24px 18px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+}
+
+.scan-progress-title {
+  font-size: 17px;
+  font-weight: 650;
+  color: #1a1a1a;
+  margin-bottom: 14px;
+}
+
+.scan-progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #666;
+}
+
+.scan-progress-stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #888;
+}
+
+.scan-progress-current {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scan-progress-tip {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #999;
+  line-height: 1.4;
+}
+
+.scan-fade-enter-active,
+.scan-fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.scan-fade-enter-from,
+.scan-fade-leave-to {
+  opacity: 0;
 }
 </style>
