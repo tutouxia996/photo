@@ -1,0 +1,118 @@
+/* 照片/轨迹地图缩略图聚合标记 */
+.leaflet-div-icon.pmc-marker {
+  background: transparent !important;
+  border: none !important;
+  width: 52px !important;
+  height: 52px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+
+.pmc-wrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  overflow: visible;
+}
+
+.pmc-pin {
+  box-sizing: border-box;
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  background: #dcdfe6;
+}
+
+.pmc-pin img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border: 0;
+  border-radius: 0;
+}
+
+.pmc-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+  color: #606266;
+}
+
+.pmc-badge {
+  position: absolute;
+  z-index: 2;
+  top: -8px;
+  right: -8px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #2f6bff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pmc-video {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 14px;
+}
+
+.pmc-popup {
+  min-width: 220px;
+  max-width: 300px;
+}
+
+.pmc-popup .pmc-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.pmc-popup .pmc-media {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  background: #111;
+  border-radius: 4px;
+}
+
+.pmc-popup .pmc-meta {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.pmc-popup-wrap .leaflet-popup-content-wrapper {
+  border-radius: 8px;
+}
+
+/* 去掉 markercluster 默认饼图样式干扰 */
+.marker-cluster {
+  background: transparent !important;
+}
+
+.marker-cluster div {
+  background: transparent !important;
+}

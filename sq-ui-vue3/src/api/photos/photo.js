@@ -8,6 +8,15 @@ export function listPhoto(query) {
   })
 }
 
+/** 地图点位（含 GPS），用于缩放距离聚合 */
+export function listPhotoMapPoints(query) {
+  return request({
+    url: '/album/photo/mapPoints',
+    method: 'get',
+    params: query
+  })
+}
+
 export function getPhoto(photoId) {
   return request({
     url: '/album/photo/' + photoId,

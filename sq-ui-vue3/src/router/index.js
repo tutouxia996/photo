@@ -108,6 +108,13 @@ export const constantRoutes = [
         name: 'PhotosRecycle',
         hidden: true,
         meta: { title: '回收站', activeMenu: '/photos/index', noCache: true }
+      },
+      {
+        path: 'map',
+        component: () => import('@/views/photos/map'),
+        name: 'PhotosMap',
+        hidden: true,
+        meta: { title: '照片地图', activeMenu: '/photos/index', noCache: true }
       }
     ]
   }

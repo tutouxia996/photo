@@ -24,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.File;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.URLConnection;
@@ -93,6 +94,28 @@ public class BizPhotoController extends BaseController {
                 .orderByDesc(BizPhoto::getShootTime)
                 .orderByDesc(BizPhoto::getPhotoId);
         return getDataTable(photoService.list(wrapper));
+    }
+
+    /**
+     * 地图点位（含 GPS 的正常照片，供前端缩放距离聚合）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @GetMapping("/mapPoints")
+    public AjaxResult mapPoints(@RequestParam(required = false) Long albumId) {
+        if (albumId != null) {
+            BizAlbum album = albumService.getById(albumId);
+            if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+                return error("相册不存在");
+            }
+        }
+        LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                .isNotNull(BizPhoto::getLatitude)
+                .isNotNull(BizPhoto::getLongitude)
+                .eq(albumId != null, BizPhoto::getAlbumId, albumId)
+                .orderByAsc(BizPhoto::getShootTime)
+                .orderByAsc(BizPhoto::getPhotoId);
+        return success(photoService.list(wrapper));
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:query')")
@@ -322,7 +345,32 @@ public class BizPhotoController extends BaseController {
                 remain -= read;
             }
             out.flush();
+        } catch (IOException e) {
+            // 客户端中断（切页、拖进度、关闭标签等）属正常现象，勿上抛以免全局异常处理再写 JSON
+            if (!isClientAbort(e)) {
+                throw e;
+            }
         }
+    }
+
+    private static boolean isClientAbort(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String name = t.getClass().getName();
+            if (name.endsWith("ClientAbortException") || name.endsWith("EofException")) {
+                return true;
+            }
+            String msg = t.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("broken pipe")
+                        || lower.contains("connection reset")
+                        || msg.contains("远程主机强迫关闭")
+                        || msg.contains("你的主机中的软件中止了一个已建立的连接")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static String md5Of(File file) throws Exception {

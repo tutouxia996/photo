@@ -7,6 +7,10 @@
     <div class="photos-toolbar">
       <span class="photos-count">共 {{ albumList.length }} 项</span>
       <div class="photos-tools">
+        <button type="button" class="tool-btn" @click="openPhotoMap">
+          <el-icon><Location /></el-icon>
+          <span>照片地图</span>
+        </button>
         <button type="button" class="tool-btn" @click="openRecycle">
           <el-icon><Delete /></el-icon>
           <span>回收站</span>
@@ -471,6 +475,10 @@ function submitEdit() {
 
 function openRecycle() {
   proxy.$tab.closeOpenPage({ path: '/photos/recycle' })
+}
+
+function openPhotoMap() {
+  proxy.$tab.closeOpenPage({ path: '/photos/map' })
 }
 
 function handleDelete(item) {

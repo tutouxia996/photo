@@ -51,20 +51,32 @@
       </el-table-column>
       <el-table-column label="预览" width="90" align="center">
         <template #default="scope">
-          <div class="thumb-wrap">
-            <el-image
-              style="width:56px;height:56px"
+          <div class="thumb-wrap" @click="openPreview(scope.row)">
+            <template v-if="scope.row.fileType === 2">
+              <img
+                v-if="hasVideoThumb(scope.row)"
+                class="thumb-img"
+                :src="thumbSrc(scope.row)"
+                alt=""
+                @error="markThumbBroken(scope.row)"
+              />
+              <div v-else class="video-thumb-box">
+                <video
+                  class="video-thumb"
+                  :src="originalSrc(scope.row)"
+                  muted
+                  preload="metadata"
+                  playsinline
+                />
+              </div>
+              <span class="thumb-badge">视频</span>
+            </template>
+            <img
+              v-else
+              class="thumb-img"
               :src="thumbSrc(scope.row)"
-              :preview-src-list="previewList(scope.row)"
-              :initial-index="0"
-              preview-teleported
-              fit="cover"
-            >
-              <template #error>
-                <div class="thumb-fallback">{{ scope.row.fileType === 2 ? '视频' : '无图' }}</div>
-              </template>
-            </el-image>
-            <span v-if="scope.row.fileType === 2" class="thumb-badge">视频</span>
+              alt=""
+            />
           </div>
         </template>
       </el-table-column>
@@ -107,10 +119,60 @@
         <el-button @click="uploadOpen = false">取消</el-button>
       </template>
     </el-dialog>
+
+    <!-- 居中预览：保留底部工具栏，禁止拖动，缩放走轻量 DOM transform -->
+    <teleport to="body">
+      <div v-if="previewVisible" class="album-photo-viewer">
+        <button type="button" class="album-photo-viewer__close" title="关闭" @click="closePreview">
+          <el-icon :size="20"><Close /></el-icon>
+        </button>
+        <div
+          class="album-photo-viewer__stage"
+          @wheel.prevent="onPreviewWheel"
+        >
+          <div v-if="previewIsVideo" class="album-photo-viewer__video-wrap">
+            <video
+              class="album-photo-viewer__video"
+              :src="previewUrl"
+              controls
+              autoplay
+              playsinline
+            />
+          </div>
+          <div v-else ref="previewLayerRef" class="album-photo-viewer__layer">
+            <img
+              class="album-photo-viewer__img"
+              :src="previewUrl"
+              :alt="previewName"
+              draggable="false"
+              decoding="async"
+              @load="paintPreviewTransform(false)"
+              @dragstart.prevent
+            />
+          </div>
+        </div>
+        <div v-if="!previewIsVideo" class="album-photo-viewer__toolbar" @click.stop>
+          <button type="button" class="album-photo-viewer__tool" title="缩小" @click="zoomPreview(-1, true)">
+            <el-icon :size="18"><ZoomOut /></el-icon>
+          </button>
+          <span ref="previewZoomLabelRef" class="album-photo-viewer__zoom">100%</span>
+          <button type="button" class="album-photo-viewer__tool" title="放大" @click="zoomPreview(1, true)">
+            <el-icon :size="18"><ZoomIn /></el-icon>
+          </button>
+          <button type="button" class="album-photo-viewer__tool" title="向右旋转" @click="rotatePreview">
+            <el-icon :size="18"><RefreshRight /></el-icon>
+          </button>
+          <button type="button" class="album-photo-viewer__tool" title="重置" @click="resetPreviewTransform">
+            <el-icon :size="18"><FullScreen /></el-icon>
+          </button>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 
 <script setup name="AlbumPhoto">
+import { Close, ZoomIn, ZoomOut, RefreshRight, FullScreen } from '@element-plus/icons-vue'
 import { isExternal } from '@/utils/validate'
 import { listAlbum } from '@/api/album/album'
 import { listPhoto, delPhoto, uploadPhoto } from '@/api/album/photo'
@@ -125,6 +187,23 @@ const ids = ref([])
 const uploadOpen = ref(false)
 const uploadAlbumId = ref(undefined)
 const uploadFile = ref(null)
+const brokenThumbIds = ref(new Set())
+const previewVisible = ref(false)
+const previewUrl = ref('')
+const previewName = ref('')
+const previewIsVideo = ref(false)
+const previewLayerRef = ref()
+const previewZoomLabelRef = ref()
+const previewTransform = { scale: 1, deg: 0 }
+let previewPaintRaf = 0
+let previewWheelRaf = 0
+let previewLabelRaf = 0
+let pendingWheelDelta = 0
+
+const ZOOM_RATE = 1.2
+const MIN_SCALE = 0.2
+const MAX_SCALE = 4
+
 const queryParams = ref({
   pageNum: 1,
   pageSize: 10,
@@ -154,11 +233,118 @@ function originalSrc(item) {
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
 }
 
-/** 视频大图预览用截帧缩略图，不能把 mp4 塞进 el-image */
-function previewList(item) {
-  if (!item?.photoId) return []
-  if (item.fileType === 2) return [thumbSrc(item)]
-  return [originalSrc(item)]
+function hasVideoThumb(item) {
+  if (!item?.photoId || !item.thumbUrl) return false
+  return !brokenThumbIds.value.has(item.photoId)
+}
+
+function markThumbBroken(item) {
+  if (!item?.photoId) return
+  const next = new Set(brokenThumbIds.value)
+  next.add(item.photoId)
+  brokenThumbIds.value = next
+}
+
+function buildPreviewTransformCss() {
+  const { scale, deg } = previewTransform
+  return `translate3d(0,0,0) scale(${scale}) rotate(${deg}deg)`
+}
+
+function syncPreviewZoomLabel() {
+  const el = previewZoomLabelRef.value
+  if (!el) return
+  el.textContent = `${Math.round(previewTransform.scale * 100)}%`
+}
+
+function schedulePreviewZoomLabel() {
+  if (previewLabelRaf) return
+  previewLabelRaf = requestAnimationFrame(() => {
+    previewLabelRaf = 0
+    syncPreviewZoomLabel()
+  })
+}
+
+function paintPreviewTransform(animate = false) {
+  const el = previewLayerRef.value
+  if (!el) return
+  el.style.transition = animate ? 'transform .2s ease-out' : 'none'
+  el.style.transform = buildPreviewTransformCss()
+  schedulePreviewZoomLabel()
+}
+
+function resetPreviewTransform() {
+  previewTransform.scale = 1
+  previewTransform.deg = 0
+  pendingWheelDelta = 0
+  nextTick(() => {
+    paintPreviewTransform(false)
+    syncPreviewZoomLabel()
+  })
+}
+
+function zoomPreview(delta, animate = false) {
+  const next = delta > 0
+    ? previewTransform.scale * ZOOM_RATE
+    : previewTransform.scale / ZOOM_RATE
+  previewTransform.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next))
+  if (animate) paintPreviewTransform(true)
+  else {
+    if (previewPaintRaf) cancelAnimationFrame(previewPaintRaf)
+    previewPaintRaf = requestAnimationFrame(() => {
+      previewPaintRaf = 0
+      paintPreviewTransform(false)
+    })
+  }
+}
+
+function rotatePreview() {
+  previewTransform.deg += 90
+  paintPreviewTransform(true)
+}
+
+function onPreviewWheel(e) {
+  if (previewIsVideo.value) return
+  pendingWheelDelta += e.deltaY < 0 ? 1 : -1
+  if (previewWheelRaf) return
+  previewWheelRaf = requestAnimationFrame(() => {
+    previewWheelRaf = 0
+    const delta = pendingWheelDelta
+    pendingWheelDelta = 0
+    if (!delta) return
+    zoomPreview(delta > 0 ? 1 : -1, false)
+  })
+}
+
+function openPreview(item) {
+  if (!item?.photoId) return
+  const isVideo = item.fileType === 2
+  previewIsVideo.value = isVideo
+  previewUrl.value = originalSrc(item)
+  previewName.value = item.fileName || ''
+  previewVisible.value = true
+  setPreviewPageLock(true)
+  resetPreviewTransform()
+}
+
+function closePreview() {
+  previewVisible.value = false
+  previewUrl.value = ''
+  previewName.value = ''
+  previewIsVideo.value = false
+  previewTransform.scale = 1
+  previewTransform.deg = 0
+  setPreviewPageLock(false)
+}
+
+/** 预览时隔离底层后台页，避免半透明合成导致放大卡顿 */
+function setPreviewPageLock(locked) {
+  const app = document.getElementById('app')
+  if (app) app.style.visibility = locked ? 'hidden' : ''
+  document.body.style.overflow = locked ? 'hidden' : ''
+}
+
+function onPreviewKeydown(e) {
+  if (e.key === 'Escape' && previewVisible.value) closePreview()
 }
 
 function loadAlbums() {
@@ -222,6 +408,17 @@ function submitUpload() {
   })
 }
 
+onMounted(() => {
+  window.addEventListener('keydown', onPreviewKeydown)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onPreviewKeydown)
+  setPreviewPageLock(false)
+  if (previewPaintRaf) cancelAnimationFrame(previewPaintRaf)
+  if (previewWheelRaf) cancelAnimationFrame(previewWheelRaf)
+  if (previewLabelRaf) cancelAnimationFrame(previewLabelRaf)
+})
+
 loadAlbums().finally(() => getList())
 </script>
 
@@ -231,18 +428,31 @@ loadAlbums().finally(() => getList())
   width: 56px;
   height: 56px;
   margin: 0 auto;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #f5f5f5;
 }
 
-.thumb-fallback {
+.thumb-img {
   width: 56px;
   height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f5f5f5;
-  color: #999;
-  font-size: 12px;
-  border-radius: 4px;
+  object-fit: cover;
+  display: block;
+}
+
+.video-thumb-box {
+  width: 56px;
+  height: 56px;
+  background: #111;
+}
+
+.video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
 }
 
 .thumb-badge {
@@ -256,5 +466,125 @@ loadAlbums().finally(() => getList())
   font-size: 10px;
   line-height: 16px;
   pointer-events: none;
+}
+</style>
+
+<style lang="scss">
+/* 与相册详情一致：不透明白底，避免半透明叠加后台表格导致放大卡顿 */
+.album-photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  background: #fff;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.album-photo-viewer__close {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 2;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06);
+  color: #333;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.12);
+  }
+}
+
+.album-photo-viewer__stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: default;
+  contain: layout style;
+}
+
+.album-photo-viewer__layer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate3d(0, 0, 0);
+  transform-origin: center center;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.album-photo-viewer__img {
+  max-width: min(92%, 1400px);
+  max-height: min(86%, 86vh);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.album-photo-viewer__video-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.album-photo-viewer__video {
+  max-width: min(92%, 1400px);
+  max-height: min(86%, 86vh);
+  width: auto;
+  height: auto;
+  outline: none;
+  background: #000;
+}
+
+.album-photo-viewer__toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 22px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+}
+
+.album-photo-viewer__tool {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+}
+
+.album-photo-viewer__zoom {
+  min-width: 52px;
+  text-align: center;
+  font-size: 13px;
+  color: #fff;
 }
 </style>

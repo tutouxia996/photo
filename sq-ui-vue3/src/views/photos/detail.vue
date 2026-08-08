@@ -35,6 +35,10 @@
         </div>
       </div>
       <div class="header-right">
+        <el-button round plain @click="openPhotoMap">
+          <el-icon class="mr4"><Location /></el-icon>
+          照片地图
+        </el-button>
         <el-button round type="primary" plain @click="triggerUpload">
           <el-icon class="mr4"><Plus /></el-icon>
           添加照片
@@ -402,24 +406,25 @@
           <div
             v-if="currentMedia && currentMedia.fileType !== 2"
             class="media-canvas"
-            :class="{ dragging: imageDragging }"
             @wheel.prevent="onImageWheel"
-            @pointerdown="onImagePointerDown"
             @dblclick.prevent="onImageDblClick"
             @dragstart.prevent
           >
-            <img
-              ref="mediaImageRef"
-              class="media-image"
-              :class="{ 'is-original': imageMode === 'original' }"
-              :src="originalSrc(currentMedia)"
-              :alt="currentMedia.fileName"
-              draggable="false"
-              decoding="async"
-              @load="paintImageTransform(false)"
-              @click.stop
-              @dragstart.prevent
-            />
+            <!-- 变换挂在轻量 wrapper 上，避免直接缩放大图位图导致卡顿 -->
+            <div ref="mediaImageLayerRef" class="media-image-layer">
+              <img
+                ref="mediaImageRef"
+                class="media-image"
+                :class="{ 'is-original': imageMode === 'original' }"
+                :src="originalSrc(currentMedia)"
+                :alt="currentMedia.fileName"
+                draggable="false"
+                decoding="async"
+                @load="paintImageTransform(false)"
+                @click.stop
+                @dragstart.prevent
+              />
+            </div>
           </div>
           <div v-else-if="currentMedia" class="media-video-wrap">
             <video
@@ -441,7 +446,7 @@
             <button type="button" class="media-tool-btn" title="缩小" @click="zoomImage(-1, true)">
               <el-icon :size="18"><ZoomOut /></el-icon>
             </button>
-            <span class="media-zoom-label">{{ imageZoomPercent }}%</span>
+            <span ref="imageZoomLabelRef" class="media-zoom-label">100%</span>
             <button type="button" class="media-tool-btn" title="放大" @click="zoomImage(1, true)">
               <el-icon :size="18"><ZoomIn /></el-icon>
             </button>
@@ -705,25 +710,21 @@ const detailLocationText = computed(() => {
 })
 const imageMode = ref('contain') // contain | original
 const mediaImageRef = ref()
-const imageZoomPercent = ref(100)
-const imageDragging = ref(false)
+const mediaImageLayerRef = ref()
+const imageZoomLabelRef = ref()
 /** 非响应式，交互时直接改 DOM，避免 Vue 每帧重渲染导致高倍缩放卡顿 */
 const imageTransform = {
   scale: 1,
-  deg: 0,
-  offsetX: 0,
-  offsetY: 0
+  deg: 0
 }
-let imageDragPointerId = null
-let imageDragCleanup = null
 let imagePaintRaf = 0
 let wheelZoomRaf = 0
 let pendingWheelDelta = 0
+let zoomLabelRaf = 0
 
 const IMAGE_ZOOM_RATE = 1.2
 const IMAGE_MIN_SCALE = 0.2
-const IMAGE_MAX_SCALE = 5
-const IMAGE_DRAG_THRESHOLD = 3
+const IMAGE_MAX_SCALE = 4
 
 const albumId = computed(() => route.params.albumId)
 
@@ -810,6 +811,13 @@ function onThumbError(item) {
 function goBack() {
   // 返回列表时关闭当前详情页签，原地切回相册列表
   proxy.$tab.closeOpenPage({ path: '/photos/index' })
+}
+
+function openPhotoMap() {
+  proxy.$tab.closeOpenPage({
+    path: '/photos/map',
+    query: { albumId: albumId.value }
+  })
 }
 
 function handleFilterType(cmd) {
@@ -1352,32 +1360,31 @@ function onItemDblClick(item) {
 }
 
 function buildImageTransformCss() {
-  const { scale, deg, offsetX, offsetY } = imageTransform
-  let translateX = offsetX / scale
-  let translateY = offsetY / scale
-  switch (((deg % 360) + 360) % 360) {
-    case 90:
-      [translateX, translateY] = [translateY, -translateX]
-      break
-    case 180:
-      [translateX, translateY] = [-translateX, -translateY]
-      break
-    case 270:
-      [translateX, translateY] = [-translateY, translateX]
-      break
-  }
-  return `translate3d(0,0,0) scale(${scale}) rotate(${deg}deg) translate(${translateX}px, ${translateY}px)`
+  const { scale, deg } = imageTransform
+  // 仅缩放/旋转，始终由 flex 居中，不允许平移拖动
+  return `translate3d(0,0,0) scale(${scale}) rotate(${deg}deg)`
+}
+
+function syncZoomLabel() {
+  const el = imageZoomLabelRef.value
+  if (!el) return
+  el.textContent = `${Math.round(imageTransform.scale * 100)}%`
+}
+
+function scheduleZoomLabel() {
+  if (zoomLabelRaf) return
+  zoomLabelRaf = requestAnimationFrame(() => {
+    zoomLabelRaf = 0
+    syncZoomLabel()
+  })
 }
 
 function paintImageTransform(animate = false) {
-  const el = mediaImageRef.value
+  const el = mediaImageLayerRef.value
   if (!el) return
   el.style.transition = animate ? 'transform .2s ease-out' : 'none'
   el.style.transform = buildImageTransformCss()
-  const nextPercent = Math.round(imageTransform.scale * 100)
-  if (imageZoomPercent.value !== nextPercent) {
-    imageZoomPercent.value = nextPercent
-  }
+  scheduleZoomLabel()
 }
 
 function schedulePaintImage(animate = false) {
@@ -1392,15 +1399,15 @@ function resetImageTransform() {
   imageMode.value = 'contain'
   imageTransform.scale = 1
   imageTransform.deg = 0
-  imageTransform.offsetX = 0
-  imageTransform.offsetY = 0
-  imageZoomPercent.value = 100
   pendingWheelDelta = 0
   if (wheelZoomRaf) {
     cancelAnimationFrame(wheelZoomRaf)
     wheelZoomRaf = 0
   }
-  nextTick(() => paintImageTransform(false))
+  nextTick(() => {
+    paintImageTransform(false)
+    syncZoomLabel()
+  })
 }
 
 function openViewer(item) {
@@ -1411,7 +1418,6 @@ function openViewer(item) {
 }
 
 function closeMedia() {
-  stopImageDrag()
   detailOpen.value = false
   mediaVisible.value = false
   resetImageTransform()
@@ -1420,7 +1426,6 @@ function closeMedia() {
 function shiftMedia(step) {
   const next = mediaIndex.value + step
   if (next < 0 || next >= photoList.value.length) return
-  stopImageDrag()
   mediaIndex.value = next
   resetImageTransform()
 }
@@ -1446,8 +1451,6 @@ function toggleImageMode() {
   } else {
     imageMode.value = 'contain'
     imageTransform.scale = 1
-    imageTransform.offsetX = 0
-    imageTransform.offsetY = 0
   }
   nextTick(() => paintImageTransform(false))
 }
@@ -1464,90 +1467,8 @@ function onImageWheel(e) {
   })
 }
 
-function stopImageDrag() {
-  if (imageDragCleanup) {
-    imageDragCleanup()
-    imageDragCleanup = null
-  }
-  imageDragPointerId = null
-  imageDragging.value = false
-}
-
-function onImagePointerDown(e) {
-  if (e.button !== 0 && e.pointerType === 'mouse') return
-  // 双击的第二次按下不启动拖拽，避免粘连
-  if (e.detail > 1) return
-  e.preventDefault()
-  stopImageDrag()
-
-  const startX = e.clientX
-  const startY = e.clientY
-  const originOffsetX = imageTransform.offsetX
-  const originOffsetY = imageTransform.offsetY
-  const pointerId = e.pointerId
-  imageDragPointerId = pointerId
-  let active = false
-  let moveRaf = 0
-  let latestX = startX
-  let latestY = startY
-
-  const target = e.currentTarget
-  try {
-    target?.setPointerCapture?.(pointerId)
-  } catch (_) {}
-
-  const onMove = (ev) => {
-    if (imageDragPointerId !== pointerId) return
-    latestX = ev.clientX
-    latestY = ev.clientY
-    if (moveRaf) return
-    moveRaf = requestAnimationFrame(() => {
-      moveRaf = 0
-      const dx = latestX - startX
-      const dy = latestY - startY
-      if (!active) {
-        if (dx * dx + dy * dy < IMAGE_DRAG_THRESHOLD * IMAGE_DRAG_THRESHOLD) return
-        active = true
-        imageDragging.value = true
-      }
-      imageTransform.offsetX = originOffsetX + dx
-      imageTransform.offsetY = originOffsetY + dy
-      paintImageTransform(false)
-    })
-  }
-
-  const onEnd = (ev) => {
-    if (ev && ev.pointerId != null && ev.pointerId !== pointerId) return
-    if (moveRaf) {
-      cancelAnimationFrame(moveRaf)
-      moveRaf = 0
-    }
-    try {
-      target?.releasePointerCapture?.(pointerId)
-    } catch (_) {}
-    stopImageDrag()
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onEnd)
-  window.addEventListener('pointercancel', onEnd)
-  window.addEventListener('blur', onEnd)
-
-  imageDragCleanup = () => {
-    if (moveRaf) {
-      cancelAnimationFrame(moveRaf)
-      moveRaf = 0
-    }
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onEnd)
-    window.removeEventListener('pointercancel', onEnd)
-    window.removeEventListener('blur', onEnd)
-  }
-}
-
 function onImageDblClick(e) {
   e.preventDefault()
-  stopImageDrag()
   // 清除双击产生的文本选区，避免白底竖线残影
   window.getSelection?.()?.removeAllRanges?.()
   toggleImageMode()
@@ -1852,13 +1773,7 @@ watch(currentMedia, (item) => {
 
 watch(detailOpen, () => {
   // 抽屉开合后重绘，让图片适配收缩后的展示区
-  nextTick(() => {
-    if (imageMode.value === 'contain') {
-      imageTransform.offsetX = 0
-      imageTransform.offsetY = 0
-    }
-    paintImageTransform(true)
-  })
+  nextTick(() => paintImageTransform(true))
 })
 
 watch(
@@ -1888,7 +1803,7 @@ onBeforeUnmount(() => {
   if (clickTimer.value) clearTimeout(clickTimer.value)
   if (imagePaintRaf) cancelAnimationFrame(imagePaintRaf)
   if (wheelZoomRaf) cancelAnimationFrame(wheelZoomRaf)
-  stopImageDrag()
+  if (zoomLabelRaf) cancelAnimationFrame(zoomLabelRaf)
   closeCtxMenu()
 })
 
@@ -2363,21 +2278,24 @@ init()
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  cursor: grab;
+  cursor: default;
   z-index: 1;
-  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  contain: strict;
+  contain: layout style;
+}
 
-  &.dragging {
-    cursor: grabbing;
-  }
+.media-image-layer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate3d(0, 0, 0);
+  transform-origin: center center;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .media-image {
-  max-width: min(92%, 1400px);
-  max-height: min(86%, 86vh);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -2387,14 +2305,13 @@ init()
   -webkit-user-select: none;
   -webkit-user-drag: none;
   pointer-events: none;
-  will-change: transform;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  transition: max-width 0.22s ease, max-height 0.22s ease;
+  /* 限制显示尺寸，减轻高倍 scale 卡顿 */
+  max-width: min(92vw, 1200px);
+  max-height: min(80vh, 800px);
 
   &.is-original {
-    max-width: none;
-    max-height: none;
+    max-width: min(92vw, 2400px);
+    max-height: min(86vh, 1600px);
   }
 }
 
@@ -2431,9 +2348,8 @@ init()
   gap: 4px;
   padding: 6px 10px;
   border-radius: 22px;
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(0, 0, 0, 0.78);
   color: #fff;
-  backdrop-filter: blur(4px);
 }
 
 .media-tool-btn {
