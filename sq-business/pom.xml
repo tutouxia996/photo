@@ -66,6 +66,20 @@
             <version>3.21.8</version>
         </dependency>
 
+        <!-- 缩略图 -->
+        <dependency>
+            <groupId>net.coobird</groupId>
+            <artifactId>thumbnailator</artifactId>
+            <version>0.4.20</version>
+        </dependency>
+
+        <!-- 图片 EXIF 解析 -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>2.18.0</version>
+        </dependency>
+
     </dependencies>
 
 </project>

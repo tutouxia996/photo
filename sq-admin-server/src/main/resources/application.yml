@@ -124,3 +124,13 @@ xss:
   excludes: /system/notice
   # 匹配链接
   urlPatterns: /system/*,/monitor/*,/tool/*
+
+# 相册业务
+album:
+  uploadPath: D:/uploadPath/album/upload
+  thumbPath: D:/uploadPath/album/cache/thumb
+  localRoot: D:/uploadPath/album
+  thumb:
+    smallWidth: 300
+    mediumWidth: 800
+    largeWidth: 1920

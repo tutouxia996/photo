@@ -94,6 +94,13 @@ export const constantRoutes = [
         component: () => import('@/views/photos/index'),
         name: 'PhotosAlbum',
         meta: { title: '相册', icon: 'example' }
+      },
+      {
+        path: 'detail/:albumId(\\d+)',
+        component: () => import('@/views/photos/detail'),
+        name: 'PhotosAlbumDetail',
+        hidden: true,
+        meta: { title: '相册详情', activeMenu: '/photos/index', noCache: true }
       }
     ]
   }
