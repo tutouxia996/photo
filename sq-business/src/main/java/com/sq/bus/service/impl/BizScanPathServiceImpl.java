@@ -118,13 +118,19 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             try {
                 String md5 = md5Of(file);
                 BizPhoto exists = photoService.findByMd5(md5);
-                if (exists != null && !fullScan) {
-                    counter.skipped++;
-                    continue;
-                }
-                if (exists != null && fullScan) {
-                    counter.skipped++;
-                    continue;
+                if (exists != null) {
+                    Long existsAlbumId = exists.getAlbumId();
+                    boolean sameAlbum = existsAlbumId != null
+                            && existsAlbumId.equals(scanPath.getDefaultAlbumId());
+                    boolean albumAlive = existsAlbumId != null
+                            && albumService.getById(existsAlbumId) != null;
+                    if (sameAlbum || albumAlive) {
+                        // 已在当前/其他有效相册中：按内容去重跳过
+                        counter.skipped++;
+                        continue;
+                    }
+                    // 相册已删留下的孤儿记录，清理后允许重新导入
+                    photoService.removeById(exists.getPhotoId());
                 }
                 importFile(file, scanPath, md5, IMAGE_EXT.contains(ext) ? 1 : 2);
                 counter.created++;

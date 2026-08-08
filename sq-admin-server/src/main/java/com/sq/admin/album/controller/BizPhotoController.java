@@ -121,8 +121,14 @@ public class BizPhotoController extends BaseController {
         String md5 = md5Of(dest);
         BizPhoto exists = photoService.findByMd5(md5);
         if (exists != null) {
-            dest.delete();
-            return error("文件已存在，跳过重复上传");
+            boolean albumAlive = exists.getAlbumId() != null
+                    && albumService.getById(exists.getAlbumId()) != null;
+            if (albumAlive) {
+                dest.delete();
+                return error("文件已存在，跳过重复上传");
+            }
+            // 相册已删留下的孤儿记录，清理后允许重新上传
+            photoService.removeById(exists.getPhotoId());
         }
 
         ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);

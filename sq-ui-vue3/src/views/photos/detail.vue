@@ -1,5 +1,5 @@
 <template>
-  <div class="album-detail" v-loading="loading">
+  <div class="album-detail" v-loading="loading" @contextmenu="onPageContextMenu" @click="closeCtxMenu">
     <header class="detail-header">
       <div class="header-left">
         <button type="button" class="back-btn" title="返回" @click="goBack">
@@ -39,6 +39,16 @@
           type="file"
           accept="image/*,video/*"
           multiple
+          class="hidden-input"
+          @change="onFilesSelected"
+        />
+        <input
+          ref="folderInputRef"
+          type="file"
+          accept="image/*,video/*"
+          multiple
+          webkitdirectory
+          directory
           class="hidden-input"
           @change="onFilesSelected"
         />
@@ -106,6 +116,7 @@
         :class="{ selected: isSelected(item.photoId) }"
         @click="onItemClick(item, $event)"
         @dblclick.prevent="onItemDblClick(item)"
+        @contextmenu.prevent.stop="onItemContextMenu(item, $event)"
       >
         <div class="photo-inner">
           <template v-if="item.fileType === 2">
@@ -178,6 +189,77 @@
       </transition>
     </teleport>
 
+    <!-- 右键菜单：空白 / 图片视频 -->
+    <teleport to="body">
+      <div
+        v-if="ctxMenu.visible"
+        class="photos-ctx-menu"
+        :class="'type-' + ctxMenu.type"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <template v-if="ctxMenu.type === 'blank'">
+          <button type="button" class="ctx-item" @click="onCtxUploadFiles">
+            <el-icon :size="18"><Picture /></el-icon>
+            <span>上传照片/视频</span>
+          </button>
+          <button type="button" class="ctx-item" @click="onCtxUploadFolder">
+            <el-icon :size="18"><FolderOpened /></el-icon>
+            <span>上传文件夹</span>
+          </button>
+          <div class="ctx-divider"></div>
+          <button type="button" class="ctx-item" @click="onCtxCreateAlbum">
+            <el-icon :size="18"><Files /></el-icon>
+            <span>创建相册</span>
+          </button>
+          <div class="ctx-divider"></div>
+          <button type="button" class="ctx-item" @click="onCtxRefresh">
+            <el-icon :size="18"><Refresh /></el-icon>
+            <span>刷新页面</span>
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" class="ctx-item" @click="onItemCtxDownload">下载</button>
+          <div class="ctx-divider"></div>
+          <button type="button" class="ctx-item" @click="onItemCtxAddTo">添加到...</button>
+          <button type="button" class="ctx-item" @click="onItemCtxDetail">查看详细信息</button>
+          <button type="button" class="ctx-item" @click="onItemCtxSetCover">设置为相册封面</button>
+          <div class="ctx-divider"></div>
+          <button type="button" class="ctx-item danger" @click="onItemCtxRemoveFromAlbum">从当前相册移除</button>
+          <button type="button" class="ctx-item danger" @click="onItemCtxTrash">放入回收站</button>
+        </template>
+      </div>
+    </teleport>
+
+    <el-dialog
+      v-model="createAlbumOpen"
+      title="创建相册"
+      width="420px"
+      append-to-body
+      :z-index="4200"
+      @closed="resetCreateAlbumForm"
+    >
+      <el-form ref="createAlbumFormRef" :model="createAlbumForm" :rules="createAlbumRules" label-width="88px">
+        <el-form-item label="相册名称" prop="albumName">
+          <el-input v-model="createAlbumForm.albumName" maxlength="50" placeholder="请输入相册名称" />
+        </el-form-item>
+        <el-form-item label="描述" prop="albumDesc">
+          <el-input v-model="createAlbumForm.albumDesc" type="textarea" :rows="3" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="公开状态" prop="isPublic">
+          <el-radio-group v-model="createAlbumForm.isPublic">
+            <el-radio :value="1">公开</el-radio>
+            <el-radio :value="0">私有</el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createAlbumOpen = false">取消</el-button>
+        <el-button type="primary" :loading="creatingAlbumPage" @click="submitCreateAlbum">确定</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="addToOpen"
       title="添加到"
@@ -185,6 +267,7 @@
       append-to-body
       align-center
       class="add-to-dialog"
+      :z-index="4100"
       destroy-on-close
       @open="onAddToOpen"
       @closed="resetAddToState"
@@ -250,102 +333,208 @@
 
     <!-- 图片/视频预览（白底；点击空白不关闭，仅返回按钮 / Esc） -->
     <teleport to="body">
-      <div v-if="mediaVisible" class="media-viewer">
+      <div v-if="mediaVisible" class="media-viewer" :class="{ 'detail-open': detailOpen }">
+        <!-- 媒体展示区：抽屉打开时收缩，图片与底部工具栏随之适配 -->
+        <div class="media-stage">
+          <button
+            v-if="mediaIndex > 0"
+            type="button"
+            class="media-nav prev"
+            title="上一张"
+            @click.stop="shiftMedia(-1)"
+          >
+            <el-icon :size="22"><ArrowLeft /></el-icon>
+          </button>
+          <button
+            v-if="mediaIndex < photoList.length - 1"
+            type="button"
+            class="media-nav next"
+            title="下一张"
+            @click.stop="shiftMedia(1)"
+          >
+            <el-icon :size="22"><ArrowRight /></el-icon>
+          </button>
+
+          <div
+            v-if="currentMedia && currentMedia.fileType !== 2"
+            class="media-canvas"
+            :class="{ dragging: imageDragging }"
+            @wheel.prevent="onImageWheel"
+            @pointerdown="onImagePointerDown"
+            @dblclick.prevent="onImageDblClick"
+            @dragstart.prevent
+          >
+            <img
+              ref="mediaImageRef"
+              class="media-image"
+              :class="{ 'is-original': imageMode === 'original' }"
+              :src="originalSrc(currentMedia)"
+              :alt="currentMedia.fileName"
+              draggable="false"
+              decoding="async"
+              @load="paintImageTransform(false)"
+              @click.stop
+              @dragstart.prevent
+            />
+          </div>
+          <div v-else-if="currentMedia" class="media-video-wrap">
+            <video
+              :key="currentMedia.photoId"
+              class="media-video"
+              :src="originalSrc(currentMedia)"
+              controls
+              autoplay
+              playsinline
+              @click.stop
+            />
+          </div>
+
+          <div
+            v-if="currentMedia && currentMedia.fileType !== 2"
+            class="media-toolbar"
+            @click.stop
+          >
+            <button type="button" class="media-tool-btn" title="缩小" @click="zoomImage(-1, true)">
+              <el-icon :size="18"><ZoomOut /></el-icon>
+            </button>
+            <span class="media-zoom-label">{{ imageZoomPercent }}%</span>
+            <button type="button" class="media-tool-btn" title="放大" @click="zoomImage(1, true)">
+              <el-icon :size="18"><ZoomIn /></el-icon>
+            </button>
+            <button type="button" class="media-tool-btn" title="向右旋转" @click="rotateImage">
+              <el-icon :size="18"><RefreshRight /></el-icon>
+            </button>
+            <button type="button" class="media-tool-btn" title="切换原始尺寸" @click="toggleImageMode">
+              <el-icon :size="18">
+                <FullScreen v-if="imageMode === 'contain'" />
+                <ScaleToOriginal v-else />
+              </el-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <!-- 预览顶栏按钮独立层级，打开抽屉时位置不变且可点 -->
+    <teleport to="body">
+      <template v-if="mediaVisible">
         <button type="button" class="media-close" title="返回" @click="closeMedia">
           <el-icon :size="22"><ArrowLeft /></el-icon>
         </button>
-
         <div class="media-actions">
-          <button type="button" class="media-action-btn" title="下载">
+          <button type="button" class="media-action-btn" title="下载" @click.stop="onMediaDownload">
             <el-icon :size="20"><Download /></el-icon>
           </button>
-          <button type="button" class="media-action-btn" title="添加到...">
+          <button type="button" class="media-action-btn" title="添加到..." @click.stop="onMediaAddTo">
             <el-icon :size="20"><FolderAdd /></el-icon>
           </button>
-          <button type="button" class="media-action-btn" title="删除">
+          <button type="button" class="media-action-btn" title="删除" @click.stop="onMediaDelete">
             <el-icon :size="20"><Delete /></el-icon>
           </button>
-          <button type="button" class="media-action-btn" title="查看详细信息">
+          <button
+            type="button"
+            class="media-action-btn"
+            :class="{ active: detailOpen }"
+            title="查看详细信息"
+            @click.stop="onMediaDetail"
+          >
             <el-icon :size="20"><InfoFilled /></el-icon>
           </button>
         </div>
+      </template>
+    </teleport>
 
-        <button
-          v-if="mediaIndex > 0"
-          type="button"
-          class="media-nav prev"
-          title="上一张"
-          @click.stop="shiftMedia(-1)"
-        >
-          <el-icon :size="22"><ArrowLeft /></el-icon>
-        </button>
-        <button
-          v-if="mediaIndex < photoList.length - 1"
-          type="button"
-          class="media-nav next"
-          title="下一张"
-          @click.stop="shiftMedia(1)"
-        >
-          <el-icon :size="22"><ArrowRight /></el-icon>
-        </button>
-
-        <div
-          v-if="currentMedia && currentMedia.fileType !== 2"
-          class="media-canvas"
-          :class="{ dragging: imageDragging }"
-          @wheel.prevent="onImageWheel"
-          @pointerdown="onImagePointerDown"
-          @dblclick.prevent="onImageDblClick"
-          @dragstart.prevent
-        >
-          <img
-            ref="mediaImageRef"
-            class="media-image"
-            :class="{ 'is-original': imageMode === 'original' }"
-            :src="originalSrc(currentMedia)"
-            :alt="currentMedia.fileName"
-            draggable="false"
-            decoding="async"
-            @load="paintImageTransform(false)"
-            @click.stop
-            @dragstart.prevent
-          />
-        </div>
-        <video
-          v-else-if="currentMedia"
-          :key="currentMedia.photoId"
-          class="media-video"
-          :src="originalSrc(currentMedia)"
-          controls
-          autoplay
-          playsinline
+    <!-- 详细信息右侧面板：避开顶部操作栏，仅在下方区域弹出 -->
+    <teleport to="body">
+      <transition name="detail-panel">
+        <aside
+          v-if="detailOpen && detailPhoto"
+          class="photo-detail-panel"
           @click.stop
-        />
+        >
+          <div class="photo-detail-album">
+            <h3 class="detail-section-title">所属相册</h3>
+            <div class="detail-album-row">
+              <button type="button" class="album-tag" @click="goCurrentAlbumFromDetail">
+                {{ album.albumName || '相册' }}
+              </button>
+              <button type="button" class="album-tag ghost" @click="onDetailAddTo">添加到...</button>
+            </div>
+          </div>
 
-        <div v-if="currentMedia && currentMedia.fileType !== 2" class="media-toolbar" @click.stop>
-          <button type="button" class="media-tool-btn" title="缩小" @click="zoomImage(-1, true)">
-            <el-icon :size="18"><ZoomOut /></el-icon>
-          </button>
-          <span class="media-zoom-label">{{ imageZoomPercent }}%</span>
-          <button type="button" class="media-tool-btn" title="放大" @click="zoomImage(1, true)">
-            <el-icon :size="18"><ZoomIn /></el-icon>
-          </button>
-          <button type="button" class="media-tool-btn" title="向右旋转" @click="rotateImage">
-            <el-icon :size="18"><RefreshRight /></el-icon>
-          </button>
-          <button type="button" class="media-tool-btn" title="切换原始尺寸" @click="toggleImageMode">
-            <el-icon :size="18">
-              <FullScreen v-if="imageMode === 'contain'" />
-              <ScaleToOriginal v-else />
-            </el-icon>
-          </button>
-        </div>
-      </div>
+          <div class="photo-detail-info">
+            <h3 class="detail-section-title">详细信息</h3>
+            <div class="photo-detail-list">
+              <div class="photo-detail-row">
+                <span class="label">名称</span>
+                <span class="value">{{ detailPhoto.fileName || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">大小</span>
+                <span class="value">{{ formatFileSize(detailPhoto.fileSize) }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">类型</span>
+                <span class="value">{{ detailPhoto.fileType === 2 ? '视频' : '图片' }}</span>
+              </div>
+              <div v-if="detailPhoto.fileType === 2" class="photo-detail-row">
+                <span class="label">时长</span>
+                <span class="value">{{ formatDuration(detailPhoto.duration) || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">文件位置</span>
+                <span class="value">相册</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">创建时间</span>
+                <span class="value">{{ formatDetailTime(detailPhoto.createTime) }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">修改时间</span>
+                <span class="value">{{ formatDetailTime(detailPhoto.updateTime || detailPhoto.shootTime || detailPhoto.createTime) }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">拍摄时间</span>
+                <span class="value">{{ formatDetailTime(detailPhoto.shootTime) }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">相机</span>
+                <span class="value">{{ detailPhoto.cameraModel || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">镜头</span>
+                <span class="value">{{ detailPhoto.lensInfo || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">光圈</span>
+                <span class="value">{{ detailPhoto.aperture || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">快门</span>
+                <span class="value">{{ detailPhoto.shutterSpeed || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">ISO</span>
+                <span class="value">{{ detailPhoto.iso ?? '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">焦距</span>
+                <span class="value">{{ detailPhoto.focalLength || '-' }}</span>
+              </div>
+              <div class="photo-detail-row">
+                <span class="label">位置</span>
+                <span class="value">{{ detailLocationText }}</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </transition>
     </teleport>
   </div>
 </template>
 
 <script setup name="PhotosAlbumDetail">
+import { ElMessageBox } from 'element-plus'
 import { isExternal } from '@/utils/validate'
 import { getToken } from '@/utils/auth'
 import { saveAs } from 'file-saver'
@@ -355,7 +544,6 @@ import { listPhoto, uploadPhoto, delPhoto, updatePhoto } from '@/api/photos/phot
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
-const router = useRouter()
 
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -375,7 +563,22 @@ const editingDesc = ref(false)
 const descDraft = ref('')
 const descInputRef = ref()
 const fileInputRef = ref()
+const folderInputRef = ref()
 const mediaVisible = ref(false)
+const ctxMenu = reactive({ visible: false, x: 0, y: 0, type: 'blank', photoId: null })
+const detailOpen = ref(false)
+const detailPhoto = ref(null)
+const createAlbumOpen = ref(false)
+const creatingAlbumPage = ref(false)
+const createAlbumFormRef = ref()
+const createAlbumForm = reactive({
+  albumName: '',
+  albumDesc: '',
+  isPublic: 1
+})
+const createAlbumRules = {
+  albumName: [{ required: true, message: '请输入相册名称', trigger: 'blur' }]
+}
 const mediaIndex = ref(0)
 const uploading = ref(false)
 const clickTimer = ref(null)
@@ -392,6 +595,19 @@ const newAlbumName = ref('未命名')
 const newAlbumInputRef = ref()
 
 const canSubmitAddTo = computed(() => !!targetAlbumId.value && !creatingAlbum.value && !addingTo.value)
+
+const ctxTargetPhoto = computed(() =>
+  photoList.value.find(p => p.photoId === ctxMenu.photoId) || null
+)
+
+const detailLocationText = computed(() => {
+  const p = detailPhoto.value
+  if (!p) return '-'
+  const parts = [p.province, p.city, p.district, p.address].filter(Boolean)
+  if (parts.length) return parts.join(' ')
+  if (p.latitude != null && p.longitude != null) return `${p.latitude}, ${p.longitude}`
+  return '-'
+})
 const imageMode = ref('contain') // contain | original
 const mediaImageRef = ref()
 const imageZoomPercent = ref(100)
@@ -497,7 +713,8 @@ function onThumbError(item) {
 }
 
 function goBack() {
-  router.push('/photos/index')
+  // 返回列表时关闭当前详情页签，原地切回相册列表
+  proxy.$tab.closeOpenPage({ path: '/photos/index' })
 }
 
 function handleFilterType(cmd) {
@@ -579,14 +796,31 @@ function saveDesc() {
   })
 }
 
+function isMediaFile(file) {
+  const type = file?.type || ''
+  if (type.startsWith('image/') || type.startsWith('video/')) return true
+  const name = String(file?.name || '').toLowerCase()
+  return /\.(jpe?g|png|gif|webp|bmp|heic|heif|mp4|mov|avi|mkv|webm|m4v)$/i.test(name)
+}
+
 function triggerUpload() {
+  closeCtxMenu()
   fileInputRef.value?.click?.()
 }
 
+function triggerFolderUpload() {
+  closeCtxMenu()
+  folderInputRef.value?.click?.()
+}
+
 function onFilesSelected(e) {
-  const files = Array.from(e.target.files || [])
+  const raw = Array.from(e.target.files || [])
   e.target.value = ''
-  if (!files.length) return
+  const files = raw.filter(isMediaFile)
+  if (!files.length) {
+    if (raw.length) proxy.$modal.msgWarning('所选内容中没有可上传的照片或视频')
+    return
+  }
   uploading.value = true
   const tasks = files.map(file => {
     const form = new FormData()
@@ -605,6 +839,281 @@ function onFilesSelected(e) {
     .finally(() => {
       uploading.value = false
     })
+}
+
+function closeCtxMenu() {
+  ctxMenu.visible = false
+  ctxMenu.type = 'blank'
+  ctxMenu.photoId = null
+}
+
+function positionCtxMenu(e, menuW = 220, menuH = 220) {
+  const pad = 8
+  let x = e.clientX
+  let y = e.clientY
+  if (x + menuW + pad > window.innerWidth) x = window.innerWidth - menuW - pad
+  if (y + menuH + pad > window.innerHeight) y = window.innerHeight - menuH - pad
+  ctxMenu.x = Math.max(pad, x)
+  ctxMenu.y = Math.max(pad, y)
+  ctxMenu.visible = true
+}
+
+function onPageContextMenu(e) {
+  e.preventDefault()
+  const t = e.target
+  // 仅空白区域弹出；点在缩略图/控件/弹层上不弹出
+  if (
+    t.closest?.(
+      '.photo-cell, .detail-header, .detail-toolbar, .selection-bar, .photos-ctx-menu, .el-dialog, .el-overlay, .media-viewer, button, a, input, textarea, .el-button, .el-dropdown'
+    )
+  ) {
+    closeCtxMenu()
+    return
+  }
+  ctxMenu.type = 'blank'
+  ctxMenu.photoId = null
+  positionCtxMenu(e, 220, 200)
+}
+
+function onItemContextMenu(item, e) {
+  // 未选中则单选当前项；已在多选中则保持选中集合
+  if (!isSelected(item.photoId)) {
+    selectedIds.value = [item.photoId]
+    lastAnchorId.value = item.photoId
+  }
+  ctxMenu.type = 'item'
+  ctxMenu.photoId = item.photoId
+  positionCtxMenu(e, 200, 280)
+}
+
+function formatFileSize(size) {
+  const n = Number(size)
+  if (!n || Number.isNaN(n)) return '-'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function onItemCtxDownload() {
+  closeCtxMenu()
+  downloadSelected()
+}
+
+function onItemCtxAddTo() {
+  closeCtxMenu()
+  openAddToAlbum()
+}
+
+function onItemCtxDetail() {
+  const item = ctxTargetPhoto.value
+  closeCtxMenu()
+  if (!item) return
+  openPhotoDetail(item)
+}
+
+function formatDetailTime(time) {
+  if (!time) return '-'
+  const d = new Date(typeof time === 'string' ? time.replace(/-/g, '/') : time)
+  if (Number.isNaN(d.getTime())) return String(time)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function openPhotoDetail(item) {
+  if (!item) return
+  detailPhoto.value = item
+  detailOpen.value = true
+}
+
+function ensureMediaSelected() {
+  const item = currentMedia.value
+  if (!item) return null
+  selectedIds.value = [item.photoId]
+  lastAnchorId.value = item.photoId
+  return item
+}
+
+function onMediaDownload() {
+  if (!ensureMediaSelected()) return
+  downloadSelected()
+}
+
+function confirmAboveMedia(content) {
+  // 预览层 z-index=3000，确认框需更高，否则会点了没反应
+  return ElMessageBox.confirm(content, '系统提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+    customClass: 'above-media-msgbox',
+    appendTo: document.body
+  })
+}
+
+function removePhotosFromViewer(ids) {
+  const idSet = new Set(ids.map(String))
+  const oldIdx = mediaIndex.value
+  photoList.value = photoList.value.filter(p => !idSet.has(String(p.photoId)))
+  total.value = Math.max(0, (total.value || 0) - ids.length)
+  selectedIds.value = selectedIds.value.filter(x => !idSet.has(String(x)))
+  detailOpen.value = false
+  if (!photoList.value.length) {
+    closeMedia()
+    return
+  }
+  mediaIndex.value = Math.min(oldIdx, photoList.value.length - 1)
+  resetImageTransform()
+}
+
+function onMediaAddTo() {
+  const item = ensureMediaSelected()
+  if (!item) {
+    proxy.$modal.msgWarning('当前没有可添加的内容')
+    return
+  }
+  openAddToAlbum()
+}
+
+function onMediaDetail() {
+  if (detailOpen.value && detailPhoto.value?.photoId === currentMedia.value?.photoId) {
+    detailOpen.value = false
+    return
+  }
+  openPhotoDetail(currentMedia.value)
+}
+
+function onDetailAddTo() {
+  const item = detailPhoto.value || currentMedia.value
+  if (!item) return
+  selectedIds.value = [item.photoId]
+  lastAnchorId.value = item.photoId
+  openAddToAlbum()
+}
+
+function goCurrentAlbumFromDetail() {
+  detailOpen.value = false
+  if (mediaVisible.value) closeMedia()
+}
+
+function onMediaDelete() {
+  const item = currentMedia.value
+  if (!item) {
+    proxy.$modal.msgWarning('当前没有可删除的内容')
+    return
+  }
+  const id = item.photoId
+  confirmAboveMedia('确认删除当前项吗？')
+    .then(() => delPhoto(String(id)))
+    .then(() => {
+      proxy.$modal.msgSuccess('删除成功')
+      removePhotosFromViewer([id])
+    })
+    .catch(() => {})
+}
+
+function onItemCtxSetCover() {
+  const item = ctxTargetPhoto.value
+  closeCtxMenu()
+  if (!item) return
+  // 封面统一走媒体接口，避免 /album/files/** 无静态映射导致列表不显示
+  const coverUrl = `/album/photo/media/${item.photoId}`
+  updateAlbum({
+    albumId: album.value.albumId,
+    albumName: album.value.albumName,
+    albumDesc: album.value.albumDesc,
+    isPublic: album.value.isPublic,
+    coverUrl
+  }).then(() => {
+    album.value.coverUrl = coverUrl
+    proxy.$modal.msgSuccess('已设置为相册封面')
+  })
+}
+
+function deletePhotosByIds(ids, confirmText, successText) {
+  if (!ids.length) return
+  proxy.$modal.confirm(confirmText)
+    .then(() => delPhoto(ids.join(',')))
+    .then(() => {
+      proxy.$modal.msgSuccess(successText)
+      cancelMultiSelect()
+      reload()
+    })
+    .catch(() => {})
+}
+
+function onItemCtxRemoveFromAlbum() {
+  const ids = selectedIds.value.slice()
+  closeCtxMenu()
+  deletePhotosByIds(
+    ids,
+    `确认从当前相册移除选中的 ${ids.length} 项吗？`,
+    '已从当前相册移除'
+  )
+}
+
+function onItemCtxTrash() {
+  const ids = selectedIds.value.slice()
+  closeCtxMenu()
+  deletePhotosByIds(
+    ids,
+    `确认将选中的 ${ids.length} 项放入回收站吗？`,
+    '已放入回收站'
+  )
+}
+
+function onCtxUploadFiles() {
+  triggerUpload()
+}
+
+function onCtxUploadFolder() {
+  triggerFolderUpload()
+}
+
+function onCtxCreateAlbum() {
+  closeCtxMenu()
+  createAlbumForm.albumName = ''
+  createAlbumForm.albumDesc = ''
+  createAlbumForm.isPublic = 1
+  createAlbumOpen.value = true
+}
+
+function onCtxRefresh() {
+  closeCtxMenu()
+  init()
+}
+
+function resetCreateAlbumForm() {
+  createAlbumForm.albumName = ''
+  createAlbumForm.albumDesc = ''
+  createAlbumForm.isPublic = 1
+  createAlbumFormRef.value?.resetFields?.()
+}
+
+function submitCreateAlbum() {
+  createAlbumFormRef.value?.validate?.(valid => {
+    if (!valid) return
+    creatingAlbumPage.value = true
+    addAlbum({
+      albumName: createAlbumForm.albumName.trim(),
+      albumDesc: createAlbumForm.albumDesc,
+      isPublic: createAlbumForm.isPublic,
+      photoCount: 0,
+      sortOrder: 0
+    })
+      .then(res => {
+        const created = res.data || {}
+        proxy.$modal.msgSuccess('创建成功')
+        createAlbumOpen.value = false
+        if (created.albumId != null) {
+          proxy.$tab.closeOpenPage({ path: '/photos/detail/' + created.albumId })
+        } else {
+          proxy.$tab.closeOpenPage({ path: '/photos/index' })
+        }
+      })
+      .finally(() => {
+        creatingAlbumPage.value = false
+      })
+  })
 }
 
 function applySelection(item, event = {}) {
@@ -733,6 +1242,7 @@ function openViewer(item) {
 
 function closeMedia() {
   stopImageDrag()
+  detailOpen.value = false
   mediaVisible.value = false
   resetImageTransform()
 }
@@ -1015,10 +1525,11 @@ async function submitAddToAlbum() {
   if (!canSubmitAddTo.value) return
   const ids = selectedIds.value.slice()
   if (!ids.length) return
+  const stayInViewer = mediaVisible.value
   addingTo.value = true
   try {
     for (const photoId of ids) {
-      const item = photoList.value.find(p => p.photoId === photoId)
+      const item = photoList.value.find(p => String(p.photoId) === String(photoId))
       await updatePhoto({
         photoId,
         albumId: targetAlbumId.value,
@@ -1028,7 +1539,12 @@ async function submitAddToAlbum() {
     proxy.$modal.msgSuccess(`已添加 ${ids.length} 项`)
     addToOpen.value = false
     cancelMultiSelect()
-    reload()
+    if (stayInViewer) {
+      // 已移到其他相册，从当前预览列表移除
+      removePhotosFromViewer(ids)
+    } else {
+      reload()
+    }
   } catch (e) {
     console.error(e)
     proxy.$modal.msgError('添加失败')
@@ -1101,23 +1617,59 @@ function init() {
 }
 
 function onKeydown(e) {
+  if (e.key === 'Escape') {
+    if (ctxMenu.visible) {
+      closeCtxMenu()
+      return
+    }
+    if (mediaVisible.value) closeMedia()
+  }
   if (!mediaVisible.value) return
-  if (e.key === 'Escape') closeMedia()
   if (e.key === 'ArrowLeft') shiftMedia(-1)
   if (e.key === 'ArrowRight') shiftMedia(1)
+}
+
+function onWindowBlurOrScroll() {
+  closeCtxMenu()
 }
 
 watch(() => route.params.albumId, (id) => {
   if (id) init()
 })
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+watch(currentMedia, (item) => {
+  if (detailOpen.value && item) {
+    detailPhoto.value = item
+  }
+})
+
+watch(detailOpen, () => {
+  // 抽屉开合后重绘，让图片适配收缩后的展示区
+  nextTick(() => {
+    if (imageMode.value === 'contain') {
+      imageTransform.offsetX = 0
+      imageTransform.offsetY = 0
+    }
+    paintImageTransform(true)
+  })
+})
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  window.addEventListener('scroll', onWindowBlurOrScroll, true)
+  window.addEventListener('resize', onWindowBlurOrScroll)
+  window.addEventListener('blur', onWindowBlurOrScroll)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('scroll', onWindowBlurOrScroll, true)
+  window.removeEventListener('resize', onWindowBlurOrScroll)
+  window.removeEventListener('blur', onWindowBlurOrScroll)
   if (clickTimer.value) clearTimeout(clickTimer.value)
   if (imagePaintRaf) cancelAnimationFrame(imagePaintRaf)
   if (wheelZoomRaf) cancelAnimationFrame(wheelZoomRaf)
   stopImageDrag()
+  closeCtxMenu()
 })
 
 init()
@@ -1496,6 +2048,17 @@ init()
   -webkit-user-select: none;
 }
 
+.media-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  transition: right 0.22s ease;
+}
+
+.media-viewer.detail-open .media-stage {
+  right: 360px;
+}
+
 .media-close,
 .media-nav {
   position: absolute;
@@ -1518,8 +2081,10 @@ init()
 }
 
 .media-close {
+  position: fixed;
   top: 20px;
   left: 20px;
+  z-index: 3020;
 }
 
 .media-nav.prev {
@@ -1535,10 +2100,10 @@ init()
 }
 
 .media-actions {
-  position: absolute;
+  position: fixed;
   top: 18px;
   right: 24px;
-  z-index: 2;
+  z-index: 3020;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1557,7 +2122,8 @@ init()
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 
-  &:hover {
+  &:hover,
+  &.active {
     background: rgba(0, 0, 0, 0.06);
     color: #111;
   }
@@ -1583,8 +2149,8 @@ init()
 }
 
 .media-image {
-  max-width: min(92vw, 1400px);
-  max-height: 86vh;
+  max-width: min(92%, 1400px);
+  max-height: min(86%, 86vh);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -1597,6 +2163,7 @@ init()
   will-change: transform;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
+  transition: max-width 0.22s ease, max-height 0.22s ease;
 
   &.is-original {
     max-width: none;
@@ -1604,9 +2171,18 @@ init()
   }
 }
 
+.media-video-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
 .media-video {
-  max-width: min(92vw, 1400px);
-  max-height: 86vh;
+  max-width: min(92%, 1400px);
+  max-height: min(86%, 86vh);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -1614,7 +2190,7 @@ init()
   outline: none;
   user-select: none;
   background: #000;
-  z-index: 1;
+  transition: max-width 0.22s ease, max-height 0.22s ease;
 }
 
 .media-toolbar {
@@ -1676,6 +2252,11 @@ init()
 </style>
 
 <style lang="scss">
+/* 预览层之上的确认框 */
+body > .el-overlay:has(.above-media-msgbox) {
+  z-index: 4300 !important;
+}
+
 .add-to-dialog {
   border-radius: 12px;
   overflow: hidden;
@@ -1845,5 +2426,151 @@ init()
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.photos-ctx-menu {
+  position: fixed;
+  z-index: 3200;
+  min-width: 200px;
+  padding: 6px 0;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  user-select: none;
+}
+
+.photos-ctx-menu .ctx-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+  color: #222;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: #f3f3f3;
+  }
+
+  &.danger {
+    color: #e85d5d;
+  }
+
+  .el-icon {
+    color: #555;
+  }
+}
+
+.photos-ctx-menu.type-item .ctx-item {
+  gap: 0;
+}
+
+.photos-ctx-menu .ctx-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: #ececec;
+}
+
+.photo-detail-panel {
+  position: fixed;
+  /* 避开顶部返回/操作按钮区域，只在下方红框范围弹出 */
+  top: 64px;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  z-index: 3010;
+  background: #fff;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.08);
+  border-radius: 12px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.detail-panel-enter-active,
+.detail-panel-leave-active {
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+
+.detail-panel-enter-from,
+.detail-panel-leave-to {
+  transform: translateX(100%);
+  opacity: 0.6;
+}
+
+.photo-detail-album {
+  flex-shrink: 0;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+.photo-detail-info {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px 28px;
+}
+
+.detail-section-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #222;
+}
+
+.detail-album-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.album-tag {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #f0f0f0;
+  color: #333;
+
+  &.ghost {
+    background: #f5f5f5;
+    color: #666;
+  }
+
+  &:hover {
+    background: #e8e8e8;
+  }
+}
+
+.photo-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.photo-detail-row {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+
+  .label {
+    width: 72px;
+    flex-shrink: 0;
+    color: #999;
+  }
+
+  .value {
+    flex: 1;
+    min-width: 0;
+    color: #333;
+    word-break: break-all;
+  }
 }
 </style>

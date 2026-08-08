@@ -153,7 +153,7 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{albumIds}")
     public AjaxResult remove(@PathVariable Long[] albumIds) {
-        return toAjax(albumService.removeByIds(Arrays.asList(albumIds)));
+        return toAjax(albumService.removeAlbums(Arrays.asList(albumIds)));
     }
 
     @PreAuthorize("@ss.hasPermi('album:album:edit')")

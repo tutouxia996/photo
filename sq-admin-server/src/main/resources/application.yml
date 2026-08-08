@@ -38,6 +38,20 @@ spring:
     basename: i18n/messages
   profiles:
     active: mysql-dev
+  # 文件上传（相册含视频，需明显大于默认 10MB）
+  servlet:
+    multipart:
+      # 单个文件大小
+      max-file-size: 1024MB
+      # 单次请求总大小
+      max-request-size: 2048MB
+  mvc:
+    format:
+      date-time: yyyy-MM-dd HH:mm:ss
+      date: yyyy-MM-dd
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
 
 # 开发环境配置
 server:
@@ -56,6 +70,9 @@ server:
       max: 800
       # Tomcat启动初始化的线程数，默认值10
       min-spare: 100
+    # 单次请求体上限（与 multipart 对齐，避免被 connector 截断）
+    max-http-form-post-size: 2048MB
+    max-swallow-size: 2048MB
 
 # 日志配置
 logging:
@@ -70,22 +87,6 @@ user:
     maxRetryCount: 5
     # 密码锁定时间（默认10分钟）
     lockTime: 10
-
-
-  # 文件上传
-  servlet:
-    multipart:
-      # 单个文件大小
-      max-file-size: 10MB
-      # 设置总上传的文件大小
-      max-request-size: 20MB
-  mvc:
-    format:
-      date-time: yyyy-MM-dd HH:mm:ss
-      date: yyyy-MM-dd
-  jackson:
-    date-format: yyyy-MM-dd HH:mm:ss
-    time-zone: GMT+8
 
 # token配置
 token:

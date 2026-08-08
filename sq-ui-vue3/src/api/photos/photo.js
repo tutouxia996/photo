@@ -35,6 +35,8 @@ export function uploadPhoto(data) {
     url: '/album/photo/upload',
     method: 'post',
     headers: { 'Content-Type': 'multipart/form-data' },
-    data
+    data,
+    // 大视频上传可能远超默认 10s
+    timeout: 600000
   })
 }

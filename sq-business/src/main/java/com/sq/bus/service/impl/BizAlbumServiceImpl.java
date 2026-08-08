@@ -4,12 +4,22 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
+import com.sq.bus.domain.BizScanLog;
+import com.sq.bus.domain.BizScanPath;
+import com.sq.bus.domain.BizTrack;
+import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.mapper.BizAlbumMapper;
 import com.sq.bus.mapper.BizPhotoMapper;
+import com.sq.bus.mapper.BizScanLogMapper;
+import com.sq.bus.mapper.BizScanPathMapper;
+import com.sq.bus.mapper.BizTrackMapper;
+import com.sq.bus.mapper.BizTrackPointMapper;
 import com.sq.bus.service.IBizAlbumService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -21,6 +31,18 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
 
     @Autowired
     private BizPhotoMapper photoMapper;
+
+    @Autowired
+    private BizScanPathMapper scanPathMapper;
+
+    @Autowired
+    private BizScanLogMapper scanLogMapper;
+
+    @Autowired
+    private BizTrackMapper trackMapper;
+
+    @Autowired
+    private BizTrackPointMapper trackPointMapper;
 
     @Override
     public void refreshAlbumStats(Long albumId) {
@@ -70,5 +92,32 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
         }
         album.setUpdateTime(new Date());
         updateById(album);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean removeAlbums(Collection<Long> albumIds) {
+        if (albumIds == null || albumIds.isEmpty()) {
+            return false;
+        }
+        photoMapper.delete(new LambdaQueryWrapper<BizPhoto>().in(BizPhoto::getAlbumId, albumIds));
+
+        List<BizScanPath> scanPaths = scanPathMapper.selectList(new LambdaQueryWrapper<BizScanPath>()
+                .in(BizScanPath::getDefaultAlbumId, albumIds));
+        if (!scanPaths.isEmpty()) {
+            List<Long> pathIds = scanPaths.stream().map(BizScanPath::getPathId).collect(Collectors.toList());
+            scanLogMapper.delete(new LambdaQueryWrapper<BizScanLog>().in(BizScanLog::getPathId, pathIds));
+            scanPathMapper.delete(new LambdaQueryWrapper<BizScanPath>().in(BizScanPath::getPathId, pathIds));
+        }
+
+        List<BizTrack> tracks = trackMapper.selectList(new LambdaQueryWrapper<BizTrack>()
+                .in(BizTrack::getAlbumId, albumIds));
+        if (!tracks.isEmpty()) {
+            List<Long> trackIds = tracks.stream().map(BizTrack::getTrackId).collect(Collectors.toList());
+            trackPointMapper.delete(new LambdaQueryWrapper<BizTrackPoint>().in(BizTrackPoint::getTrackId, trackIds));
+            trackMapper.delete(new LambdaQueryWrapper<BizTrack>().in(BizTrack::getTrackId, trackIds));
+        }
+
+        return removeByIds(albumIds);
     }
 }

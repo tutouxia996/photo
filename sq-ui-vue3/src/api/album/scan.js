@@ -21,7 +21,13 @@ export function delScanPath(pathId) {
 }
 
 export function runScan(pathId, fullScan = false) {
-  return request({ url: '/album/scan/run/' + pathId, method: 'post', params: { fullScan } })
+  return request({
+    url: '/album/scan/run/' + pathId,
+    method: 'post',
+    params: { fullScan },
+    // 与磁盘导入一致：全量扫描可能耗时很长
+    timeout: 600000
+  })
 }
 
 export function listScanLog(query) {

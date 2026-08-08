@@ -1,5 +1,5 @@
 <template>
-  <div class="photos-page" v-loading="loading" @click="closeAlbumMenu">
+  <div class="photos-page" v-loading="loading" @click="closeAlbumMenu" @contextmenu.prevent>
     <header class="photos-header">
       <h1 class="photos-title">相册</h1>
     </header>
@@ -114,7 +114,7 @@
             clearable
             @input="onLocalPathInput"
           />
-          <div class="form-tip">从磁盘扫描索引，不会上传或复制原图；填写后默认用文件夹名作为相册名</div>
+          <div class="form-tip">从磁盘扫描索引，不会上传或复制原图；填写后默认用文件夹名作为相册名。照片较多时扫描可能需数分钟，请耐心等待</div>
         </el-form-item>
         <el-form-item label="相册名称" prop="albumName">
           <el-input
@@ -264,6 +264,18 @@ function resolveUrl(url) {
 
 function coverSrc(item) {
   if (item.coverUrl) {
+    // 历史数据可能写成 /album/files/**，该路径无静态映射，改从 URL 中尽量解析 photoId
+    const mediaMatch = String(item.coverUrl).match(/\/album\/photo\/media\/(\d+)/)
+    if (mediaMatch) {
+      return resolveUrl('/album/photo/media/' + mediaMatch[1])
+    }
+    if (String(item.coverUrl).startsWith('/album/files/')) {
+      // 无法可靠还原时回退 coverPhotoId / 占位
+      if (item.coverPhotoId) {
+        return resolveUrl('/album/photo/media/' + item.coverPhotoId)
+      }
+      return ''
+    }
     return resolveUrl(item.coverUrl)
   }
   // 兼容旧数据：有照片但未写封面时，用媒体预览接口
@@ -302,7 +314,8 @@ function openAlbum(item) {
     menuAlbumId.value = null
     return
   }
-  proxy.$router.push('/photos/detail/' + item.albumId)
+  // 原地打开详情：关闭当前「相册」页签，避免额外新增「相册详情」标题页
+  proxy.$tab.closeOpenPage({ path: '/photos/detail/' + item.albumId })
 }
 
 function closeAlbumMenu() {

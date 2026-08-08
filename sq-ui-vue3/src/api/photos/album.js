@@ -38,7 +38,9 @@ export function importAlbumFromDisk(data) {
   return request({
     url: '/album/album/importFromDisk',
     method: 'post',
-    data
+    data,
+    // 扫描含 MD5/缩略图，大目录可能远超默认 10s
+    timeout: 600000
   })
 }
 
