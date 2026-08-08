@@ -83,6 +83,19 @@ export const constantRoutes = [
         meta: { title: '个人中心', icon: 'user' }
       }
     ]
+  },
+  {
+    path: '/photos',
+    component: Layout,
+    redirect: '/photos/index',
+    children: [
+      {
+        path: 'index',
+        component: () => import('@/views/photos/index'),
+        name: 'PhotosAlbum',
+        meta: { title: '相册', icon: 'example' }
+      }
+    ]
   }
 ]
 
