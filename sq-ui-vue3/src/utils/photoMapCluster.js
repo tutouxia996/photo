@@ -36,6 +36,34 @@ export const MAP_STYLES = [
   { key: 'hybrid', label: '混合' }
 ]
 
+/** 轨迹路段出行方式（存于起点 travelMode，表示到下一站） */
+export const TRAVEL_MODES = [
+  { key: 'hsr', label: '高铁', color: '#E11D48' },
+  { key: 'train', label: '火车', color: '#C2410C' },
+  { key: 'bus', label: '公交', color: '#CA8A04' },
+  { key: 'metro', label: '地铁', color: '#2563EB' },
+  { key: 'walk', label: '步行', color: '#16A34A' },
+  { key: 'drive', label: '自驾', color: '#7C3AED' },
+  { key: 'bike', label: '骑行', color: '#0D9488' },
+  { key: 'flight', label: '飞机', color: '#0891B2' },
+  { key: 'other', label: '其他', color: '#64748B' }
+]
+
+const TRAVEL_MODE_MAP = Object.fromEntries(TRAVEL_MODES.map(m => [m.key, m]))
+
+export function getTravelMode(mode) {
+  if (!mode) return null
+  return TRAVEL_MODE_MAP[mode] || null
+}
+
+export function travelModeLabel(mode) {
+  return getTravelMode(mode)?.label || ''
+}
+
+export function travelModeColor(mode, fallback = '#3B82F6') {
+  return getTravelMode(mode)?.color || fallback
+}
+
 const PI = Math.PI
 const A = 6378245.0
 const EE = 0.00669342162296594323
@@ -79,6 +107,144 @@ export function toMapLatLng(point) {
   return [lat, lng]
 }
 
+/**
+ * 解析点位上缓存的真实路线（GCJ-02，[[lat,lng],...]）
+ * 无有效路径时返回 null
+ */
+export function parseRoutePath(routePath) {
+  if (!routePath) return null
+  let raw = routePath
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw)
+    } catch (e) {
+      return null
+    }
+  }
+  if (!Array.isArray(raw) || raw.length < 2) return null
+  const latlngs = []
+  for (const item of raw) {
+    if (Array.isArray(item) && item.length >= 2) {
+      const lat = Number(item[0])
+      const lng = Number(item[1])
+      if (!Number.isNaN(lat) && !Number.isNaN(lng)) latlngs.push([lat, lng])
+    } else if (item && item.lat != null && item.lng != null) {
+      const lat = Number(item.lat)
+      const lng = Number(item.lng)
+      if (!Number.isNaN(lat) && !Number.isNaN(lng)) latlngs.push([lat, lng])
+    }
+  }
+  return latlngs.length >= 2 ? latlngs : null
+}
+
+/** 路段折线：优先真实路线，否则两点直线 */
+export function segmentLatLngs(fromPoint, toPoint) {
+  const routed = parseRoutePath(fromPoint?.routePath)
+  if (routed) return routed
+  return [toMapLatLng(fromPoint), toMapLatLng(toPoint)]
+}
+
+/** 轨迹是否还有未规划真实路线的路段 */
+export function hasMissingRoutePaths(points) {
+  const list = filterValidPoints(points)
+  for (let i = 0; i < list.length - 1; i++) {
+    if (!parseRoutePath(list[i].routePath)) return true
+  }
+  return false
+}
+
+function approxKmBetween(a, b) {
+  const dlat = Number(a[0]) - Number(b[0])
+  const dlng = Number(a[1]) - Number(b[1])
+  return Math.sqrt(dlat * dlat + dlng * dlng) * 111
+}
+
+/**
+ * 是否需要重新贴路。
+ * 注意：地铁/高铁/公交等是用户可选手动方式，不能仅因 mode 就判定需重算（否则会被改回步行）。
+ */
+export function hasUnstableAutoRoutes(points) {
+  const list = filterValidPoints(points)
+  for (let i = 0; i < list.length - 1; i++) {
+    const path = parseRoutePath(list[i].routePath)
+    const a = toMapLatLng(list[i])
+    const b = toMapLatLng(list[i + 1])
+    const approxKm = approxKmBetween(a, b)
+    if (approxKm <= 0.03) continue
+    // 有一定距离却只有直线两点
+    if (!path || path.length <= 2) {
+      if (approxKm > 0.04) return true
+      continue
+    }
+    // 折线端点偏离照片标记（旧版切片串段）
+    const p0 = path[0]
+    const p1 = path[path.length - 1]
+    const fwdOk = approxKmBetween(p0, a) < 0.12 && approxKmBetween(p1, b) < 0.12
+    const revOk = approxKmBetween(p0, b) < 0.12 && approxKmBetween(p1, a) < 0.12
+    if (!fwdOk && !revOk) return true
+  }
+  return false
+}
+
+/** 方位角（度，0=北，顺时针），输入 [lat,lng] */
+export function bearingDeg(from, to) {
+  const lat1 = (Number(from[0]) * PI) / 180
+  const lat2 = (Number(to[0]) * PI) / 180
+  const dLng = ((Number(to[1]) - Number(from[1])) * PI) / 180
+  const y = Math.sin(dLng) * Math.cos(lat2)
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng)
+  return (Math.atan2(y, x) * 180 / PI + 360) % 360
+}
+
+function haversineMeters(a, b) {
+  const R = 6371000
+  const lat1 = (Number(a[0]) * PI) / 180
+  const lat2 = (Number(b[0]) * PI) / 180
+  const dLat = lat2 - lat1
+  const dLng = ((Number(b[1]) - Number(a[1])) * PI) / 180
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
+/**
+ * 沿折线按间距取样箭头位置
+ * @returns {{ latlng: [lat,lng], bearing: number }[]}
+ */
+export function sampleDirectionArrows(latlngs, gapMeters = 900) {
+  if (!latlngs || latlngs.length < 2) return []
+  const gap = Math.max(200, Number(gapMeters) || 900)
+  const arrows = []
+  let acc = 0
+  let nextAt = gap * 0.55
+  for (let i = 1; i < latlngs.length; i++) {
+    const a = latlngs[i - 1]
+    const b = latlngs[i]
+    const seg = haversineMeters(a, b)
+    if (seg < 1) continue
+    const br = bearingDeg(a, b)
+    while (acc + seg >= nextAt) {
+      const t = (nextAt - acc) / seg
+      const lat = Number(a[0]) + (Number(b[0]) - Number(a[0])) * t
+      const lng = Number(a[1]) + (Number(b[1]) - Number(a[1])) * t
+      arrows.push({ latlng: [lat, lng], bearing: br })
+      nextAt += gap
+      if (arrows.length > 80) return arrows
+    }
+    acc += seg
+  }
+  // 保证至少有一个方向箭头
+  if (!arrows.length && latlngs.length >= 2) {
+    const mid = Math.floor(latlngs.length / 2)
+    const i = Math.max(1, mid)
+    arrows.push({
+      latlng: latlngs[i],
+      bearing: bearingDeg(latlngs[i - 1], latlngs[i])
+    })
+  }
+  return arrows
+}
+
 export function resolveUrl(url) {
   if (!url) return ''
   if (isExternal(url)) return url
@@ -86,12 +252,22 @@ export function resolveUrl(url) {
 }
 
 export function mediaSrc(point, original = false) {
-  if (!point?.photoId) {
-    if (point?.thumbUrl) return resolveUrl(point.thumbUrl)
+  if (original) {
+    if (point?.photoId) {
+      return resolveUrl('/album/photo/media/' + point.photoId + '?original=true')
+    }
+    if (point?.fileUrl) return resolveUrl(point.fileUrl)
     return ''
   }
-  const q = original ? '?original=true' : ''
-  return resolveUrl('/album/photo/media/' + point.photoId + q)
+  // 视频无 thumbUrl 时不要请求 media：服务端对无截帧视频会 404，地图 <img> 会空白
+  if (Number(point?.fileType) === 2 && !point?.thumbUrl) {
+    return ''
+  }
+  if (point?.photoId) {
+    return resolveUrl('/album/photo/media/' + point.photoId)
+  }
+  if (point?.thumbUrl) return resolveUrl(point.thumbUrl)
+  return ''
 }
 
 export function escapeHtml(str) {
@@ -170,15 +346,44 @@ export function filterValidPoints(points) {
   )
 }
 
+/** 无关联照片的自定义途经点（增补路段插入） */
+export function isWaypointPoint(point) {
+  if (!point) return false
+  const hasPhoto = point.photoId != null && point.photoId !== ''
+  if (hasPhoto) return false
+  // 有缩略图/原图的一律按照片点处理
+  if (point.fileUrl || point.thumbUrl) return false
+  return true
+}
+
 export function buildPopupHtml(point) {
+  const waypoint = isWaypointPoint(point)
   const isVideo = point.fileType === 2
   const thumb = mediaSrc(point, false)
   const original = mediaSrc(point, true)
-  const title = escapeHtml(point.fileName || (isVideo ? '视频' : '图片'))
+  const title = escapeHtml(
+    point.fileName
+      || point.description
+      || (waypoint ? '途经点' : (isVideo ? '视频' : '图片'))
+  )
   const time = escapeHtml(point.pointTime || point.shootTime || '')
   const addr = escapeHtml(point.address || '')
+  const desc = escapeHtml(point.description || '')
+  const modeLabel = escapeHtml(travelModeLabel(point.travelMode))
   const lat = point.latitude
   const lng = point.longitude
+  if (waypoint) {
+    return `
+      <div class="pmc-popup">
+        <div class="pmc-title">${point.sequence != null ? '#' + point.sequence + ' ' : ''}${title}</div>
+        <div class="pmc-meta">自定义途经点（无照片）</div>
+        ${modeLabel ? `<div class="pmc-mode">下一程：${modeLabel}</div>` : ''}
+        ${desc && desc !== title ? `<div class="pmc-desc">${desc}</div>` : ''}
+        ${time ? `<div class="pmc-meta">${time}</div>` : ''}
+        <div class="pmc-meta">${lat}, ${lng}</div>
+      </div>
+    `
+  }
   const media = isVideo
     ? `<video class="pmc-media" controls preload="metadata" poster="${thumb}" src="${original}"></video>`
     : `<img class="pmc-media" src="${original || thumb}" alt="${title}" />`
@@ -186,6 +391,8 @@ export function buildPopupHtml(point) {
     <div class="pmc-popup">
       <div class="pmc-title">${point.sequence != null ? '#' + point.sequence + ' ' : ''}${title}</div>
       ${media}
+      ${modeLabel ? `<div class="pmc-mode">下一程：${modeLabel}</div>` : ''}
+      ${desc ? `<div class="pmc-desc">${desc}</div>` : ''}
       ${time ? `<div class="pmc-meta">${time}</div>` : ''}
       ${addr ? `<div class="pmc-meta">${addr}</div>` : ''}
       <div class="pmc-meta">${lat}, ${lng}</div>
@@ -193,9 +400,21 @@ export function buildPopupHtml(point) {
   `
 }
 
+function createWaypointDivIcon(point) {
+  const label = escapeHtml((point.description || '途经').slice(0, 10))
+  return L.divIcon({
+    className: 'pmc-waypoint-marker',
+    html: `<div class="pmc-waypoint" title="${label}"><span class="pmc-waypoint-dot"></span><span class="pmc-waypoint-label">${label}</span></div>`,
+    iconSize: [88, 28],
+    iconAnchor: [12, 14],
+    popupAnchor: [0, -12]
+  })
+}
+
 export function createPhotoMarker(point) {
+  const waypoint = isWaypointPoint(point)
   const marker = L.marker(toMapLatLng(point), {
-    icon: createThumbDivIcon(point, 1),
+    icon: waypoint ? createWaypointDivIcon(point) : createThumbDivIcon(point, 1),
     keyboard: false,
     riseOnHover: true,
     photoPoint: point

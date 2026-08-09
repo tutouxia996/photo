@@ -97,6 +97,172 @@
   border-radius: 4px;
 }
 
+.pmc-popup .pmc-mode {
+  margin-top: 6px;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pmc-popup .pmc-desc {
+  margin-top: 6px;
+  color: #303133;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pmc-seg-label {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  color: #303133;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+}
+
+.pmc-seg-label::before {
+  display: none;
+}
+
+.leaflet-div-icon.pmc-vertex-marker {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.pmc-vertex {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.pmc-vertex.is-mid {
+  background: #f97316;
+  cursor: grab;
+}
+
+.pmc-vertex.is-mid:active {
+  cursor: grabbing;
+}
+
+.pmc-vertex.is-end {
+  width: 12px;
+  height: 12px;
+  margin: 1px;
+  background: #94a3b8;
+  cursor: default;
+}
+
+.leaflet-div-icon.pmc-dir-marker,
+.leaflet-div-icon.pmc-end-marker {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+/* 轨迹方向流动：像素虚线，放大后密度不变 */
+@keyframes pmc-flow-dash {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+
+.leaflet-overlay-pane path.pmc-flow-line {
+  pointer-events: none !important;
+  animation: pmc-flow-dash 0.9s linear infinite;
+}
+
+.leaflet-overlay-pane path.pmc-flow-line--accent {
+  animation-duration: 0.9s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leaflet-overlay-pane path.pmc-flow-line {
+    animation: none;
+  }
+}
+
+.pmc-dir-arrow-wrap {
+  width: 14px;
+  height: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  transform-origin: 50% 70%;
+  filter: drop-shadow(0 0 1px #fff) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+.pmc-dir-arrow {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 14px solid #1d4ed8;
+}
+
+.pmc-end-badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 11px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.pmc-end-badge.start {
+  background: #16a34a;
+}
+
+.pmc-end-badge.finish {
+  background: #dc2626;
+}
+
+.leaflet-div-icon.pmc-waypoint-marker {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.pmc-waypoint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 72px;
+}
+
+.pmc-waypoint-dot {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.pmc-waypoint-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
 .pmc-popup .pmc-meta {
   margin-top: 4px;
   color: #909399;

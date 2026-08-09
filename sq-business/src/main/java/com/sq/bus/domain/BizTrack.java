@@ -52,6 +52,7 @@ public class BizTrack implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date updateTime;
 
+    /** 行程说明/备注 */
     private String remark;
 
     /** 0未删除 1已删除 */

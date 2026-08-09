@@ -37,6 +37,20 @@ public class BizTrackPoint implements Serializable {
 
     private BigDecimal altitude;
 
+    /** 点位说明（车次、路线等） */
+    private String description;
+
+    /**
+     * 到下一站的出行方式：
+     * hsr/train/bus/metro/walk/drive/bike/flight/other
+     */
+    private String travelMode;
+
+    /**
+     * 到下一站的真实路线折线（JSON:[[lat,lng],...]，GCJ-02，供高德底图直接绘制）
+     */
+    private String routePath;
+
     /** 非表字段：关联媒体展示用 */
     @TableField(exist = false)
     private Integer fileType;

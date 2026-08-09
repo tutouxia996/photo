@@ -13,9 +13,11 @@ import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizScanLogService;
 import com.sq.bus.service.IBizScanPathService;
+import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
+import com.sq.bus.utils.VideoMetaUtils;
 import com.sq.common.exception.ServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Date;
@@ -58,6 +61,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     @Autowired
     private IBizAlbumService albumService;
+
+    @Autowired
+    private IBizTrackService trackService;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -182,6 +188,16 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 log.warn("刷新相册统计失败 albumId={}", scanPath.getDefaultAlbumId(), e);
             }
 
+            // 扫描入库或补齐视频 GPS 后自动同步轨迹（无 GPS 则跳过）
+            try {
+                if (scanPath.getDefaultAlbumId() != null
+                        && (counter.created > 0 || counter.gpsUpdated > 0)) {
+                    trackService.autoSyncAlbumTrack(scanPath.getDefaultAlbumId());
+                }
+            } catch (Exception e) {
+                log.warn("自动同步相册轨迹失败 albumId={}", scanPath.getDefaultAlbumId(), e);
+            }
+
             try {
                 scanPath.setLastScanTime(new Date());
                 scanPath.setUpdateTime(new Date());
@@ -297,6 +313,16 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     boolean albumAlive = owner != null
                             && (owner.getDeleted() == null || owner.getDeleted() == AlbumDeleted.NORMAL);
                     if (sameAlbum || albumAlive) {
+                        // 全量扫描：同相册已入库视频补齐 GPS / 缩略图
+                        if (fullScan && sameAlbum && fileType == 2) {
+                            try {
+                                if (enrichExistingVideo(exists, file, scanPath)) {
+                                    counter.gpsUpdated++;
+                                }
+                            } catch (Exception enrichEx) {
+                                log.warn("补齐视频元数据失败 file={}", file.getAbsolutePath(), enrichEx);
+                            }
+                        }
                         // 已在当前/其他有效相册中：按内容去重跳过
                         counter.skipped++;
                         continue;
@@ -348,8 +374,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private void importFile(File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
-        // 视频走 metadata-extractor 可能极慢/卡住，拍摄时间改用文件时间；图片仍解析 EXIF
-        ExifParseUtils.ExifInfo exif = fileType == 1 ? ExifParseUtils.parse(file) : new ExifParseUtils.ExifInfo();
+        MediaMeta meta = parseMediaMeta(file, fileType);
         String relativeName = file.getName();
         String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
 
@@ -386,15 +411,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (fileType == 2) {
             photo.setDuration(ThumbUtils.getVideoDurationSeconds(file));
         }
-        photo.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date(file.lastModified()));
-        photo.setLatitude(exif.getLatitude());
-        photo.setLongitude(exif.getLongitude());
-        photo.setCameraModel(exif.getCameraModel());
-        photo.setLensInfo(exif.getLensInfo());
-        photo.setAperture(exif.getAperture());
-        photo.setShutterSpeed(exif.getShutterSpeed());
-        photo.setIso(exif.getIso());
-        photo.setFocalLength(exif.getFocalLength());
+        applyMediaMeta(photo, meta, new Date(file.lastModified()));
         photo.setMd5(md5);
         photo.setSortOrder(0);
         photo.setDeleted(AlbumDeleted.NORMAL);
@@ -404,7 +421,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private void reclaimPhoto(BizPhoto photo, File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
-        ExifParseUtils.ExifInfo exif = fileType == 1 ? ExifParseUtils.parse(file) : new ExifParseUtils.ExifInfo();
+        MediaMeta meta = parseMediaMeta(file, fileType);
         String relativeName = file.getName();
         String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
         String thumbUrl = photo.getThumbUrl();
@@ -438,15 +455,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (fileType == 2) {
             photo.setDuration(ThumbUtils.getVideoDurationSeconds(file));
         }
-        photo.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date(file.lastModified()));
-        photo.setLatitude(exif.getLatitude());
-        photo.setLongitude(exif.getLongitude());
-        photo.setCameraModel(exif.getCameraModel());
-        photo.setLensInfo(exif.getLensInfo());
-        photo.setAperture(exif.getAperture());
-        photo.setShutterSpeed(exif.getShutterSpeed());
-        photo.setIso(exif.getIso());
-        photo.setFocalLength(exif.getFocalLength());
+        applyMediaMeta(photo, meta, new Date(file.lastModified()));
         photo.setMd5(md5);
         photo.setDeleted(AlbumDeleted.NORMAL);
         photo.setUpdateTime(new Date());
@@ -455,6 +464,109 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (oldAlbumId != null && !oldAlbumId.equals(scanPath.getDefaultAlbumId())) {
             albumService.refreshAlbumStats(oldAlbumId);
         }
+    }
+
+    /** 图片用 EXIF；视频用 ffprobe（避免 metadata-extractor 卡死） */
+    private static MediaMeta parseMediaMeta(File file, int fileType) {
+        MediaMeta meta = new MediaMeta();
+        if (fileType == 1) {
+            ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(file);
+            meta.shootTime = exif.getShootTime();
+            meta.latitude = exif.getLatitude();
+            meta.longitude = exif.getLongitude();
+            meta.cameraModel = exif.getCameraModel();
+            meta.lensInfo = exif.getLensInfo();
+            meta.aperture = exif.getAperture();
+            meta.shutterSpeed = exif.getShutterSpeed();
+            meta.iso = exif.getIso();
+            meta.focalLength = exif.getFocalLength();
+            return meta;
+        }
+        VideoMetaUtils.MetaInfo video = VideoMetaUtils.parse(file);
+        meta.shootTime = video.getShootTime();
+        meta.latitude = video.getLatitude();
+        meta.longitude = video.getLongitude();
+        return meta;
+    }
+
+    private static void applyMediaMeta(BizPhoto photo, MediaMeta meta, Date fallbackShootTime) {
+        photo.setShootTime(meta.shootTime != null ? meta.shootTime : fallbackShootTime);
+        photo.setLatitude(meta.latitude);
+        photo.setLongitude(meta.longitude);
+        photo.setCameraModel(meta.cameraModel);
+        photo.setLensInfo(meta.lensInfo);
+        photo.setAperture(meta.aperture);
+        photo.setShutterSpeed(meta.shutterSpeed);
+        photo.setIso(meta.iso);
+        photo.setFocalLength(meta.focalLength);
+    }
+
+    /**
+     * 全量扫描时为已入库视频补齐 GPS、缩略图、时长。
+     * @return 是否写入了 GPS（用于触发轨迹同步）
+     */
+    private boolean enrichExistingVideo(BizPhoto photo, File file, BizScanPath scanPath) {
+        boolean gpsFilled = false;
+        boolean dirty = false;
+        if (photo.getLatitude() == null || photo.getLongitude() == null) {
+            VideoMetaUtils.MetaInfo meta = VideoMetaUtils.parse(file);
+            if (meta.getLatitude() != null && meta.getLongitude() != null) {
+                photo.setLatitude(meta.getLatitude());
+                photo.setLongitude(meta.getLongitude());
+                if (meta.getShootTime() != null) {
+                    photo.setShootTime(meta.getShootTime());
+                }
+                gpsFilled = true;
+                dirty = true;
+            }
+        }
+        if (photo.getDuration() == null) {
+            Integer duration = ThumbUtils.getVideoDurationSeconds(file);
+            if (duration != null) {
+                photo.setDuration(duration);
+                dirty = true;
+            }
+        }
+        if (!hasUsableThumb(photo)) {
+            String relativeName = file.getName();
+            File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
+            String thumbName = "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg";
+            File thumbFile = new File(thumbDir, thumbName);
+            if (ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+                photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            photo.setUpdateTime(new Date());
+            PhotoFieldUtils.clamp(photo);
+            photoService.updateById(photo);
+        }
+        return gpsFilled;
+    }
+
+    private boolean hasUsableThumb(BizPhoto photo) {
+        if (photo.getThumbUrl() == null || photo.getThumbUrl().isEmpty()) {
+            return false;
+        }
+        if (!photo.getThumbUrl().startsWith("/album/files/thumb/")) {
+            return false;
+        }
+        String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
+        File thumb = new File(albumProperties.getThumbPath(), rel);
+        return thumb.exists() && thumb.isFile();
+    }
+
+    private static final class MediaMeta {
+        private Date shootTime;
+        private BigDecimal latitude;
+        private BigDecimal longitude;
+        private String cameraModel;
+        private String lensInfo;
+        private String aperture;
+        private String shutterSpeed;
+        private Integer iso;
+        private String focalLength;
     }
 
     private static void appendFailDetail(StringBuilder failMsg, String fileName, Exception ex) {
@@ -512,6 +624,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         private int created;
         private int skipped;
         private int failed;
+        /** 全量扫描补齐视频 GPS 的数量 */
+        private int gpsUpdated;
         private long lastPersistAt;
     }
 }

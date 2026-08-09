@@ -93,3 +93,7 @@ knife4j:
         enable-version: true
         enable-footer-custom: true
         footer-custom-content: Copyright ©2025 sq
+
+# 高德 Key 勿写入本文件（会进 Git）。任选其一：
+# 1) 环境变量 AMAP_WEB_KEY / AMAP_JS_KEY
+# 2) 复制 application-local.yml.example -> application-local.yml（已 gitignore），并设置 spring.profiles.active=mysql-dev,local

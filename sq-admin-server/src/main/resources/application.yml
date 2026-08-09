@@ -38,6 +38,9 @@ spring:
     basename: i18n/messages
   profiles:
     active: mysql-dev
+  # 自动加载本地密钥文件（若不存在则忽略）；勿把 application-local.yml 提交到 Git
+  config:
+    import: optional:classpath:application-local.yml
   # 文件上传（相册含视频，需明显大于默认 10MB）
   servlet:
     multipart:
@@ -135,3 +138,8 @@ album:
     smallWidth: 300
     mediumWidth: 800
     largeWidth: 1920
+  map:
+    type: amap
+    # 高德 Key：优先环境变量；本地也可写在 application-local.yml（已 gitignore）
+    webKey: ${AMAP_WEB_KEY:}
+    jsKey: ${AMAP_JS_KEY:}

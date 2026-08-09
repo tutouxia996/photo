@@ -1,18 +1,18 @@
 package com.sq.bus.utils;
 
 import net.coobird.thumbnailator.Thumbnails;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.Charset;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 缩略图工具
  */
 public final class ThumbUtils {
+
+    private static final Logger log = LoggerFactory.getLogger(ThumbUtils.class);
 
     private ThumbUtils() {
     }
@@ -39,13 +39,13 @@ public final class ThumbUtils {
             return null;
         }
         try {
-            ProcessResult result = runProcess(new String[]{
-                    "ffprobe", "-v", "error",
+            ExternalMediaTools.ProcessResult result = ExternalMediaTools.run(new String[]{
+                    ExternalMediaTools.ffprobe(), "-v", "error",
                     "-show_entries", "format=duration",
                     "-of", "default=noprint_wrappers=1:nokey=1",
                     source.getAbsolutePath()
             }, 30);
-            if (!result.finished || result.exitCode != 0) {
+            if (!result.ok()) {
                 return null;
             }
             String text = result.output.trim();
@@ -63,7 +63,7 @@ public final class ThumbUtils {
     }
 
     /**
-     * 使用本机 ffmpeg 截取视频首帧作为缩略图（未安装 ffmpeg 时返回 false）
+     * 使用本机 ffmpeg 截取视频帧作为缩略图（未安装 ffmpeg 时返回 false）
      */
     public static boolean createVideoThumbnail(File source, File target, int width) {
         if (source == null || !source.exists() || target == null || width <= 0) {
@@ -73,70 +73,46 @@ public final class ThumbUtils {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-        try {
-            ProcessResult result = runProcess(new String[]{
-                    "ffmpeg", "-nostdin", "-y",
-                    "-ss", "00:00:01",
-                    "-i", source.getAbsolutePath(),
-                    "-vframes", "1",
-                    "-vf", "scale=" + width + ":-1",
-                    target.getAbsolutePath()
-            }, 45);
-            return result.finished && result.exitCode == 0 && target.exists() && target.length() > 0;
-        } catch (Exception e) {
-            return false;
+        // 先清掉旧的失败残留
+        if (target.exists() && !target.delete()) {
+            log.warn("无法删除旧缩略图: {}", target.getAbsolutePath());
         }
-    }
 
-    /**
-     * 启动外部进程：合并并排空 stdout，避免管道缓冲区塞满导致永久阻塞；超时强杀。
-     */
-    private static ProcessResult runProcess(String[] command, long timeoutSeconds) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
-        ByteArrayOutputStream collected = new ByteArrayOutputStream();
-        Thread drain = new Thread(() -> {
-            try (InputStream in = process.getInputStream()) {
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    // 只保留前 8KB，足够解析 ffprobe 输出
-                    if (collected.size() < 8192) {
-                        collected.write(buf, 0, Math.min(n, 8192 - collected.size()));
-                    }
+        String ffmpeg = ExternalMediaTools.ffmpeg();
+        String src = source.getAbsolutePath();
+        String dst = target.getAbsolutePath();
+        String scale = "scale='min(" + width + ",iw)':-2";
+
+        // 多策略：短视频/编码差异导致单次命令失败时回退
+        String[][] attempts = new String[][]{
+                // 从开头截 1 帧（短视频最稳）
+                {ffmpeg, "-nostdin", "-y", "-i", src, "-frames:v", "1", "-q:v", "3", "-vf", scale, dst},
+                // 尝试第 1 秒（较长视频画面更有代表性）
+                {ffmpeg, "-nostdin", "-y", "-ss", "1", "-i", src, "-frames:v", "1", "-q:v", "3", "-vf", scale, dst},
+                // 不做缩放，最后兜底
+                {ffmpeg, "-nostdin", "-y", "-i", src, "-frames:v", "1", "-q:v", "3", dst}
+        };
+
+        ExternalMediaTools.ProcessResult last = null;
+        for (String[] cmd : attempts) {
+            try {
+                last = ExternalMediaTools.run(cmd, 60);
+                if (last.ok() && target.exists() && target.length() > 0) {
+                    return true;
                 }
-            } catch (IOException ignored) {
-                // 进程被杀掉时读流失败属正常
+                if (target.exists() && target.length() == 0) {
+                    //noinspection ResultOfMethodCallIgnored
+                    target.delete();
+                }
+            } catch (Exception e) {
+                log.warn("视频截帧异常 file={} err={}", src, e.toString());
             }
-        }, "media-process-drain");
-        drain.setDaemon(true);
-        drain.start();
-
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
         }
-        try {
-            drain.join(2000L);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (last != null) {
+            log.warn("视频截帧失败 file={} exit={} out={}", src, last.exitCode, last.shortOutput());
+        } else {
+            log.warn("视频截帧失败 file={}（无法启动 ffmpeg={}）", src, ffmpeg);
         }
-        int exitCode = finished ? process.exitValue() : -1;
-        String output = new String(collected.toByteArray(), Charset.defaultCharset());
-        return new ProcessResult(finished, exitCode, output);
-    }
-
-    private static final class ProcessResult {
-        private final boolean finished;
-        private final int exitCode;
-        private final String output;
-
-        private ProcessResult(boolean finished, int exitCode, String output) {
-            this.finished = finished;
-            this.exitCode = exitCode;
-            this.output = output == null ? "" : output;
-        }
+        return false;
     }
 }

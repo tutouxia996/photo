@@ -7,9 +7,11 @@ import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
+import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
+import com.sq.bus.utils.VideoMetaUtils;
 import com.sq.common.annotation.Log;
 import com.sq.common.core.controller.BaseController;
 import com.sq.common.core.domain.AjaxResult;
@@ -28,13 +30,17 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.math.BigDecimal;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 图片管理
@@ -43,11 +49,17 @@ import java.util.List;
 @RequestMapping("/album/photo")
 public class BizPhotoController extends BaseController {
 
+    private static final Set<String> VIDEO_EXT = new HashSet<String>(Arrays.asList(
+            "mp4", "mov", "avi", "mkv", "wmv"));
+
     @Autowired
     private IBizPhotoService photoService;
 
     @Autowired
     private IBizAlbumService albumService;
+
+    @Autowired
+    private IBizTrackService trackService;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -157,18 +169,12 @@ public class BizPhotoController extends BaseController {
             dest.delete();
             return error("文件已存在，跳过重复上传");
         }
+        int fileType = isVideoFileName(original) ? 2 : 1;
         BizPhoto reusable = photoService.findReusableByMd5(md5);
         if (reusable != null) {
-            ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
             String fileUrl = "/album/files/upload/" + datePath + "/" + savedName;
-            String thumbUrl = null;
-            try {
-                File thumbDir = new File(albumProperties.getThumbPath(), datePath);
-                File thumbFile = new File(thumbDir, "s_" + savedName);
-                ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
-                thumbUrl = "/album/files/thumb/" + datePath + "/s_" + savedName;
-            } catch (Exception ignored) {
-            }
+            String thumbUrl = createUploadThumb(dest, datePath, savedName, fileType);
+            fillUploadMeta(reusable, dest, fileType);
             Long oldAlbumId = reusable.getAlbumId();
             reusable.setAlbumId(albumId);
             reusable.setFileName(original);
@@ -176,16 +182,10 @@ public class BizPhotoController extends BaseController {
             reusable.setFileUrl(fileUrl);
             reusable.setThumbUrl(thumbUrl);
             reusable.setFileSize(dest.length());
-            reusable.setFileType(1);
-            reusable.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date());
-            reusable.setLatitude(exif.getLatitude());
-            reusable.setLongitude(exif.getLongitude());
-            reusable.setCameraModel(exif.getCameraModel());
-            reusable.setLensInfo(exif.getLensInfo());
-            reusable.setAperture(exif.getAperture());
-            reusable.setShutterSpeed(exif.getShutterSpeed());
-            reusable.setIso(exif.getIso());
-            reusable.setFocalLength(exif.getFocalLength());
+            reusable.setFileType(fileType);
+            if (fileType == 2) {
+                reusable.setDuration(ThumbUtils.getVideoDurationSeconds(dest));
+            }
             reusable.setMd5(md5);
             reusable.setDeleted(AlbumDeleted.NORMAL);
             reusable.setUpdateBy(getUsername());
@@ -196,28 +196,82 @@ public class BizPhotoController extends BaseController {
                 albumService.refreshAlbumStats(oldAlbumId);
             }
             albumService.refreshAlbumStats(albumId);
+            autoSyncTrackIfHasGps(albumId, reusable.getLatitude(), reusable.getLongitude());
             return success(reusable);
         }
 
-        ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
         String fileUrl = "/album/files/upload/" + datePath + "/" + savedName;
-        String thumbUrl = null;
-        try {
-            File thumbDir = new File(albumProperties.getThumbPath(), datePath);
-            File thumbFile = new File(thumbDir, "s_" + savedName);
-            ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
-            thumbUrl = "/album/files/thumb/" + datePath + "/s_" + savedName;
-        } catch (Exception ignored) {
-        }
+        String thumbUrl = createUploadThumb(dest, datePath, savedName, fileType);
 
         BizPhoto photo = new BizPhoto();
+        fillUploadMeta(photo, dest, fileType);
         photo.setAlbumId(albumId);
         photo.setFileName(original);
         photo.setFilePath(dest.getAbsolutePath());
         photo.setFileUrl(fileUrl);
         photo.setThumbUrl(thumbUrl);
         photo.setFileSize(dest.length());
-        photo.setFileType(1);
+        photo.setFileType(fileType);
+        if (fileType == 2) {
+            photo.setDuration(ThumbUtils.getVideoDurationSeconds(dest));
+        }
+        photo.setMd5(md5);
+        photo.setSortOrder(0);
+        photo.setDeleted(AlbumDeleted.NORMAL);
+        photo.setCreateBy(getUsername());
+        photo.setCreateTime(new Date());
+        PhotoFieldUtils.clamp(photo);
+        photoService.save(photo);
+        albumService.refreshAlbumStats(albumId);
+        autoSyncTrackIfHasGps(albumId, photo.getLatitude(), photo.getLongitude());
+        return success(photo);
+    }
+
+    private static boolean isVideoFileName(String fileName) {
+        if (fileName == null) {
+            return false;
+        }
+        int idx = fileName.lastIndexOf('.');
+        if (idx < 0 || idx == fileName.length() - 1) {
+            return false;
+        }
+        return VIDEO_EXT.contains(fileName.substring(idx + 1).toLowerCase(Locale.ROOT));
+    }
+
+    private String createUploadThumb(File dest, String datePath, String savedName, int fileType) {
+        try {
+            File thumbDir = new File(albumProperties.getThumbPath(), datePath);
+            if (fileType == 2) {
+                String thumbName = "s_" + savedName.replaceAll("\\.[^.]+$", "") + ".jpg";
+                File thumbFile = new File(thumbDir, thumbName);
+                if (ThumbUtils.createVideoThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+                    return "/album/files/thumb/" + datePath + "/" + thumbName;
+                }
+                return null;
+            }
+            File thumbFile = new File(thumbDir, "s_" + savedName);
+            ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
+            return "/album/files/thumb/" + datePath + "/s_" + savedName;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void fillUploadMeta(BizPhoto photo, File dest, int fileType) {
+        if (fileType == 2) {
+            VideoMetaUtils.MetaInfo meta = VideoMetaUtils.parse(dest);
+            photo.setShootTime(meta.getShootTime() != null ? meta.getShootTime() : new Date());
+            photo.setLatitude(meta.getLatitude());
+            photo.setLongitude(meta.getLongitude());
+            photo.setCameraModel(null);
+            photo.setLensInfo(null);
+            photo.setAperture(null);
+            photo.setShutterSpeed(null);
+            photo.setIso(null);
+            photo.setFocalLength(null);
+            return;
+        }
+        ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
         photo.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date());
         photo.setLatitude(exif.getLatitude());
         photo.setLongitude(exif.getLongitude());
@@ -227,15 +281,17 @@ public class BizPhotoController extends BaseController {
         photo.setShutterSpeed(exif.getShutterSpeed());
         photo.setIso(exif.getIso());
         photo.setFocalLength(exif.getFocalLength());
-        photo.setMd5(md5);
-        photo.setSortOrder(0);
-        photo.setDeleted(AlbumDeleted.NORMAL);
-        photo.setCreateBy(getUsername());
-        photo.setCreateTime(new Date());
-        PhotoFieldUtils.clamp(photo);
-        photoService.save(photo);
-        albumService.refreshAlbumStats(albumId);
-        return success(photo);
+    }
+
+    /** 上传带 GPS 的媒体后自动同步相册轨迹，失败不影响上传结果 */
+    private void autoSyncTrackIfHasGps(Long albumId, BigDecimal latitude, BigDecimal longitude) {
+        if (albumId == null || latitude == null || longitude == null) {
+            return;
+        }
+        try {
+            trackService.autoSyncAlbumTrack(albumId);
+        } catch (Exception ignored) {
+        }
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:edit')")

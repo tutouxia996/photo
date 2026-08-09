@@ -91,7 +91,7 @@ CREATE TABLE `biz_track` (
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
-  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `remark` varchar(500) DEFAULT NULL COMMENT '行程说明/备注',
   `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除',
   PRIMARY KEY (`track_id`),
   KEY `idx_track_album_id` (`album_id`),
@@ -111,6 +111,9 @@ CREATE TABLE `biz_track_point` (
   `point_time` datetime DEFAULT NULL COMMENT '点位时间',
   `sequence` int(11) NOT NULL DEFAULT 0 COMMENT '序号',
   `altitude` decimal(8,2) DEFAULT NULL COMMENT '海拔（米）',
+  `description` varchar(500) DEFAULT NULL COMMENT '点位说明（车次、路线等）',
+  `travel_mode` varchar(32) DEFAULT NULL COMMENT '到下一站的出行方式：hsr/train/bus/metro/walk/drive/bike/flight/other',
+  `route_path` mediumtext COMMENT '到下一站的真实路线折线 JSON([[lat,lng],...], GCJ-02)',
   PRIMARY KEY (`point_id`),
   KEY `idx_point_track_id` (`track_id`),
   KEY `idx_point_photo_id` (`photo_id`)
