@@ -93,6 +93,11 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
             log.info("自动生成相册轨迹 albumId={} trackId={} points={}", albumId, track.getTrackId(), built.points.size());
             return track;
         }
+        // 关闭启用：保留已有点位，不再自动刷新生成
+        if (existing.getEnabled() != null && existing.getEnabled() == 0) {
+            log.debug("相册轨迹已关闭启用，跳过自动同步 albumId={} trackId={}", albumId, existing.getTrackId());
+            return existing;
+        }
 
         // 保留无照片人工途经点，按原顺序锚到前一个照片点之后
         List<BizTrackPoint> oldPoints = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
@@ -229,6 +234,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         applyBuilt(track, built);
         track.setTrackColor("#3B82F6");
         track.setIsPublic(1);
+        track.setEnabled(1);
         track.setDeleted(0);
         track.setCreateTime(new Date());
         save(track);

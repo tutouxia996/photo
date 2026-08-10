@@ -3,15 +3,16 @@
     <PhotoClusterMap
       ref="clusterMapRef"
       :points="displayPoints"
-      :show-polyline="true"
+      :show-polyline="trackLineVisible"
       :polyline-color="track?.trackColor || '#3B82F6'"
       :segment-by-travel-mode="true"
-      :show-direction="!customOpen"
+      :show-direction="trackLineVisible && !customOpen"
       :editable="editable && editing && !customOpen"
       :active-segment-index="editing && !customOpen ? activeIndex : -1"
       :path-edit-index="editing && !customOpen ? activeIndex : -1"
       :segment-labels="editing ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
+      :visible-travel-modes="visibleTravelModes"
       :auto-fit="!editing"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
@@ -19,7 +20,7 @@
       @waypoint-click="onWaypointClick"
     >
       <template #meta>
-        <div v-if="track" class="track-meta" :class="{ 'is-open': metaOpen }">
+        <div v-if="track && trackLineVisible" class="track-meta" :class="{ 'is-open': metaOpen }">
           <div class="meta-bar">
             <button type="button" class="meta-toggle" :title="metaOpen ? '收起详情' : '展开详情'" @click="metaOpen = !metaOpen">
               <span class="name">{{ track.trackName || '未命名轨迹' }}</span>
@@ -65,15 +66,26 @@
       </template>
     </PhotoClusterMap>
 
-    <div v-if="usedModes.length && !editing" class="mode-legend">
-      <span
+    <div v-if="trackLineVisible && usedModes.length && !editing" class="mode-legend" :class="{ 'is-filtering': modeFilter.length > 0 }">
+      <button
         v-for="m in usedModes"
         :key="m.key"
+        type="button"
         class="legend-item"
+        :class="{ active: isModeFilterActive(m.key), muted: modeFilter.length > 0 && !isModeFilterActive(m.key) }"
+        :title="modeFilterHint(m)"
+        @click="toggleModeFilter(m.key)"
       >
         <i class="legend-dot" :style="{ background: m.color }" />
         {{ m.label }}
-      </span>
+      </button>
+      <button
+        v-if="modeFilter.length"
+        type="button"
+        class="legend-reset"
+        title="显示全部线路"
+        @click="clearModeFilter"
+      >全部</button>
     </div>
 
     <aside v-if="editing && customOpen" class="seg-panel custom-panel">
@@ -501,7 +513,18 @@ const waypointHint = ref('')
 const waypointSaving = ref(false)
 const waypointDeleting = ref(false)
 
-const displayPoints = computed(() => (editing.value ? draftPoints.value : props.points))
+/** 关闭启用时不画线路；自定义途经点一并隐藏，照片/视频点仍展示 */
+const trackLineVisible = computed(() => {
+  const t = props.track
+  return t == null || t.enabled == null || t.enabled === 1
+})
+
+const displayPoints = computed(() => {
+  const list = editing.value ? draftPoints.value : props.points
+  if (!Array.isArray(list)) return []
+  if (trackLineVisible.value) return list
+  return list.filter(p => !isWaypointPoint(p))
+})
 
 const waypointPoint = computed(() => {
   if (waypointIndex.value < 0) return null
@@ -531,6 +554,45 @@ const usedModes = computed(() => {
     if (p?.travelMode) keys.add(p.travelMode)
   })
   return TRAVEL_MODES.filter(m => keys.has(m.key))
+})
+
+/** 选中的出行方式；空数组表示显示全部 */
+const modeFilter = ref([])
+
+const visibleTravelModes = computed(() => (
+  modeFilter.value.length ? modeFilter.value.slice() : null
+))
+
+function isModeFilterActive(key) {
+  return modeFilter.value.includes(key)
+}
+
+function modeFilterHint(m) {
+  if (!modeFilter.value.length) return `点击仅显示「${m.label}」线路`
+  if (isModeFilterActive(m.key)) return `再次点击取消「${m.label}」筛选`
+  return `叠加显示「${m.label}」线路`
+}
+
+function toggleModeFilter(key) {
+  const cur = modeFilter.value
+  if (cur.includes(key)) {
+    modeFilter.value = cur.filter(k => k !== key)
+  } else {
+    modeFilter.value = [...cur, key]
+  }
+}
+
+function clearModeFilter() {
+  modeFilter.value = []
+}
+
+watch(usedModes, (modes) => {
+  const keys = new Set(modes.map(m => m.key))
+  modeFilter.value = modeFilter.value.filter(k => keys.has(k))
+})
+
+watch(editing, (val) => {
+  if (val) modeFilter.value = []
 })
 
 const fromPoint = computed(() => {
@@ -1434,27 +1496,69 @@ defineExpose({ refresh, startEdit })
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
   max-width: min(420px, calc(100% - 70px));
-  padding: 6px 10px;
-  border-radius: 8px;
+  padding: 6px 8px;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .legend-item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
   color: #606266;
   font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
+}
+
+.legend-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #303133;
+}
+
+.legend-item.active {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.legend-item.muted {
+  opacity: 0.38;
 }
 
 .legend-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-reset {
+  margin: 0 0 0 2px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  color: #606266;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.legend-reset:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #303133;
 }
 
 .seg-panel {

@@ -155,6 +155,7 @@ public class PortalAlbumController extends BaseController {
         List<BizTrack> list = trackService.list(new LambdaQueryWrapper<BizTrack>()
                 .eq(BizTrack::getAlbumId, albumId)
                 .eq(BizTrack::getIsPublic, 1)
+                .eq(BizTrack::getEnabled, 1)
                 .eq(BizTrack::getDeleted, 0)
                 .orderByDesc(BizTrack::getTrackId));
         return success(list);
@@ -167,6 +168,7 @@ public class PortalAlbumController extends BaseController {
     public AjaxResult trackPoints(@PathVariable("id") Long id) {
         BizTrack track = trackService.getById(id);
         if (track == null || track.getIsPublic() == null || track.getIsPublic() != 1
+                || track.getEnabled() != null && track.getEnabled() == 0
                 || track.getDeleted() != null && track.getDeleted() == 1) {
             return error("轨迹不存在或未公开");
         }

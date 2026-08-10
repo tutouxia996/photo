@@ -18,26 +18,32 @@
         </span>
       </router-link>
     </scroll-pane>
-    <ul v-show="visible" :style="{ left: left + 'px', top: top + 'px' }" class="contextmenu">
-      <li @click="refreshSelectedTag(selectedTag)">
-        <refresh-right style="width: 1em; height: 1em;" /> 刷新页面
-      </li>
-      <li v-if="!isAffix(selectedTag)" @click="closeSelectedTag(selectedTag)">
-        <close style="width: 1em; height: 1em;" /> 关闭当前
-      </li>
-      <li @click="closeOthersTags">
-        <circle-close style="width: 1em; height: 1em;" /> 关闭其他
-      </li>
-      <li v-if="!isFirstView()" @click="closeLeftTags">
-        <back style="width: 1em; height: 1em;" /> 关闭左侧
-      </li>
-      <li v-if="!isLastView()" @click="closeRightTags">
-        <right style="width: 1em; height: 1em;" /> 关闭右侧
-      </li>
-      <li @click="closeAllTags(selectedTag)">
-        <circle-close style="width: 1em; height: 1em;" /> 全部关闭
-      </li>
-    </ul>
+    <Teleport to="body">
+      <ul
+        v-show="visible"
+        :style="{ left: left + 'px', top: top + 'px' }"
+        class="tags-view-contextmenu"
+      >
+        <li @click="refreshSelectedTag(selectedTag)">
+          <refresh-right style="width: 1em; height: 1em;" /> 刷新页面
+        </li>
+        <li v-if="!isAffix(selectedTag)" @click="closeSelectedTag(selectedTag)">
+          <close style="width: 1em; height: 1em;" /> 关闭当前
+        </li>
+        <li @click="closeOthersTags">
+          <circle-close style="width: 1em; height: 1em;" /> 关闭其他
+        </li>
+        <li v-if="!isFirstView()" @click="closeLeftTags">
+          <back style="width: 1em; height: 1em;" /> 关闭左侧
+        </li>
+        <li v-if="!isLastView()" @click="closeRightTags">
+          <right style="width: 1em; height: 1em;" /> 关闭右侧
+        </li>
+        <li @click="closeAllTags(selectedTag)">
+          <circle-close style="width: 1em; height: 1em;" /> 全部关闭
+        </li>
+      </ul>
+    </Teleport>
   </div>
 </template>
 
@@ -232,17 +238,12 @@ function toLastView(visitedViews, view) {
 
 function openMenu(tag, e) {
   const menuMinWidth = 105
-  const offsetLeft = proxy.$el.getBoundingClientRect().left // container margin left
-  const offsetWidth = proxy.$el.offsetWidth // container width
-  const maxLeft = offsetWidth - menuMinWidth // left boundary
-  const l = e.clientX - offsetLeft + 15 // 15: margin right
-
+  const maxLeft = window.innerWidth - menuMinWidth - 8
+  let l = e.clientX + 4
   if (l > maxLeft) {
-    left.value = maxLeft
-  } else {
-    left.value = l
+    l = Math.max(8, maxLeft)
   }
-
+  left.value = l
   top.value = e.clientY
   visible.value = true
   selectedTag.value = tag
@@ -306,35 +307,40 @@ function handleScroll() {
       }
     }
   }
-
-  .contextmenu {
-    margin: 0;
-    background: var(--el-bg-color-overlay, #fff);
-    z-index: 3000;
-    position: absolute;
-    list-style-type: none;
-    padding: 5px 0;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 400;
-    color: var(--tags-item-text, #333);
-    box-shadow: 2px 2px 3px 0 rgba(0, 0, 0, .3);
-    border: 1px solid var(--el-border-color-light, #e4e7ed);
-
-    li {
-      margin: 0;
-      padding: 7px 16px;
-      cursor: pointer;
-
-      &:hover {
-        background: var(--tags-item-hover, #eee);
-      }
-    }
-  }
 }
 </style>
 
 <style lang="scss">
+/* 挂到 body，避免被 fixed-header / 弹窗堆叠上下文压住 */
+.tags-view-contextmenu {
+  margin: 0;
+  background: var(--el-bg-color-overlay, #fff);
+  /* 高于 Element Plus Dialog（通常 2000+）与轨迹查看遮罩 */
+  z-index: 5000;
+  position: fixed;
+  list-style-type: none;
+  padding: 5px 0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--tags-item-text, #333);
+  box-shadow: 2px 2px 3px 0 rgba(0, 0, 0, .3);
+  border: 1px solid var(--el-border-color-light, #e4e7ed);
+
+  li {
+    margin: 0;
+    padding: 7px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    &:hover {
+      background: var(--tags-item-hover, #eee);
+    }
+  }
+}
+
 //reset element css of el-icon-close
 .tags-view-wrapper {
   .tags-view-item {

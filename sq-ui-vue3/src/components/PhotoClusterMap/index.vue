@@ -60,7 +60,11 @@ const props = defineProps({
   /** 显示全程行进方向箭头与起终点 */
   showDirection: { type: Boolean, default: false },
   /** 临时预览折线（GCJ [[lat,lng],...]），不落库 */
-  previewPath: { type: Array, default: null }
+  previewPath: { type: Array, default: null },
+  /**
+   * 出行方式筛选：空数组/null 显示全部；非空则仅绘制 travelMode 命中的路段
+   */
+  visibleTravelModes: { type: Array, default: null }
 })
 
 const emit = defineEmits(['segment-click', 'segment-path-change', 'waypoint-click', 'ready'])
@@ -87,6 +91,19 @@ let pathEditMarkers = []
 
 const validPoints = computed(() => filterValidPoints(props.points))
 const hasPoints = computed(() => validPoints.value.length > 0)
+
+const modeFilterSet = computed(() => {
+  const list = props.visibleTravelModes
+  if (!Array.isArray(list) || !list.length) return null
+  return new Set(list.map(m => String(m || '').toLowerCase()).filter(Boolean))
+})
+
+function isSegmentModeVisible(travelMode) {
+  const set = modeFilterSet.value
+  if (!set) return true
+  const key = String(travelMode || '').toLowerCase()
+  return key ? set.has(key) : false
+}
 
 function invalidateMapSize() {
   if (!map) return
@@ -300,35 +317,38 @@ function drawFlowOverlay(latlngs, baseColor) {
 }
 
 function drawDirectionDecorations(fullPath, list) {
-  if (!props.showDirection || !lineLayer || !fullPath || fullPath.length < 2) return
+  if (!props.showDirection || !lineLayer) return
 
-  const startIcon = L.divIcon({
-    className: 'pmc-end-marker',
-    html: '<div class="pmc-end-badge start">起</div>',
-    iconSize: [22, 22],
-    iconAnchor: [11, 11]
-  })
-  const endIcon = L.divIcon({
-    className: 'pmc-end-marker',
-    html: '<div class="pmc-end-badge finish">终</div>',
-    iconSize: [22, 22],
-    iconAnchor: [11, 11]
-  })
-  L.marker(fullPath[0], { icon: startIcon, interactive: false, zIndexOffset: 600 }).addTo(lineLayer)
-  L.marker(fullPath[fullPath.length - 1], { icon: endIcon, interactive: false, zIndexOffset: 600 }).addTo(lineLayer)
+  if (fullPath && fullPath.length >= 2) {
+    const startIcon = L.divIcon({
+      className: 'pmc-end-marker',
+      html: '<div class="pmc-end-badge start">起</div>',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11]
+    })
+    const endIcon = L.divIcon({
+      className: 'pmc-end-marker',
+      html: '<div class="pmc-end-badge finish">终</div>',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11]
+    })
+    L.marker(fullPath[0], { icon: startIcon, interactive: false, zIndexOffset: 600 }).addTo(lineLayer)
+    L.marker(fullPath[fullPath.length - 1], { icon: endIcon, interactive: false, zIndexOffset: 600 }).addTo(lineLayer)
+  }
 
   // 每段叠加流动方向；编辑拐点时不画（外层已判断 pathEditIndex）
   if (list && list.length > 1) {
     const defaultColor = props.polylineColor || '#3B82F6'
     for (let i = 0; i < list.length - 1; i++) {
       const from = list[i]
+      if (!isSegmentModeVisible(from.travelMode)) continue
       const latlngs = segmentLatLngs(from, list[i + 1])
       const color = props.segmentByTravelMode
         ? travelModeColor(from.travelMode, defaultColor)
         : defaultColor
       drawFlowOverlay(latlngs, color)
     }
-  } else {
+  } else if (fullPath && fullPath.length >= 2) {
     drawFlowOverlay(fullPath, props.polylineColor || '#3B82F6')
   }
 }
@@ -353,15 +373,23 @@ function drawSegments(list) {
   if (!lineLayer || list.length < 2) return []
   const defaultColor = props.polylineColor || '#3B82F6'
   const fullPath = []
+  const filtering = !!modeFilterSet.value
   segmentRefs = []
   for (let i = 0; i < list.length - 1; i++) {
     const from = list[i]
     const to = list[i + 1]
     const latlngs = segmentLatLngs(from, to)
-    if (!fullPath.length) {
-      fullPath.push(...latlngs)
-    } else {
-      fullPath.push(...latlngs.slice(1))
+    const visible = isSegmentModeVisible(from.travelMode)
+    if (visible) {
+      if (!fullPath.length) {
+        fullPath.push(...latlngs)
+      } else {
+        fullPath.push(...latlngs.slice(1))
+      }
+    }
+    if (!visible) {
+      segmentRefs[i] = null
+      continue
     }
     const color = props.segmentByTravelMode
       ? travelModeColor(from.travelMode, defaultColor)
@@ -425,6 +453,8 @@ function drawSegments(list) {
     }
     segmentRefs[i] = { line, hit, latlngs }
   }
+  // 筛选中不画全程起终点，避免落在被隐藏路段上
+  if (filtering && fullPath.length < 2) return []
   return fullPath
 }
 
@@ -474,8 +504,13 @@ function renderPoints({ fit = props.autoFit } = {}) {
   if (props.showPolyline && list.length > 1) {
     fullPath = drawSegments(list)
     // 编辑拐点时隐藏方向装饰，避免遮挡拖拽
-    if (props.showDirection && props.pathEditIndex < 0) {
-      drawDirectionDecorations(fullPath, list)
+    if (props.showDirection && props.pathEditIndex < 0 && fullPath.length >= 2) {
+      // 筛选时只画可见段的流动箭头，起终点仅在未筛选时显示
+      if (modeFilterSet.value) {
+        drawDirectionDecorations(null, list)
+      } else {
+        drawDirectionDecorations(fullPath, list)
+      }
     }
     if (props.pathEditIndex >= 0) {
       bindPathEditor(list, props.pathEditIndex)
@@ -578,6 +613,12 @@ watch(
     props.previewPath
   ],
   () => refresh({ fit: props.autoFit && !props.editable }),
+  { deep: true }
+)
+
+watch(
+  () => props.visibleTravelModes,
+  () => refresh({ fit: false }),
   { deep: true }
 )
 

@@ -51,15 +51,27 @@
       <el-table-column label="时长" min-width="160">
         <template #default="scope">{{ formatDuration(scope.row.totalDuration) }}</template>
       </el-table-column>
+      <el-table-column label="启用轨迹" width="110" align="center">
+        <template #default="scope">
+          <el-switch
+            :model-value="scope.row.enabled !== 0"
+            :loading="enabledLoadingId === scope.row.trackId"
+            :disabled="!canEditTrack"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            @change="(val) => handleEnabledChange(scope.row, val)"
+          />
+        </template>
+      </el-table-column>
       <el-table-column label="公开" prop="isPublic" width="80">
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
       <el-table-column label="行程说明" prop="remark" min-width="160" :show-overflow-tooltip="true" />
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="handleView(scope.row)">查看</el-button>
           <el-button link type="primary" @click="handleEdit(scope.row)" v-hasPermi="['album:track:edit']">编辑</el-button>
-          <el-button link type="primary" @click="handlePoints(scope.row)" v-hasPermi="['album:track:edit']">点位</el-button>
           <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:track:remove']">删除</el-button>
         </template>
       </el-table-column>
@@ -121,86 +133,6 @@
     </el-dialog>
 
     <el-dialog
-      title="点位管理"
-      v-model="pointsOpen"
-      width="920px"
-      append-to-body
-      destroy-on-close
-      class="track-points-dialog"
-    >
-      <div class="points-toolbar">
-        <span class="points-title">{{ pointsTrackName || '未命名轨迹' }}</span>
-        <span class="points-hint">说明表示「从该点到下一点」。橙色「途经点」为自定义增补，可在此移除。</span>
-      </div>
-      <el-table v-loading="pointsLoading" :data="pointRows" max-height="520" border>
-        <el-table-column label="序号" prop="sequence" width="70" align="center" />
-        <el-table-column label="类型" width="88" align="center">
-          <template #default="scope">
-            <el-tag v-if="isWaypointRow(scope.row)" type="warning" size="small">途经点</el-tag>
-            <el-tag v-else size="small" type="info">照片</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="预览" width="72" align="center">
-          <template #default="scope">
-            <img
-              v-if="pointThumb(scope.row)"
-              :src="pointThumb(scope.row)"
-              class="point-thumb"
-              alt=""
-            >
-            <span v-else class="point-thumb-empty">{{ isWaypointRow(scope.row) ? '途经' : '无' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="文件 / 地点名" min-width="120" :show-overflow-tooltip="true">
-          <template #default="scope">
-            {{ scope.row.fileName || scope.row.description || '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="时间" prop="pointTime" width="160" />
-        <el-table-column label="地点" prop="address" min-width="110" :show-overflow-tooltip="true" />
-        <el-table-column label="到下一站" width="120">
-          <template #default="scope">
-            <el-select
-              v-if="scope.$index < pointRows.length - 1"
-              v-model="scope.row.travelMode"
-              clearable
-              placeholder="出行方式"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="m in travelModes"
-                :key="m.key"
-                :label="m.label"
-                :value="m.key"
-              />
-            </el-select>
-            <span v-else class="point-thumb-empty">终点</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="文字说明" min-width="200">
-          <template #default="scope">
-            <el-input
-              v-model="scope.row.description"
-              type="textarea"
-              :rows="2"
-              maxlength="500"
-              :placeholder="scope.$index < pointRows.length - 1 ? '例：G123次高铁 / 877路公交' : '地点名称'"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="80" align="center" fixed="right">
-          <template #default="scope">
-            <el-button link type="danger" @click="removePointRow(scope.row)">移除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button type="primary" :loading="pointsSaving" @click="submitPoints">保存说明</el-button>
-        <el-button @click="pointsOpen = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
       v-model="detailOpen"
       title="轨迹查看"
       width="100%"
@@ -209,6 +141,7 @@
       modal-class="track-view-modal"
       destroy-on-close
       append-to-body
+      :z-index="1990"
       @opened="onViewerOpened"
       @closed="stopViewerRectSync"
     >
@@ -218,7 +151,7 @@
           ref="mapViewerRef"
           :track="detailTrack"
           :points="detailPoints"
-          :editable="canEditTrack"
+          :editable="canEditTrack && isTrackEnabled(detailTrack)"
           @saved="onTrackMapSaved"
           @replan="onTrackReplan"
         />
@@ -234,19 +167,16 @@ import {
   getTrack,
   generateTrack,
   updateTrack,
-  updateTrackPoints,
-  delTrackPoint,
   delTrack,
   resolveTrackRoutes
 } from '@/api/album/track'
 import TrackMapViewer from '@/components/TrackMapViewer/index.vue'
-import { mediaSrc, TRAVEL_MODES, hasMissingRoutePaths, hasUnstableAutoRoutes, isWaypointPoint } from '@/utils/photoMapCluster'
+import { hasMissingRoutePaths, hasUnstableAutoRoutes } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 import useAppStore from '@/store/modules/app'
 
 const { proxy } = getCurrentInstance()
 const appStore = useAppStore()
-const travelModes = TRAVEL_MODES
 const canEditTrack = computed(() => checkPermi(['album:track:edit']))
 const trackList = ref([])
 const albumOptions = ref([])
@@ -258,6 +188,7 @@ const genLoading = ref(false)
 const editOpen = ref(false)
 const editLoading = ref(false)
 const editFormRef = ref(null)
+const enabledLoadingId = ref(null)
 const editForm = ref({
   trackId: undefined,
   trackName: '',
@@ -268,12 +199,6 @@ const editForm = ref({
 const editRules = {
   trackName: [{ required: true, message: '轨迹名称不能为空', trigger: 'blur' }]
 }
-const pointsOpen = ref(false)
-const pointsLoading = ref(false)
-const pointsSaving = ref(false)
-const pointsTrackId = ref(undefined)
-const pointsTrackName = ref('')
-const pointRows = ref([])
 const detailOpen = ref(false)
 const detailLoading = ref(false)
 const detailTrack = ref(null)
@@ -291,6 +216,10 @@ const genForm = ref({ albumId: undefined, trackName: '' })
 function albumLabel(item) {
   if (!item) return ''
   return `${item.albumName || '未命名'}（ID:${item.albumId}）`
+}
+
+function isTrackEnabled(track) {
+  return track == null || track.enabled == null || track.enabled === 1
 }
 
 function formatDuration(sec) {
@@ -351,13 +280,15 @@ function syncViewerRect() {
   const main = document.querySelector('.app-main')
   const modal = document.querySelector('.track-view-modal')
   if (!main || !modal) return
-  // app-main 在 border-box + padding-top 下 top≈0、高度偏矮，不能直接用其 rect
-  // top 取固定顶栏底边，height 贴到视口底，左右仍对齐主内容区
+  // 顶边贴标签栏底边，避免盖住「首页 / 轨迹」页签与右键菜单区域
+  const tags = document.querySelector('#tags-view-container')
   const header = document.querySelector('.fixed-header')
   const mainRect = main.getBoundingClientRect()
-  const top = header
-    ? Math.max(0, header.getBoundingClientRect().bottom)
-    : 84
+  const top = tags
+    ? Math.max(0, Math.ceil(tags.getBoundingClientRect().bottom))
+    : header
+      ? Math.max(0, Math.ceil(header.getBoundingClientRect().bottom))
+      : 84
   const left = Math.max(0, mainRect.left)
   const width = Math.max(0, Math.min(window.innerWidth, mainRect.right) - left)
   const height = Math.max(0, window.innerHeight - top)
@@ -509,52 +440,27 @@ function submitEdit() {
   })
 }
 
-function pointThumb(row) {
-  return mediaSrc(row, false)
-}
-
-function isWaypointRow(row) {
-  return isWaypointPoint(row)
-}
-
-function handlePoints(row) {
+async function handleEnabledChange(row, val) {
   if (!row?.trackId) return
-  pointsTrackId.value = row.trackId
-  pointsTrackName.value = row.trackName || ''
-  pointsOpen.value = true
-  pointsLoading.value = true
-  pointRows.value = []
-  getTrack(row.trackId).then(res => {
-    const data = res.data || {}
-    pointsTrackName.value = data.track?.trackName || row.trackName || ''
-    pointRows.value = (data.points || []).map(p => ({
-      ...p,
-      travelMode: p.travelMode || '',
-      description: p.description || ''
-    }))
-  }).catch(() => {
-    pointsOpen.value = false
-  }).finally(() => {
-    pointsLoading.value = false
-  })
-}
-
-function submitPoints() {
-  if (!pointsTrackId.value) return
-  pointsSaving.value = true
-  const payload = pointRows.value.map(p => ({
-    pointId: p.pointId,
-    travelMode: p.travelMode ?? '',
-    description: p.description ?? '',
-    // 不传 routePath，后端在出行方式变化时自动规划真实路线
-    sequence: p.sequence
-  }))
-  updateTrackPoints(payload).then(() => {
-    proxy.$modal.msgSuccess('已保存；若修改了出行方式，将自动规划真实路线')
+  const enabled = val ? 1 : 0
+  const prev = row.enabled == null ? 1 : row.enabled
+  if (prev === enabled) return
+  enabledLoadingId.value = row.trackId
+  row.enabled = enabled
+  try {
+    await updateTrack({ trackId: row.trackId, enabled })
+    if (enabled === 1) {
+      proxy.$modal.msgSuccess('已开启：将自动同步生成，并在地图展示')
+    } else {
+      proxy.$modal.msgSuccess('已关闭：保留轨迹数据，地图不再展示')
+    }
     getList()
-  }).finally(() => {
-    pointsSaving.value = false
-  })
+  } catch (e) {
+    row.enabled = prev
+    proxy.$modal.msgError('更新失败')
+  } finally {
+    enabledLoadingId.value = null
+  }
 }
 
 function onTrackMapSaved() {
@@ -593,24 +499,6 @@ function onTrackReplan({ trackId, done }) {
   })
 }
 
-function removePointRow(row) {
-  if (!row?.pointId) return
-  const tip = isWaypointRow(row)
-    ? `确认移除途经点「${row.description || row.sequence}」？前后路段将自动重连。`
-    : '确认从轨迹中移除此点位？不会删除照片本身。'
-  proxy.$modal.confirm(tip).then(() => {
-    return delTrackPoint(row.pointId)
-  }).then(() => {
-    pointRows.value = pointRows.value.filter(p => p.pointId !== row.pointId)
-    // 本地重排序号，与后端一致
-    pointRows.value.forEach((p, idx) => {
-      p.sequence = idx + 1
-    })
-    proxy.$modal.msgSuccess('已移除')
-    getList()
-  }).catch(() => {})
-}
-
 function handleDelete(row) {
   proxy.$modal.confirm('确认删除该轨迹？').then(() => delTrack(row.trackId)).then(() => {
     getList()
@@ -627,38 +515,6 @@ loadAlbums().finally(() => getList())
   color: #909399;
   font-size: 13px;
   vertical-align: middle;
-}
-
-.points-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.points-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.points-hint {
-  color: #909399;
-  font-size: 13px;
-}
-
-.point-thumb {
-  width: 40px;
-  height: 40px;
-  object-fit: cover;
-  border-radius: 4px;
-  vertical-align: middle;
-}
-
-.point-thumb-empty {
-  color: #c0c4cc;
-  font-size: 12px;
 }
 
 /* 遮罩与弹窗都对齐主内容区（侧栏右侧、顶栏下方的白色区域） */

@@ -42,6 +42,9 @@ public class BizTrack implements Serializable {
     /** 是否前台展示：0否 1是 */
     private Integer isPublic;
 
+    /** 是否启用轨迹：0关闭（不自动生成、地图不显示）1开启 */
+    private Integer enabled;
+
     private String createBy;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

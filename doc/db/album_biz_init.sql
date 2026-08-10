@@ -87,6 +87,7 @@ CREATE TABLE `biz_track` (
   `point_count` int(11) NOT NULL DEFAULT 0 COMMENT '轨迹点数量',
   `track_color` varchar(20) NOT NULL DEFAULT '#3B82F6' COMMENT '轨迹线颜色',
   `is_public` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否前台展示',
+  `enabled` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否启用轨迹：0关闭（不生成/地图不显示）1开启',
   `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',

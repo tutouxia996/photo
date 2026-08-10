@@ -229,13 +229,27 @@ public class BizTrackController extends BaseController {
         if (track.getIsPublic() != null) {
             db.setIsPublic(track.getIsPublic());
         }
+        if (track.getEnabled() != null) {
+            db.setEnabled(track.getEnabled() == 1 ? 1 : 0);
+        }
         // 允许清空行程说明
         if (track.getRemark() != null) {
             db.setRemark(track.getRemark());
         }
         db.setUpdateBy(getUsername());
         db.setUpdateTime(new Date());
-        return toAjax(trackService.updateById(db));
+        boolean ok = trackService.updateById(db);
+        // 重新开启且尚无点位时，按相册 GPS 生成/同步轨迹
+        if (ok && db.getEnabled() != null && db.getEnabled() == 1
+                && (db.getPointCount() == null || db.getPointCount() <= 0)
+                && db.getAlbumId() != null) {
+            try {
+                trackService.autoSyncAlbumTrack(db.getAlbumId());
+            } catch (Exception ignored) {
+                // 开关已保存；无 GPS 时不同步即可
+            }
+        }
+        return toAjax(ok);
     }
 
     /**
