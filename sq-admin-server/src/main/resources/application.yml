@@ -143,3 +143,16 @@ album:
     # 高德 Key：优先环境变量；本地也可写在 application-local.yml（已 gitignore）
     webKey: ${AMAP_WEB_KEY:}
     jsKey: ${AMAP_JS_KEY:}
+    # 火车/高铁优先 OSM 铁路贴轨（Overpass）；失败再回退高德公交/驾车
+    osmRailwayEnabled: true
+    overpassUrl: ${OSM_OVERPASS_URL:https://overpass-api.de/api/interpreter}
+    # Java 访问 Overpass 若报 PKIX 证书错误，保持 true（仅影响 Overpass 连接）
+    overpassTrustAllSsl: true
+    osmCacheDir: ${OSM_CACHE_DIR:}
+    # 火车车次时刻表（聚合数据）；无 Key 时仍可手工填经停站贴轨
+    train:
+      enabled: true
+      provider: juhe
+      apiKey: ${JUHE_TRAIN_KEY:}
+      queryUrl: https://apis.juhe.cn/fapigw/train/query
+      detailUrl: https://apis.juhe.cn/train/s

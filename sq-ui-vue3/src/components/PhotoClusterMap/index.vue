@@ -507,7 +507,7 @@ function renderPoints({ fit = props.autoFit } = {}) {
         photoMarkers.push(marker)
       }
     })
-    if (photoMarkers.length) clusterGroup.addLayers(photoMarkers)
+    if (photoMarkers.length && clusterGroup) clusterGroup.addLayers(photoMarkers)
   }
 
   const boundsPts = preview

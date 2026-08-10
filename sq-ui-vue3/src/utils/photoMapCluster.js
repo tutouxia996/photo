@@ -162,16 +162,22 @@ function approxKmBetween(a, b) {
 /**
  * 是否需要重新贴路。
  * 注意：地铁/高铁/公交等是用户可选手动方式，不能仅因 mode 就判定需重算（否则会被改回步行）。
+ * 火车/高铁/飞机两点直线也可能是刻意结果，打开轨迹时勿因此强制全量重算。
  */
 export function hasUnstableAutoRoutes(points) {
   const list = filterValidPoints(points)
   for (let i = 0; i < list.length - 1; i++) {
+    const mode = String(list[i]?.travelMode || '').toLowerCase()
+    // 用户手选长途方式：两点折线不视为「损坏」
+    if (mode === 'hsr' || mode === 'train' || mode === 'flight' || mode === 'metro' || mode === 'bus') {
+      continue
+    }
     const path = parseRoutePath(list[i].routePath)
     const a = toMapLatLng(list[i])
     const b = toMapLatLng(list[i + 1])
     const approxKm = approxKmBetween(a, b)
     if (approxKm <= 0.03) continue
-    // 有一定距离却只有直线两点
+    // 有一定距离却只有直线两点（步行/驾车等应贴路）
     if (!path || path.length <= 2) {
       if (approxKm > 0.04) return true
       continue

@@ -81,74 +81,215 @@
         <div class="seg-panel-title">增补路段</div>
         <button type="button" class="seg-close" @click="closeCustomPanel">×</button>
       </div>
-      <p class="path-tip">用高德搜索起终点，按步行/骑行/地铁/高铁等规划真实线路后插入轨迹。</p>
 
-      <div class="seg-label">起点</div>
-      <el-select
-        v-model="customFromId"
-        filterable
-        remote
-        clearable
-        reserve-keyword
-        placeholder="搜索起点（如：北京南站）"
-        :remote-method="q => searchPlace(q, 'from')"
-        :loading="customFromSearching"
-        style="width: 100%"
-        @change="onPickCustomPlace('from')"
-      >
-        <el-option
-          v-for="item in customFromOptions"
-          :key="item.id || item.name + item.lng"
-          :label="item.name"
-          :value="item.id || item.name + ',' + item.lng"
-        >
-          <div class="place-opt">
-            <div class="place-name">{{ item.name }}</div>
-            <div class="place-addr">{{ item.address }}</div>
-          </div>
-        </el-option>
-      </el-select>
-      <div v-if="customFrom" class="place-picked">已选：{{ customFrom.name }}</div>
-
-      <div class="seg-label">终点</div>
-      <el-select
-        v-model="customToId"
-        filterable
-        remote
-        clearable
-        reserve-keyword
-        placeholder="搜索终点"
-        :remote-method="q => searchPlace(q, 'to')"
-        :loading="customToSearching"
-        style="width: 100%"
-        @change="onPickCustomPlace('to')"
-      >
-        <el-option
-          v-for="item in customToOptions"
-          :key="item.id || item.name + item.lng"
-          :label="item.name"
-          :value="item.id || item.name + ',' + item.lng"
-        >
-          <div class="place-opt">
-            <div class="place-name">{{ item.name }}</div>
-            <div class="place-addr">{{ item.address }}</div>
-          </div>
-        </el-option>
-      </el-select>
-      <div v-if="customTo" class="place-picked">已选：{{ customTo.name }}</div>
-
-      <div class="seg-label">出行方式</div>
-      <div class="mode-grid">
-        <button
-          v-for="m in travelModes"
-          :key="m.key"
-          type="button"
-          class="mode-btn"
-          :class="{ active: customMode === m.key }"
-          :style="customModeBtnStyle(m)"
-          @click="customMode = m.key"
-        >{{ m.label }}</button>
+      <div class="custom-tabs">
+        <button type="button" class="custom-tab" :class="{ active: customTab === 'place' }" @click="customTab = 'place'">地点搜索</button>
+        <button type="button" class="custom-tab" :class="{ active: customTab === 'train' }" @click="switchTrainTab">车次经停</button>
       </div>
+
+      <template v-if="customTab === 'place'">
+        <p class="path-tip">用高德搜索起终点；步行/骑行/驾车走高德路网，火车/高铁/地铁优先 OSM 铁路贴轨后插入轨迹。</p>
+
+        <div class="seg-label">起点</div>
+        <el-select
+          v-model="customFromId"
+          filterable
+          remote
+          clearable
+          reserve-keyword
+          placeholder="搜索起点（如：北京南站）"
+          :remote-method="q => searchPlace(q, 'from')"
+          :loading="customFromSearching"
+          style="width: 100%"
+          @change="onPickCustomPlace('from')"
+        >
+          <el-option
+            v-for="item in customFromOptions"
+            :key="item.id || item.name + item.lng"
+            :label="item.name"
+            :value="item.id || item.name + ',' + item.lng"
+          >
+            <div class="place-opt">
+              <div class="place-name">{{ item.name }}</div>
+              <div class="place-addr">{{ item.address }}</div>
+            </div>
+          </el-option>
+        </el-select>
+        <div v-if="customFrom" class="place-picked">已选：{{ customFrom.name }}</div>
+
+        <div class="seg-label">终点</div>
+        <el-select
+          v-model="customToId"
+          filterable
+          remote
+          clearable
+          reserve-keyword
+          placeholder="搜索终点"
+          :remote-method="q => searchPlace(q, 'to')"
+          :loading="customToSearching"
+          style="width: 100%"
+          @change="onPickCustomPlace('to')"
+        >
+          <el-option
+            v-for="item in customToOptions"
+            :key="item.id || item.name + item.lng"
+            :label="item.name"
+            :value="item.id || item.name + ',' + item.lng"
+          >
+            <div class="place-opt">
+              <div class="place-name">{{ item.name }}</div>
+              <div class="place-addr">{{ item.address }}</div>
+            </div>
+          </el-option>
+        </el-select>
+        <div v-if="customTo" class="place-picked">已选：{{ customTo.name }}</div>
+
+        <div class="seg-label">出行方式</div>
+        <div class="mode-grid">
+          <button
+            v-for="m in travelModes"
+            :key="m.key"
+            type="button"
+            class="mode-btn"
+            :class="{ active: customMode === m.key }"
+            :style="customModeBtnStyle(m)"
+            @click="customMode = m.key"
+          >{{ m.label }}</button>
+        </div>
+      </template>
+
+      <template v-else>
+        <p class="path-tip">
+          手工填经停即可贴轨（用高德定位车站 + OSM 铁路）。
+          「查询班次 / 拉取经停」需要配置聚合 Key（JUHE_TRAIN_KEY），未配置时按钮会禁用，不影响手填预览。
+        </p>
+
+        <div class="seg-label">车次（可选，写入说明）</div>
+        <el-input v-model="trainNo" placeholder="如 G8731" clearable @change="onTrainNoChange" />
+
+        <div class="train-row">
+          <div class="train-col">
+            <div class="seg-label">起点站</div>
+            <el-select
+              v-model="trainFromId"
+              filterable
+              remote
+              clearable
+              reserve-keyword
+              placeholder="高德搜索：清河站"
+              :remote-method="q => searchTrainStation(q, 'from')"
+              :loading="trainFromSearching"
+              style="width: 100%"
+              @change="onPickTrainStation('from')"
+            >
+              <el-option
+                v-for="item in trainFromOptions"
+                :key="'tf-' + (item.id || item.name + item.lng)"
+                :label="item.name"
+                :value="item.id || item.name + ',' + item.lng"
+              >
+                <div class="place-opt">
+                  <div class="place-name">{{ item.name }}</div>
+                  <div class="place-addr">{{ item.address }}</div>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+          <div class="train-col">
+            <div class="seg-label">终点站</div>
+            <el-select
+              v-model="trainToId"
+              filterable
+              remote
+              clearable
+              reserve-keyword
+              placeholder="高德搜索：八达岭长城站"
+              :remote-method="q => searchTrainStation(q, 'to')"
+              :loading="trainToSearching"
+              style="width: 100%"
+              @change="onPickTrainStation('to')"
+            >
+              <el-option
+                v-for="item in trainToOptions"
+                :key="'tt-' + (item.id || item.name + item.lng)"
+                :label="item.name"
+                :value="item.id || item.name + ',' + item.lng"
+              >
+                <div class="place-opt">
+                  <div class="place-name">{{ item.name }}</div>
+                  <div class="place-addr">{{ item.address }}</div>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+        </div>
+
+        <div class="path-actions" style="margin-top: 8px">
+          <el-button size="small" type="primary" plain @click="fillStopsFromStations">填入起终点到经停</el-button>
+          <el-button size="small" :loading="trainQuerying" :disabled="!trainApiReady" :title="trainApiReady ? '' : '需配置 JUHE_TRAIN_KEY'" @click="queryTrainList">查询班次</el-button>
+          <el-button size="small" :loading="trainStopsLoading" :disabled="!trainApiReady || !trainNo" :title="trainApiReady ? '' : '需配置 JUHE_TRAIN_KEY'" @click="fetchTrainStops">拉取经停</el-button>
+        </div>
+        <p v-if="!trainApiReady" class="api-disabled-tip">未配置聚合火车 Key，班次查询已禁用；请用上方高德搜站 + 手填经停。</p>
+
+        <div class="train-row">
+          <div class="train-col">
+            <div class="seg-label">日期（查班次用）</div>
+            <el-date-picker
+              v-model="trainDate"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="出发日期"
+              style="width: 100%"
+              :disabled="!trainApiReady"
+            />
+          </div>
+          <div class="train-col">
+            <div class="seg-label">车型筛选</div>
+            <el-select v-model="trainFilter" clearable placeholder="全部" style="width: 100%" :disabled="!trainApiReady">
+              <el-option label="高铁/城际 G" value="G" />
+              <el-option label="动车 D" value="D" />
+              <el-option label="其他" value="O" />
+            </el-select>
+          </div>
+        </div>
+
+        <div v-if="trainOptions.length" class="seg-label">选择班次</div>
+        <el-select
+          v-if="trainOptions.length"
+          v-model="selectedTrainKey"
+          placeholder="点击填入车次与站"
+          style="width: 100%"
+          @change="onPickTrainOption"
+        >
+          <el-option
+            v-for="t in trainOptions"
+            :key="t.trainNo + t.departTime"
+            :label="`${t.trainNo} ${t.departTime || ''}→${t.arriveTime || ''} ${t.fromStation || ''}-${t.toStation || ''}`"
+            :value="t.trainNo + '|' + (t.departTime || '')"
+          />
+        </el-select>
+
+        <div class="seg-label">经停站（每行一个站，可只填起终点）</div>
+        <el-input
+          v-model="trainManualStops"
+          type="textarea"
+          :rows="5"
+          placeholder="清河站&#10;八达岭长城站"
+        />
+
+        <div class="seg-label">出行方式</div>
+        <div class="mode-grid">
+          <button
+            v-for="m in trainModeChoices"
+            :key="m.key"
+            type="button"
+            class="mode-btn"
+            :class="{ active: customMode === m.key }"
+            :style="customModeBtnStyle(m)"
+            @click="customMode = m.key"
+          >{{ m.label }}</button>
+        </div>
+      </template>
 
       <div class="seg-label">插入位置</div>
       <el-radio-group v-model="customInsertPos" class="insert-pos">
@@ -274,8 +415,13 @@ import { computed, getCurrentInstance, ref, watch } from 'vue'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 import {
   addCustomSegment,
+  addTrainSegment,
   delTrackPoint,
+  getTrainApiStatus,
+  getTrainStops,
+  planTrainRoute,
   previewTrackRoute,
+  queryTrains,
   searchTrackPlace,
   updateTrackPoints
 } from '@/api/album/track'
@@ -305,6 +451,7 @@ const routeHint = ref('')
 const travelModes = TRAVEL_MODES
 
 const customOpen = ref(false)
+const customTab = ref('place')
 const customFromId = ref('')
 const customToId = ref('')
 const customFrom = ref(null)
@@ -321,6 +468,32 @@ const customPlanning = ref(false)
 const customSaving = ref(false)
 const customHint = ref('')
 let placeSearchTimer = null
+
+const trainApiReady = ref(false)
+const trainNo = ref('')
+const trainFromStation = ref('')
+const trainToStation = ref('')
+const trainFromId = ref('')
+const trainToId = ref('')
+const trainFromPlace = ref(null)
+const trainToPlace = ref(null)
+const trainFromOptions = ref([])
+const trainToOptions = ref([])
+const trainFromSearching = ref(false)
+const trainToSearching = ref(false)
+const trainDate = ref('')
+const trainFilter = ref('G')
+const trainManualStops = ref('')
+const trainOptions = ref([])
+const selectedTrainKey = ref('')
+const trainQuerying = ref(false)
+const trainStopsLoading = ref(false)
+const trainPlannedStops = ref(null)
+const trainDescription = ref('')
+
+const trainModeChoices = computed(() =>
+  TRAVEL_MODES.filter(m => m.key === 'hsr' || m.key === 'train' || m.key === 'metro')
+)
 
 const waypointIndex = ref(-1)
 const waypointDesc = ref('')
@@ -401,29 +574,6 @@ function placeKey(item) {
   return item?.id || `${item?.name},${item?.lng},${item?.lat}`
 }
 
-function customModeBtnStyle(m) {
-  if (customMode.value === m.key) {
-    return { background: m.color, borderColor: m.color, color: '#fff' }
-  }
-  return { borderColor: m.color, color: m.color }
-}
-
-function toggleCustomPanel() {
-  if (customOpen.value) {
-    closeCustomPanel()
-  } else {
-    customOpen.value = true
-    activeIndex.value = -1
-    customHint.value = '搜索并选择起点、终点后预览，再添加到轨迹'
-  }
-}
-
-function closeCustomPanel() {
-  customOpen.value = false
-  customPreviewPath.value = null
-  customHint.value = ''
-}
-
 function searchPlace(query, which) {
   const q = (query || '').trim()
   if (!q) return
@@ -455,7 +605,196 @@ function onPickCustomPlace(which) {
   customPreviewPath.value = null
 }
 
+function customModeBtnStyle(m) {
+  if (customMode.value === m.key) {
+    return { background: m.color, borderColor: m.color, color: '#fff' }
+  }
+  return { borderColor: m.color, color: m.color }
+}
+
+function toggleCustomPanel() {
+  if (customOpen.value) {
+    closeCustomPanel()
+  } else {
+    customOpen.value = true
+    activeIndex.value = -1
+    customTab.value = 'place'
+    customHint.value = '搜索并选择起点、终点后预览，再添加到轨迹'
+    loadTrainApiStatus()
+  }
+}
+
+function closeCustomPanel() {
+  customOpen.value = false
+  customPreviewPath.value = null
+  customHint.value = ''
+  trainOptions.value = []
+  selectedTrainKey.value = ''
+  trainPlannedStops.value = null
+  trainDescription.value = ''
+}
+
+async function loadTrainApiStatus() {
+  try {
+    const res = await getTrainApiStatus()
+    trainApiReady.value = !!(res.data && res.data.apiReady)
+  } catch (e) {
+    trainApiReady.value = false
+  }
+}
+
+function switchTrainTab() {
+  customTab.value = 'train'
+  if (!['hsr', 'train', 'metro'].includes(customMode.value)) {
+    customMode.value = 'hsr'
+  }
+  loadTrainApiStatus().then(() => {
+    customHint.value = trainApiReady.value
+      ? '可用聚合查班次；也可高德搜站后手填经停预览贴轨'
+      : '请用高德搜索起终点站 →「填入起终点到经停」→ 预览（无需聚合 Key）'
+  })
+}
+
+function searchTrainStation(query, which) {
+  const q = (query || '').trim()
+  if (!q) return
+  clearTimeout(placeSearchTimer)
+  placeSearchTimer = setTimeout(async () => {
+    if (which === 'from') trainFromSearching.value = true
+    else trainToSearching.value = true
+    try {
+      const kw = q.includes('站') ? q : `${q}站`
+      const res = await searchTrackPlace({ keywords: kw, offset: 10 })
+      const list = res.data || []
+      if (which === 'from') trainFromOptions.value = list
+      else trainToOptions.value = list
+    } catch (e) {
+      if (which === 'from') trainFromOptions.value = []
+      else trainToOptions.value = []
+    } finally {
+      if (which === 'from') trainFromSearching.value = false
+      else trainToSearching.value = false
+    }
+  }, 320)
+}
+
+function onPickTrainStation(which) {
+  const id = which === 'from' ? trainFromId.value : trainToId.value
+  const opts = which === 'from' ? trainFromOptions.value : trainToOptions.value
+  const found = opts.find(o => placeKey(o) === id) || null
+  if (which === 'from') {
+    trainFromPlace.value = found
+    trainFromStation.value = found?.name || ''
+  } else {
+    trainToPlace.value = found
+    trainToStation.value = found?.name || ''
+  }
+  customPreviewPath.value = null
+}
+
+function fillStopsFromStations() {
+  const a = trainFromStation.value || trainFromPlace.value?.name
+  const b = trainToStation.value || trainToPlace.value?.name
+  if (!a || !b) {
+    customHint.value = '请先用高德搜索并选择起点站、终点站'
+    return
+  }
+  trainManualStops.value = `${a}\n${b}`
+  customHint.value = '已填入起终点，可点「预览线路」贴轨'
+}
+
+function onTrainNoChange() {
+  const no = (trainNo.value || '').trim().toUpperCase()
+  if (!no) return
+  trainNo.value = no
+  const c = no.charAt(0)
+  if (c === 'G' || c === 'C' || c === 'D') customMode.value = 'hsr'
+  else if (c === 'S' || c === 'Z' || c === 'T' || c === 'K') customMode.value = 'train'
+}
+
+async function queryTrainList() {
+  const from = trainFromStation.value || trainFromPlace.value?.name
+  const to = trainToStation.value || trainToPlace.value?.name
+  if (!from || !to || !trainDate.value) {
+    customHint.value = '查班次需：出发站、到达站、日期（并配置聚合 Key）'
+    return
+  }
+  trainQuerying.value = true
+  customHint.value = '正在查询班次…'
+  try {
+    const res = await queryTrains({
+      fromStation: String(from).replace(/站$/, ''),
+      toStation: String(to).replace(/站$/, ''),
+      date: trainDate.value,
+      filter: trainFilter.value || undefined
+    })
+    trainOptions.value = res.data || []
+    customHint.value = trainOptions.value.length
+      ? `查到 ${trainOptions.value.length} 趟车，请选择班次`
+      : '未查到班次，可改日期或手工填经停'
+  } catch (e) {
+    trainOptions.value = []
+    customHint.value = e?.message || '班次查询失败'
+  } finally {
+    trainQuerying.value = false
+  }
+}
+
+function onPickTrainOption(key) {
+  const found = trainOptions.value.find(t => (t.trainNo + '|' + (t.departTime || '')) === key)
+  if (!found) return
+  trainNo.value = found.trainNo || ''
+  if (found.fromStation) trainFromStation.value = found.fromStation
+  if (found.toStation) trainToStation.value = found.toStation
+  onTrainNoChange()
+  // 无经停详情时先写入起终点，便于手工补充中间站
+  if (!trainManualStops.value.trim() && found.fromStation && found.toStation) {
+    const dep = found.departTime ? ` ${found.departTime}` : ''
+    const arr = found.arriveTime ? ` ${found.arriveTime}` : ''
+    trainManualStops.value = `${found.fromStation}${dep}\n${found.toStation}${arr}`
+  }
+  customHint.value = `已选 ${found.trainNo}，可点「拉取经停」或直接预览`
+}
+
+async function fetchTrainStops() {
+  if (!trainNo.value) {
+    customHint.value = '请先填写车次'
+    return
+  }
+  trainStopsLoading.value = true
+  customHint.value = '正在拉取经停…'
+  try {
+    const res = await getTrainStops({
+      trainNo: trainNo.value.trim(),
+      fromStation: trainFromStation.value || undefined,
+      toStation: trainToStation.value || undefined
+    })
+    const stops = res.data || []
+    if (!stops.length) {
+      customHint.value = '未查到经停，请手工填写'
+      return
+    }
+    trainManualStops.value = stops.map(s => {
+      const parts = [s.name]
+      if (s.arriveTime) parts.push(s.arriveTime)
+      if (s.departTime && s.departTime !== s.arriveTime) parts.push(s.departTime)
+      return parts.join(' ')
+    }).join('\n')
+    if (stops[0]?.name) trainFromStation.value = stops[0].name
+    if (stops[stops.length - 1]?.name) trainToStation.value = stops[stops.length - 1].name
+    customHint.value = `已填入 ${stops.length} 个经停站，可预览线路`
+  } catch (e) {
+    customHint.value = e?.message || '拉取经停失败，请手工填写'
+  } finally {
+    trainStopsLoading.value = false
+  }
+}
+
 async function previewCustomSegment() {
+  if (customTab.value === 'train') {
+    await previewTrainSegment()
+    return
+  }
   if (!customFrom.value || !customTo.value) {
     customHint.value = '请先搜索并选择起点和终点'
     return
@@ -477,6 +816,8 @@ async function previewCustomSegment() {
     const data = res.data || {}
     const path = data.path && data.path.length >= 2 ? data.path : null
     customPreviewPath.value = path
+    trainPlannedStops.value = null
+    trainDescription.value = ''
     if (!path) {
       customHint.value = data.message || '未拿到折线，请换出行方式重试'
       return
@@ -496,14 +837,96 @@ async function previewCustomSegment() {
   }
 }
 
-async function submitCustomSegment() {
-  if (!props.track?.trackId) return
-  if (!customFrom.value || !customTo.value || !customPreviewPath.value?.length) {
-    customHint.value = '请先预览线路再添加'
+async function previewTrainSegment() {
+  // 未填经停时，自动用起终点两站
+  if (!trainManualStops.value.trim()) {
+    const a = trainFromStation.value || trainFromPlace.value?.name
+    const b = trainToStation.value || trainToPlace.value?.name
+    if (a && b) {
+      trainManualStops.value = `${a}\n${b}`
+    }
+  }
+  if (!trainManualStops.value.trim() && !trainNo.value.trim()) {
+    customHint.value = '请用高德选择起终点站，或手工填写经停'
     return
   }
+  customPlanning.value = true
+  customHint.value = '正在按经停站 OSM 贴轨（首次可能较慢）…'
+  try {
+    const body = {
+      trainNo: trainNo.value || undefined,
+      fromStation: trainFromStation.value || trainFromPlace.value?.name || undefined,
+      toStation: trainToStation.value || trainToPlace.value?.name || undefined,
+      travelMode: customMode.value || 'hsr',
+      manualStops: trainManualStops.value.trim() || undefined
+    }
+    // 起终点都用高德选过：两站（或未填中间站）时直接带坐标，减少二次搜索偏差
+    const stopLines = (trainManualStops.value || '').trim().split(/\n/).map(s => s.trim()).filter(Boolean)
+    if (trainFromPlace.value && trainToPlace.value && stopLines.length <= 2) {
+      body.stops = [
+        {
+          name: trainFromPlace.value.name,
+          lat: trainFromPlace.value.lat,
+          lng: trainFromPlace.value.lng,
+          wgsLat: trainFromPlace.value.wgsLat,
+          wgsLng: trainFromPlace.value.wgsLng
+        },
+        {
+          name: trainToPlace.value.name,
+          lat: trainToPlace.value.lat,
+          lng: trainToPlace.value.lng,
+          wgsLat: trainToPlace.value.wgsLat,
+          wgsLng: trainToPlace.value.wgsLng
+        }
+      ]
+      delete body.manualStops
+    }
+    const res = await planTrainRoute(body)
+    const data = res.data || {}
+    const path = data.path && data.path.length >= 2 ? data.path : null
+    customPreviewPath.value = path
+    trainPlannedStops.value = data.stops || null
+    trainDescription.value = data.description || ''
+    if (data.travelMode) customMode.value = data.travelMode
+    if (!path) {
+      customHint.value = data.message || '未拿到折线'
+      return
+    }
+    const dist = data.distanceMeters != null
+      ? (Number(data.distanceMeters) >= 1000
+        ? `${(Number(data.distanceMeters) / 1000).toFixed(2)} km`
+        : `${Math.round(Number(data.distanceMeters))} m`)
+      : ''
+    const stopN = data.stops?.length ? `${data.stops.length} 站` : ''
+    const pts = path.length
+    customHint.value = [
+      pts <= 2 ? '仍是直线（OSM 可能失败）' : '车次预览成功',
+      stopN,
+      dist ? `约 ${dist}` : '',
+      data.message || ''
+    ].filter(Boolean).join(' · ')
+    clusterMapRef.value?.refresh?.({ fit: true })
+  } catch (e) {
+    customPreviewPath.value = null
+    trainPlannedStops.value = null
+    customHint.value = e?.message || '车次贴轨失败'
+  } finally {
+    customPlanning.value = false
+  }
+}
+
+async function submitCustomSegment() {
+  if (!props.track?.trackId) return
   if (customInsertPos.value === 'after' && !customAfterPointId.value) {
     customHint.value = '请选择插入锚点'
+    return
+  }
+  if (customTab.value === 'train') {
+    await submitTrainSegment()
+    return
+  }
+  if (!customFrom.value || !customTo.value || !customPreviewPath.value?.length) {
+    customHint.value = '请先预览线路再添加'
     return
   }
   customSaving.value = true
@@ -527,6 +950,40 @@ async function submitCustomSegment() {
     }
     await addCustomSegment(props.track.trackId, body)
     proxy?.$modal?.msgSuccess?.('已增补路段')
+    closeCustomPanel()
+    editing.value = false
+    emit('saved')
+  } catch (e) {
+    customHint.value = e?.message || '添加失败'
+  } finally {
+    customSaving.value = false
+  }
+}
+
+async function submitTrainSegment() {
+  if (!customPreviewPath.value?.length) {
+    customHint.value = '请先预览线路再添加'
+    return
+  }
+  customSaving.value = true
+  try {
+    const body = {
+      trainNo: trainNo.value || undefined,
+      fromStation: trainFromStation.value || undefined,
+      toStation: trainToStation.value || undefined,
+      travelMode: customMode.value || 'hsr',
+      manualStops: trainManualStops.value.trim() || undefined,
+      stops: trainPlannedStops.value || undefined,
+      append: customInsertPos.value === 'end',
+      afterPointId: customInsertPos.value === 'after' ? customAfterPointId.value : null
+    }
+    if (customInsertPos.value === 'start') {
+      body.append = false
+      body.afterPointId = null
+    }
+    const res = await addTrainSegment(props.track.trackId, body)
+    const n = res.data?.insertedStops
+    proxy?.$modal?.msgSuccess?.(n ? `已插入 ${n} 个车站途经点` : '已增补车次路段')
     closeCustomPanel()
     editing.value = false
     emit('saved')
@@ -1127,6 +1584,47 @@ defineExpose({ refresh, startEdit })
 .custom-panel .insert-pos {
   display: flex;
   flex-wrap: wrap;
+}
+
+.custom-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.custom-tab {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+  color: #606266;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.custom-tab.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+  color: #409eff;
+  font-weight: 600;
+}
+
+.train-row {
+  display: flex;
+  gap: 8px;
+}
+
+.train-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.api-disabled-tip {
+  margin: 6px 0 0;
+  color: #e6a23c;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .place-opt {

@@ -13,6 +13,9 @@ import com.sq.bus.service.route.AmapPlaceSearchService;
 import com.sq.bus.service.route.TrackCustomSegmentService;
 import com.sq.bus.service.route.TrackRoutePlanResult;
 import com.sq.bus.service.route.TrackRouteResolveService;
+import com.sq.bus.service.route.TrainRoutePlanService;
+import com.sq.bus.service.route.TrainSegmentService;
+import com.sq.bus.service.route.TrainStop;
 import com.sq.bus.utils.GeoDistanceUtils;
 import com.sq.bus.utils.TravelModeInferUtils;
 import com.sq.common.annotation.Log;
@@ -64,6 +67,12 @@ public class BizTrackController extends BaseController {
     @Autowired
     private TrackCustomSegmentService trackCustomSegmentService;
 
+    @Autowired
+    private TrainRoutePlanService trainRoutePlanService;
+
+    @Autowired
+    private TrainSegmentService trainSegmentService;
+
     @PreAuthorize("@ss.hasPermi('album:track:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizTrack query) {
@@ -96,6 +105,48 @@ public class BizTrackController extends BaseController {
     @PostMapping("/{trackId}/custom-segment")
     public AjaxResult addCustomSegment(@PathVariable Long trackId, @RequestBody Map<String, Object> body) {
         return success(trackCustomSegmentService.addCustomSegment(trackId, body));
+    }
+
+    /** 火车时刻表 API 是否可用（无 Key 仍可手工经停） */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @GetMapping("/train/status")
+    public AjaxResult trainStatus() {
+        return success(trainRoutePlanService.apiStatus());
+    }
+
+    /** 站到站查询班次列表（需配置 album.map.train.apiKey） */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @GetMapping("/train/query")
+    public AjaxResult queryTrains(@RequestParam String fromStation,
+                                  @RequestParam String toStation,
+                                  @RequestParam String date,
+                                  @RequestParam(required = false) String filter) {
+        return success(trainRoutePlanService.queryTrains(fromStation, toStation, date, filter));
+    }
+
+    /** 按车次拉取经停站 */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @GetMapping("/train/stops")
+    public AjaxResult trainStops(@RequestParam String trainNo,
+                                 @RequestParam(required = false) String fromStation,
+                                 @RequestParam(required = false) String toStation) {
+        List<TrainStop> stops = trainRoutePlanService.lookupStops(trainNo, fromStation, toStation);
+        return success(stops);
+    }
+
+    /** 车次/手工经停 → 贴轨预览（不落库） */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @PostMapping("/train/plan")
+    public AjaxResult planTrainRoute(@RequestBody Map<String, Object> body) {
+        return success(trainRoutePlanService.plan(body));
+    }
+
+    /** 按经停站插入多站途经点并贴轨 */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @Log(title = "轨迹车次路段", businessType = BusinessType.INSERT)
+    @PostMapping("/{trackId}/train-segment")
+    public AjaxResult addTrainSegment(@PathVariable Long trackId, @RequestBody Map<String, Object> body) {
+        return success(trainSegmentService.addTrainSegment(trackId, body));
     }
 
     @PreAuthorize("@ss.hasPermi('album:track:query')")

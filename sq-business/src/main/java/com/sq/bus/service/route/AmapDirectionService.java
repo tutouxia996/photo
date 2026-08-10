@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.utils.CoordTransformUtils;
+import com.sq.bus.utils.GeoDistanceUtils;
 import com.sq.common.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +35,9 @@ public class AmapDirectionService {
     @Autowired
     private AlbumProperties albumProperties;
 
+    @Autowired
+    private OsmRailwayRouteService osmRailwayRouteService;
+
     /**
      * @param fromLatWgs 起点纬度（WGS84）
      * @param fromLngWgs 起点经度（WGS84）
@@ -44,7 +48,17 @@ public class AmapDirectionService {
     public TrackRoutePlanResult plan(double fromLatWgs, double fromLngWgs,
                                      double toLatWgs, double toLngWgs,
                                      String travelMode) {
-        return planWithWaypoints(fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, null, travelMode, true);
+        return plan(fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, travelMode, true);
+    }
+
+    /**
+     * @param allowOsmRail 是否允许火车/高铁/地铁走 OSM（批量贴路建议 false，避免打开轨迹极慢）
+     */
+    public TrackRoutePlanResult plan(double fromLatWgs, double fromLngWgs,
+                                     double toLatWgs, double toLngWgs,
+                                     String travelMode,
+                                     boolean allowOsmRail) {
+        return planWithWaypoints(fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, null, travelMode, true, allowOsmRail);
     }
 
     /**
@@ -57,6 +71,15 @@ public class AmapDirectionService {
                                                   List<double[]> waypointsGcjLngLat,
                                                   String travelMode,
                                                   boolean coordsAreWgs84) {
+        return planWithWaypoints(fromLat, fromLng, toLat, toLng, waypointsGcjLngLat, travelMode, coordsAreWgs84, true);
+    }
+
+    public TrackRoutePlanResult planWithWaypoints(double fromLat, double fromLng,
+                                                  double toLat, double toLng,
+                                                  List<double[]> waypointsGcjLngLat,
+                                                  String travelMode,
+                                                  boolean coordsAreWgs84,
+                                                  boolean allowOsmRail) {
         TrackRoutePlanResult result = new TrackRoutePlanResult();
         String mode = normalizeMode(travelMode);
         result.setTravelMode(mode);
@@ -66,7 +89,15 @@ public class AmapDirectionService {
         double fromLatGcj;
         double toLngGcj;
         double toLatGcj;
+        double fromLatWgs;
+        double fromLngWgs;
+        double toLatWgs;
+        double toLngWgs;
         if (coordsAreWgs84) {
+            fromLatWgs = fromLat;
+            fromLngWgs = fromLng;
+            toLatWgs = toLat;
+            toLngWgs = toLng;
             double[] from = CoordTransformUtils.wgs84ToGcj02(fromLng, fromLat);
             double[] to = CoordTransformUtils.wgs84ToGcj02(toLng, toLat);
             fromLngGcj = round6(from[0]);
@@ -74,10 +105,32 @@ public class AmapDirectionService {
             toLngGcj = round6(to[0]);
             toLatGcj = round6(to[1]);
         } else {
-            fromLngGcj = round6(fromLng);
             fromLatGcj = round6(fromLat);
-            toLngGcj = round6(toLng);
+            fromLngGcj = round6(fromLng);
             toLatGcj = round6(toLat);
+            toLngGcj = round6(toLng);
+            double[] fromWgs = CoordTransformUtils.gcj02ToWgs84(fromLngGcj, fromLatGcj);
+            double[] toWgs = CoordTransformUtils.gcj02ToWgs84(toLngGcj, toLatGcj);
+            fromLngWgs = fromWgs[0];
+            fromLatWgs = fromWgs[1];
+            toLngWgs = toWgs[0];
+            toLatWgs = toWgs[1];
+        }
+
+        if ("flight".equals(mode)) {
+            result.setPath(greatCircle(fromLatGcj, fromLngGcj, toLatGcj, toLngGcj, 48));
+            result.setMessage("飞机航线采用大圆航线近似");
+            return result;
+        }
+
+        // 火车/高铁/地铁：优先 OSM（批量全轨贴路关闭，避免逐段打 Overpass）
+        if (allowOsmRail && ("hsr".equals(mode) || "train".equals(mode) || "metro".equals(mode))) {
+            TrackRoutePlanResult osm = osmRailwayRouteService.route(
+                    fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, mode);
+            if (isUsefulOsmPath(osm, fromLatGcj, fromLngGcj, toLatGcj, toLngGcj)) {
+                return osm;
+            }
+            log.info("OSM railway skip mode={} reason={}", mode, osm.getMessage());
         }
 
         if (StringUtils.isEmpty(key)) {
@@ -87,11 +140,6 @@ public class AmapDirectionService {
         }
 
         try {
-            if ("flight".equals(mode)) {
-                result.setPath(greatCircle(fromLatGcj, fromLngGcj, toLatGcj, toLngGcj, 48));
-                result.setMessage("飞机航线采用大圆航线近似");
-                return result;
-            }
             if ("drive".equals(mode) || "other".equals(mode)) {
                 return fillDriving(result, key, fromLngGcj, fromLatGcj, toLngGcj, toLatGcj, waypointsGcjLngLat);
             }
@@ -112,6 +160,25 @@ public class AmapDirectionService {
             result.setPath(latLngPath(fromLatGcj, fromLngGcj, toLatGcj, toLngGcj));
             return result;
         }
+    }
+
+    /** OSM 折线是否明显好于两点直线（至少 3 个点，或里程明显长于直线） */
+    private boolean isUsefulOsmPath(TrackRoutePlanResult osm,
+                                    double fromLatGcj, double fromLngGcj,
+                                    double toLatGcj, double toLngGcj) {
+        if (osm == null || !osm.hasPath()) {
+            return false;
+        }
+        List<double[]> path = osm.getPath();
+        if (path.size() >= 3) {
+            return true;
+        }
+        if (path.size() < 2) {
+            return false;
+        }
+        double straight = GeoDistanceUtils.haversineKm(fromLatGcj, fromLngGcj, toLatGcj, toLngGcj) * 1000;
+        Double meters = osm.getDistanceMeters();
+        return meters != null && straight > 500 && meters > straight * 1.08;
     }
 
     /**

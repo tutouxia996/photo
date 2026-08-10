@@ -63,3 +63,50 @@ export function addCustomSegment(trackId, data) {
     timeout: 60000
   })
 }
+
+/** 火车时刻表 API 状态（无 Key 仍可手工经停） */
+export function getTrainApiStatus() {
+  return request({ url: '/album/track/train/status', method: 'get' })
+}
+
+/** 站到站查询班次 */
+export function queryTrains(params) {
+  return request({
+    url: '/album/track/train/query',
+    method: 'get',
+    params,
+    timeout: 30000
+  })
+}
+
+/** 按车次拉取经停 */
+export function getTrainStops(params) {
+  return request({
+    url: '/album/track/train/stops',
+    method: 'get',
+    params,
+    timeout: 30000
+  })
+}
+
+/** 车次/手工经停贴轨预览 */
+export function planTrainRoute(data) {
+  return request({
+    url: '/album/track/train/plan',
+    method: 'post',
+    data,
+    timeout: 180000,
+    showActionLoading: false
+  })
+}
+
+/** 按经停插入多站途经点 */
+export function addTrainSegment(trackId, data) {
+  return request({
+    url: '/album/track/' + trackId + '/train-segment',
+    method: 'post',
+    data,
+    timeout: 180000,
+    showActionLoading: false
+  })
+}

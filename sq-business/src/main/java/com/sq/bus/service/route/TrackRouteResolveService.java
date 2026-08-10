@@ -105,10 +105,11 @@ public class TrackRouteResolveService {
                 continue;
             }
 
+            // 批量贴路禁用 OSM，避免逐段打 Overpass 导致打开/重算极慢
             TrackRoutePlanResult result = amapDirectionService.plan(
                     from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
                     to.getLatitude().doubleValue(), to.getLongitude().doubleValue(),
-                    mode);
+                    mode, false);
 
             List<double[]> path = result.hasPath() ? result.getPath() : null;
             // 规划失败时用直线，保留用户选择的出行方式（不再偷偷改回 walk）
@@ -133,6 +134,16 @@ public class TrackRouteResolveService {
     private boolean needsRepair(BizTrackPoint from, BizTrackPoint to, double km) {
         if (TravelModeInferUtils.isTinyGap(km)) {
             return false;
+        }
+        String mode = from.getTravelMode() == null ? "" : from.getTravelMode().trim().toLowerCase(Locale.ROOT);
+        // 火车/高铁等手选方式：已有折线（含两点直线/隧道弦）不强制重算
+        if (("hsr".equals(mode) || "train".equals(mode) || "metro".equals(mode)
+                || "bus".equals(mode) || "flight".equals(mode))
+                && StringUtils.isNotEmpty(from.getRoutePath())) {
+            List<double[]> existing = parsePath(from.getRoutePath());
+            if (existing != null && existing.size() >= 2) {
+                return !endpointsMatch(existing, from, to);
+            }
         }
         List<double[]> path = parsePath(from.getRoutePath());
         if (path == null || path.size() < 2) {

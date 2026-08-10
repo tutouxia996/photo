@@ -387,18 +387,18 @@ async function loadTrackWithRoutes(trackId, force = false) {
   const data = res.data || {}
   let track = data.track || null
   let points = data.points || []
+  // 打开查看：缺折线才修补；不要因个别直线段 force 全量重算（会把上百段又打一遍高德/OSM）
   const needRepair = force || hasMissingRoutePaths(points) || hasUnstableAutoRoutes(points)
   if (!needRepair) {
     return { track, points }
   }
-  // 照片 GPS 作途经锚点，高德步行/驾车导航贴路；两点直线会强制重算
   try {
-    let useForce = force || hasUnstableAutoRoutes(points)
-    for (let i = 0; i < 6; i++) {
+    // 仅用户点「贴合路网」时 force；自动打开只用增量修补
+    const useForce = !!force
+    for (let i = 0; i < 3; i++) {
       const statsRes = await resolveTrackRoutes(trackId, useForce && i === 0, 'photo')
       const stats = statsRes.data || {}
       if (!stats.remaining || stats.remaining <= 0) break
-      useForce = false
     }
     const fresh = await getTrack(trackId)
     track = fresh.data?.track || track
@@ -418,9 +418,12 @@ function openTrackViewer(trackId) {
   nextTick(() => {
     startViewerRectSync()
   })
-  loadTrackWithRoutes(trackId).then(({ track, points }) => {
-    detailTrack.value = track
-    detailPoints.value = points
+  // 直接读库展示已保存折线，不自动重算（重算仅手动「贴合路网」）
+  getTrack(trackId).then(res => {
+    const data = res.data || {}
+    detailTrack.value = data.track || null
+    detailPoints.value = data.points || []
+    nextTick(() => mapViewerRef.value?.refresh?.({ fit: true }))
   }).catch(() => {
     detailOpen.value = false
   }).finally(() => {
