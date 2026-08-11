@@ -1716,11 +1716,16 @@ function clearSegment() {
   draftMode.value = ''
   draftDesc.value = ''
   const p = draftPoints.value[activeIndex.value]
+  const next = draftPoints.value[activeIndex.value + 1]
   if (!p) return
   p.travelMode = ''
   p.description = ''
   p.routePath = ''
-  routeHint.value = '已清空本段，将显示为默认直线'
+  // 触及自定义途经点：无折线即断开；纯照片段：保存后显示虚直线
+  const disconnect = isWaypointPoint(p) || isWaypointPoint(next)
+  routeHint.value = disconnect
+    ? '已清空本段连接，保存后不再绘制线路'
+    : '已清空本段，保存后显示为默认虚直线'
   draftPoints.value = [...draftPoints.value]
 }
 

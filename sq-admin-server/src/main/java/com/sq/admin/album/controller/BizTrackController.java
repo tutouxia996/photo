@@ -346,16 +346,25 @@ public class BizTrackController extends BaseController {
             }
             boolean hasClientPath = item.getRoutePath() != null && !item.getRoutePath().trim().isEmpty();
             if (modeChanged && !hasClientPath) {
-                // 出行方式变了且未带新折线 → 按新方式重规划
+                // 出行方式变了且未带新折线 → 按新方式重规划（清空方式时会把折线置空）
                 refreshRoutePath(db);
             } else if (item.getRoutePath() != null) {
-                // 前端预览/手动画线带回的折线
+                // 前端预览/手动画线带回的折线（空串表示主动清空）
                 String rp = item.getRoutePath().trim();
                 db.setRoutePath(rp.isEmpty() ? null : rp);
             } else if (modeChanged) {
                 refreshRoutePath(db);
             }
-            trackPointService.updateById(db);
+            // updateById 默认跳过 null，清空出行方式/折线/说明必须显式 set
+            LambdaUpdateWrapper<BizTrackPoint> uw = new LambdaUpdateWrapper<BizTrackPoint>()
+                    .eq(BizTrackPoint::getPointId, db.getPointId())
+                    .set(BizTrackPoint::getDescription, db.getDescription())
+                    .set(BizTrackPoint::getTravelMode, db.getTravelMode())
+                    .set(BizTrackPoint::getRoutePath, db.getRoutePath());
+            if (item.getSequence() != null) {
+                uw.set(BizTrackPoint::getSequence, item.getSequence());
+            }
+            trackPointService.update(uw);
         }
         touchTrack(trackId);
         return success();
@@ -446,7 +455,10 @@ public class BizTrackController extends BaseController {
             BizTrackPoint prev = trackPointService.getById(prevId);
             if (prev != null) {
                 refreshRoutePath(prev);
-                trackPointService.updateById(prev);
+                // 无出行方式时 routePath 为 null，需显式写入才能清空旧折线
+                trackPointService.update(new LambdaUpdateWrapper<BizTrackPoint>()
+                        .eq(BizTrackPoint::getPointId, prev.getPointId())
+                        .set(BizTrackPoint::getRoutePath, prev.getRoutePath()));
             }
         }
         BizTrack track = trackService.getById(trackId);
