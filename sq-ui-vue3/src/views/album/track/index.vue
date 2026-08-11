@@ -584,10 +584,12 @@ function onTrackReplan({ trackId, done }) {
 }
 
 function handleDelete(row) {
-  proxy.$modal.confirm('确认删除该轨迹？').then(() => delTrack(row.trackId)).then(() => {
-    getList()
-    proxy.$modal.msgSuccess('删除成功')
-  }).catch(() => {})
+  proxy.$modal.confirm('确认删除该轨迹？若该相册下已无其他轨迹，将同时清除已导入的 GPX 叠层。')
+    .then(() => delTrack(row.trackId))
+    .then(() => {
+      getList()
+      proxy.$modal.msgSuccess('删除成功')
+    }).catch(() => {})
 }
 
 function openGpxImport(row) {

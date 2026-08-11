@@ -28,6 +28,12 @@ public interface IBizTrackGpxFileService extends IService<BizTrackGpxFile> {
     boolean removeGpx(Long gpxId, String username);
 
     /**
+     * 软删相册下全部未删 GPX 库记录（不删磁盘文件）。
+     * 用于相册已无轨迹时的级联清理，避免重新生成轨迹后仍叠加历史 GPX。
+     */
+    int removeByAlbum(Long albumId, String username);
+
+    /**
      * 清理历史独立 GPX 轨迹并补回照片轨（兼容旧调用名）。
      */
     BizTrack rebuildAlbumTrack(Long albumId);

@@ -486,12 +486,8 @@ public class BizTrackController extends BaseController {
     @Log(title = "轨迹管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{trackIds}")
     public AjaxResult remove(@PathVariable Long[] trackIds) {
-        return toAjax(trackService.update(new LambdaUpdateWrapper<BizTrack>()
-                .in(BizTrack::getTrackId, Arrays.asList(trackIds))
-                .eq(BizTrack::getDeleted, 0)
-                .set(BizTrack::getDeleted, 1)
-                .set(BizTrack::getUpdateBy, getUsername())
-                .set(BizTrack::getUpdateTime, new Date())));
+        // 软删轨迹；若相册下已无轨迹，会级联清理该相册历史 GPX 叠层
+        return toAjax(trackService.removeTracks(trackIds, getUsername()));
     }
 
     /** 相册下 GPX 文件列表 */

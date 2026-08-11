@@ -1,6 +1,7 @@
 package com.sq.bus.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
@@ -9,6 +10,7 @@ import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.mapper.BizTrackMapper;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
+import com.sq.bus.service.IBizTrackGpxFileService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.utils.GeoDistanceUtils;
@@ -16,6 +18,7 @@ import com.sq.common.exception.ServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,9 +26,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Service
 public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> implements IBizTrackService {
@@ -46,6 +54,10 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
 
     @Autowired
     private IBizAlbumService albumService;
+
+    @Lazy
+    @Autowired
+    private IBizTrackGpxFileService trackGpxFileService;
 
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -74,6 +86,48 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
             TransactionTemplate template = new TransactionTemplate(transactionManager);
             return template.execute(status -> doAutoSyncAlbumTrack(albumId));
         }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int removeTracks(Long[] trackIds, String username) {
+        if (trackIds == null || trackIds.length == 0) {
+            return 0;
+        }
+        List<Long> ids = Arrays.stream(trackIds).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        List<BizTrack> tracks = list(new LambdaQueryWrapper<BizTrack>()
+                .in(BizTrack::getTrackId, ids)
+                .eq(BizTrack::getDeleted, 0));
+        if (tracks.isEmpty()) {
+            return 0;
+        }
+        Set<Long> albumIds = tracks.stream()
+                .map(BizTrack::getAlbumId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        Date now = new Date();
+        boolean updated = update(new LambdaUpdateWrapper<BizTrack>()
+                .in(BizTrack::getTrackId, tracks.stream().map(BizTrack::getTrackId).collect(Collectors.toList()))
+                .eq(BizTrack::getDeleted, 0)
+                .set(BizTrack::getDeleted, 1)
+                .set(BizTrack::getUpdateBy, username)
+                .set(BizTrack::getUpdateTime, now));
+        if (!updated) {
+            return 0;
+        }
+        // GPX 挂在相册上，与 track_id 无关；相册已无轨迹时必须清掉，否则重新生成仍会叠历史 GPX
+        for (Long albumId : albumIds) {
+            long remaining = count(new LambdaQueryWrapper<BizTrack>()
+                    .eq(BizTrack::getAlbumId, albumId)
+                    .eq(BizTrack::getDeleted, 0));
+            if (remaining == 0) {
+                trackGpxFileService.removeByAlbum(albumId, username);
+            }
+        }
+        return tracks.size();
     }
 
     /**

@@ -359,6 +359,27 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         return true;
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int removeByAlbum(Long albumId, String username) {
+        if (albumId == null) {
+            return 0;
+        }
+        List<BizTrackGpxFile> rows = list(new LambdaQueryWrapper<BizTrackGpxFile>()
+                .eq(BizTrackGpxFile::getAlbumId, albumId)
+                .eq(BizTrackGpxFile::getDeleted, 0));
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        // 仅软删库记录，保留磁盘文件便于排查/恢复
+        for (BizTrackGpxFile row : rows) {
+            row.setDeleted(1);
+            updateById(row);
+        }
+        log.info("已软删相册 GPX 库记录 albumId={} count={} by={}", albumId, rows.size(), username);
+        return rows.size();
+    }
+
     /**
      * 兼容旧调用名：不再重建/新建轨迹，只做清理与照片轨补回。
      */

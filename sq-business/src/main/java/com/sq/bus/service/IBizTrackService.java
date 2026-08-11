@@ -18,4 +18,11 @@ public interface IBizTrackService extends IService<BizTrack> {
      * @return 新建或刷新后的轨迹；无可用 GPS 时返回 null
      */
     BizTrack autoSyncAlbumTrack(Long albumId);
+
+    /**
+     * 软删轨迹；若某相册下已无未删轨迹，则级联清理该相册 GPX 叠层。
+     *
+     * @return 实际软删的轨迹条数
+     */
+    int removeTracks(Long[] trackIds, String username);
 }
