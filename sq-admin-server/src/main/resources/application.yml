@@ -156,3 +156,12 @@ album:
       apiKey: ${JUHE_TRAIN_KEY:}
       queryUrl: https://apis.juhe.cn/fapigw/train/query
       detailUrl: https://apis.juhe.cn/train/s
+  gpx:
+    # 媒体与 GPX 时间匹配窗口（秒）；默认 10 秒内才挂到 GPX 点上
+    matchWindowSeconds: 10
+    # GPSLogger 导出 GPX 为 UTC（界面「本地时区」只影响显示）；中国照片 EXIF 多为本地时间，默认 +8
+    timeOffsetHours: 8
+    # 0 = 不抽稀，地图展示保留 GPX 全部点位以保证轨迹准确
+    simplifyMinMeters: 0
+    # 0 = 不限制点数
+    maxPathPoints: 0

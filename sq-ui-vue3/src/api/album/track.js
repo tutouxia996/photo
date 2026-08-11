@@ -110,3 +110,50 @@ export function addTrainSegment(trackId, data) {
     showActionLoading: false
   })
 }
+
+/** 相册 GPX 列表 */
+export function listTrackGpx(albumId) {
+  return request({
+    url: '/album/track/gpx/list',
+    method: 'get',
+    params: { albumId }
+  })
+}
+
+/** 导入 GPX（可多文件） */
+export function importTrackGpx(albumId, formData) {
+  return request({
+    url: '/album/track/gpx/import',
+    method: 'post',
+    params: { albumId },
+    data: formData,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 180000
+  })
+}
+
+/** 启用/停用 GPX */
+export function setTrackGpxEnabled(gpxId, enabled) {
+  return request({
+    url: '/album/track/gpx/' + gpxId + '/enabled',
+    method: 'put',
+    params: { enabled }
+  })
+}
+
+/** 设置 GPX 出行方式 */
+export function setTrackGpxTravelMode(gpxId, travelMode) {
+  return request({
+    url: '/album/track/gpx/' + gpxId + '/travel-mode',
+    method: 'put',
+    params: { travelMode }
+  })
+}
+
+/** 删除 GPX */
+export function delTrackGpx(gpxId) {
+  return request({
+    url: '/album/track/gpx/' + gpxId,
+    method: 'delete'
+  })
+}

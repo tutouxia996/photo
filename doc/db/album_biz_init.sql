@@ -88,6 +88,8 @@ CREATE TABLE `biz_track` (
   `track_color` varchar(20) NOT NULL DEFAULT '#3B82F6' COMMENT '轨迹线颜色',
   `is_public` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否前台展示',
   `enabled` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否启用轨迹：0关闭（不生成/地图不显示）1开启',
+  `gpx_enabled` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否在地图启用GPX线路：0否 1是',
+  `source_type` varchar(16) DEFAULT 'photo' COMMENT '来源：photo/gpx/mixed',
   `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',
   `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
@@ -119,6 +121,30 @@ CREATE TABLE `biz_track_point` (
   KEY `idx_point_track_id` (`track_id`),
   KEY `idx_point_photo_id` (`photo_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='轨迹点表';
+
+-- ----------------------------
+-- 轨迹 GPX 文件表
+-- ----------------------------
+DROP TABLE IF EXISTS `biz_track_gpx_file`;
+CREATE TABLE `biz_track_gpx_file` (
+  `gpx_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'GPX文件ID',
+  `album_id` bigint(20) NOT NULL COMMENT '所属相册ID',
+  `file_name` varchar(200) NOT NULL COMMENT '原始文件名',
+  `storage_path` varchar(500) NOT NULL COMMENT '服务器存储路径',
+  `point_count` int(11) NOT NULL DEFAULT 0 COMMENT '轨迹点数',
+  `distance_km` decimal(10,3) NOT NULL DEFAULT 0.000 COMMENT 'GPX里程（公里）',
+  `travel_mode` varchar(32) DEFAULT NULL COMMENT '出行方式：hsr/train/bus/metro/walk/drive/bike/flight/other',
+  `start_time` datetime DEFAULT NULL COMMENT 'GPX开始时间',
+  `end_time` datetime DEFAULT NULL COMMENT 'GPX结束时间',
+  `enabled` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否参与生成：0否 1是',
+  `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除',
+  PRIMARY KEY (`gpx_id`),
+  KEY `idx_gpx_album_id` (`album_id`),
+  KEY `idx_gpx_deleted` (`deleted`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='轨迹GPX文件';
 
 -- ----------------------------
 -- 扫描目录配置表

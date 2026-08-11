@@ -1,12 +1,12 @@
 package com.sq.bus.service.route;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.utils.CoordTransformUtils;
-import com.sq.bus.utils.GeoDistanceUtils;
 import com.sq.common.exception.ServiceException;
 import com.sq.common.utils.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -139,20 +139,15 @@ public class TrainSegmentService {
             trackPointService.updateById(p);
         }
 
-        // 与前后照片点衔接
-        int firstIdx = insertAt;
-        int lastIdx = insertAt + newPoints.size() - 1;
-        if (firstIdx > 0) {
-            BizTrackPoint prev = merged.get(firstIdx - 1);
-            BizTrackPoint first = merged.get(firstIdx);
-            linkNeighbor(prev, first);
-            trackPointService.updateById(prev);
-        }
-        if (lastIdx + 1 < merged.size()) {
-            BizTrackPoint last = merged.get(lastIdx);
-            BizTrackPoint next = merged.get(lastIdx + 1);
-            linkNeighbor(last, next);
-            trackPointService.updateById(last);
+        // 不自动衔接前后照片点；清掉前一点旧折线（须显式 set null）
+        if (insertAt > 0) {
+            BizTrackPoint prev = merged.get(insertAt - 1);
+            if (prev.getPointId() != null) {
+                trackPointService.update(new LambdaUpdateWrapper<BizTrackPoint>()
+                        .eq(BizTrackPoint::getPointId, prev.getPointId())
+                        .set(BizTrackPoint::getRoutePath, null));
+                prev.setRoutePath(null);
+            }
         }
 
         track.setPointCount(merged.size());
@@ -191,28 +186,6 @@ public class TrainSegmentService {
             return amapDirectionService.toRoutePathJson(path);
         }
         return amapDirectionService.toRoutePathJson(seg.getPath());
-    }
-
-    private void linkNeighbor(BizTrackPoint from, BizTrackPoint to) {
-        if (from.getLatitude() == null || from.getLongitude() == null
-                || to.getLatitude() == null || to.getLongitude() == null) {
-            return;
-        }
-        double km = GeoDistanceUtils.haversineKm(
-                from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
-                to.getLatitude().doubleValue(), to.getLongitude().doubleValue());
-        String mode = from.getTravelMode();
-        if (StringUtils.isEmpty(mode)) {
-            mode = km > 30 ? "drive" : "walk";
-            from.setTravelMode(mode);
-        }
-        TrackRoutePlanResult planned = amapDirectionService.plan(
-                from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
-                to.getLatitude().doubleValue(), to.getLongitude().doubleValue(),
-                mode);
-        if (planned.hasPath()) {
-            from.setRoutePath(amapDirectionService.toRoutePathJson(planned.getPath()));
-        }
     }
 
     private String stopDescription(String baseDesc, Map<String, Object> stop, int index, int total) {

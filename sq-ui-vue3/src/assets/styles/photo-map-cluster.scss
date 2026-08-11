@@ -227,6 +227,91 @@
   background: #dc2626;
 }
 
+/* GPX 起终点：深底+白字+描边，地图上更醒目 */
+.pmc-gpx-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 4px;
+  border-radius: 14px;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pmc-gpx-pin.start {
+  background: #15803d;
+}
+
+.pmc-gpx-pin.end {
+  background: #b91c1c;
+}
+
+.pmc-gpx-pin-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.pmc-gpx-pin-label {
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* 增补选点模式：起/终点可点，轻微脉冲提示 */
+.pmc-gpx-pick .pmc-gpx-pin.is-pickable {
+  cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  animation: pmc-gpx-pick-pulse 1.4s ease-in-out infinite;
+}
+
+.pmc-gpx-pick .leaflet-marker-icon {
+  cursor: pointer;
+}
+
+@keyframes pmc-gpx-pick-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+.pmc-gpx-popup .pmc-gpx-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #065f46;
+  margin-bottom: 4px;
+}
+
+.pmc-gpx-popup .pmc-gpx-tag {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 11px;
+}
+
+.pmc-gpx-popup .pmc-gpx-section {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #d1d5db;
+  color: #059669;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pmc-gpx-popup .pmc-gpx-k {
+  display: inline-block;
+  min-width: 64px;
+  color: #6b7280;
+  margin-right: 4px;
+}
+
 .leaflet-div-icon.pmc-waypoint-marker {
   background: transparent !important;
   border: 0 !important;

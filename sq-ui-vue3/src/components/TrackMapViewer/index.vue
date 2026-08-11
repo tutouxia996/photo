@@ -12,12 +12,18 @@
       :path-edit-index="editing && !customOpen ? activeIndex : -1"
       :segment-labels="editing ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
+      :overlay-paths="localGpxOverlays"
       :visible-travel-modes="visibleTravelModes"
+      :gpx-endpoint-pickable="editing && customOpen && customTab === 'place'"
+      :point-pickable="editing && customOpen && customTab === 'place'"
       :auto-fit="!editing"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
       @segment-path-change="onSegmentPathChange"
       @waypoint-click="onWaypointClick"
+      @point-click="onTrackPointPick"
+      @gpx-click="onGpxClick"
+      @gpx-endpoint-click="onGpxEndpointClick"
     >
       <template #meta>
         <div v-if="track && trackLineVisible" class="track-meta" :class="{ 'is-open': metaOpen }">
@@ -31,6 +37,7 @@
                 size="small"
                 :loading="replanning"
                 :disabled="editing"
+                title="仅对照片点之间缺折线的路段贴合；已有手动连接（含自定义）会保留；不影响 GPX"
                 @click="replanRoutes"
               >贴合路网</el-button>
               <template v-if="editable">
@@ -38,6 +45,7 @@
                   v-if="!editing"
                   type="primary"
                   size="small"
+                  title="编辑照片/自定义轨迹；GPX 出行方式可点击绿色/彩色线路修改"
                   @click="startEdit"
                 >编辑轨迹</el-button>
                 <template v-else>
@@ -60,15 +68,16 @@
               <span class="dir-flow">→ 行进方向 →</span>
               <span class="dir-end">终</span>
             </div>
-            <p v-if="editing" class="edit-tip">点线路改走向；点橙色途经点可改说明或删除自定义路段</p>
+            <p v-if="editing" class="edit-tip">点线路改走向；点橙色途经点可改说明或删除自定义路段。增补时可选用 GPX 起/终或照片点做连接（不改 GPX 折线）。</p>
+            <p v-else-if="hasGpxPathOverlay" class="edit-tip">彩色 GPX 线路按出行方式着色（与照片轨一致）；点击线路可查看详情并修改出行方式。</p>
           </div>
         </div>
       </template>
     </PhotoClusterMap>
 
-    <div v-if="trackLineVisible && usedModes.length && !editing" class="mode-legend" :class="{ 'is-filtering': modeFilter.length > 0 }">
+    <div v-if="legendItems.length && !editing" class="mode-legend" :class="{ 'is-filtering': modeFilter.length > 0 }">
       <button
-        v-for="m in usedModes"
+        v-for="m in legendItems"
         :key="m.key"
         type="button"
         class="legend-item"
@@ -88,6 +97,38 @@
       >全部</button>
     </div>
 
+    <aside v-if="gpxPanelOpen && activeGpx" class="seg-panel gpx-panel">
+      <div class="seg-panel-hd">
+        <div class="seg-panel-title">GPX 出行方式</div>
+        <button type="button" class="seg-close" @click="closeGpxPanel">×</button>
+      </div>
+      <p class="path-tip">{{ activeGpx.fileName || ('GPX #' + activeGpx.gpxId) }}</p>
+      <div class="seg-label">出行方式</div>
+      <el-select
+        v-model="gpxDraftMode"
+        placeholder="选择出行方式"
+        style="width: 100%"
+        :disabled="!editable || gpxModeSaving"
+      >
+        <el-option
+          v-for="m in travelModes"
+          :key="m.key"
+          :label="m.label"
+          :value="m.key"
+        >
+          <span class="mode-opt">
+            <i class="legend-dot" :style="{ background: m.color }" />
+            {{ m.label }}
+          </span>
+        </el-option>
+      </el-select>
+      <p class="path-tip">根据平均速度自动推断；可手动改为与照片/自定义路段一致的颜色。</p>
+      <div class="seg-actions" v-if="editable">
+        <el-button type="primary" :loading="gpxModeSaving" @click="saveGpxTravelMode">保存</el-button>
+        <el-button :disabled="gpxModeSaving" @click="closeGpxPanel">取消</el-button>
+      </div>
+    </aside>
+
     <aside v-if="editing && customOpen" class="seg-panel custom-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">增补路段</div>
@@ -100,9 +141,87 @@
       </div>
 
       <template v-if="customTab === 'place'">
-        <p class="path-tip">用高德搜索起终点；步行/骑行/驾车走高德路网，火车/高铁/地铁优先 OSM 铁路贴轨后插入轨迹。</p>
+        <p class="path-tip">
+          起终点可选：高德搜索、GPX 起/终、或现有照片/途经点。选好后预览即形成连接（不改 GPX 折线）。
+          默认不自动接到前后邻点；需要时勾选下方选项。
+        </p>
 
-        <div class="seg-label">起点</div>
+        <div class="seg-label">下次地图点击填入</div>
+        <el-radio-group v-model="gpxPickSide" class="insert-pos" size="small">
+          <el-radio-button label="auto">自动</el-radio-button>
+          <el-radio-button label="from">起点</el-radio-button>
+          <el-radio-button label="to">终点</el-radio-button>
+        </el-radio-group>
+
+        <div v-if="gpxAnchorOptions.length" class="seg-label" style="margin-top: 10px">选用 GPX 端点</div>
+        <div v-if="gpxAnchorOptions.length" class="gpx-anchor-row">
+          <el-select
+            v-model="customFromGpxKey"
+            clearable
+            filterable
+            placeholder="起点 ← GPX 起/终"
+            style="width: 100%"
+            @change="onPickGpxAnchor('from')"
+          >
+            <el-option
+              v-for="item in gpxAnchorOptions"
+              :key="item.key"
+              :label="item.name"
+              :value="item.key"
+            />
+          </el-select>
+          <el-select
+            v-model="customToGpxKey"
+            clearable
+            filterable
+            placeholder="终点 ← GPX 起/终"
+            style="width: 100%; margin-top: 8px"
+            @change="onPickGpxAnchor('to')"
+          >
+            <el-option
+              v-for="item in gpxAnchorOptions"
+              :key="'to-' + item.key"
+              :label="item.name"
+              :value="item.key"
+            />
+          </el-select>
+        </div>
+
+        <div v-if="trackPointAnchorOptions.length" class="seg-label" style="margin-top: 10px">选用现有轨迹点</div>
+        <div v-if="trackPointAnchorOptions.length" class="gpx-anchor-row">
+          <el-select
+            v-model="customFromTrackKey"
+            clearable
+            filterable
+            placeholder="起点 ← 照片/途经点"
+            style="width: 100%"
+            @change="onPickTrackAnchor('from')"
+          >
+            <el-option
+              v-for="item in trackPointAnchorOptions"
+              :key="item.key"
+              :label="item.name"
+              :value="item.key"
+            />
+          </el-select>
+          <el-select
+            v-model="customToTrackKey"
+            clearable
+            filterable
+            placeholder="终点 ← 照片/途经点"
+            style="width: 100%; margin-top: 8px"
+            @change="onPickTrackAnchor('to')"
+          >
+            <el-option
+              v-for="item in trackPointAnchorOptions"
+              :key="'to-' + item.key"
+              :label="item.name"
+              :value="item.key"
+            />
+          </el-select>
+        </div>
+
+        <div class="seg-label">起点（或高德搜索）</div>
         <el-select
           v-model="customFromId"
           filterable
@@ -129,7 +248,7 @@
         </el-select>
         <div v-if="customFrom" class="place-picked">已选：{{ customFrom.name }}</div>
 
-        <div class="seg-label">终点</div>
+        <div class="seg-label">终点（或高德搜索）</div>
         <el-select
           v-model="customToId"
           filterable
@@ -167,6 +286,12 @@
             :style="customModeBtnStyle(m)"
             @click="customMode = m.key"
           >{{ m.label }}</button>
+        </div>
+
+        <div class="seg-label" style="margin-top: 10px">可选邻接连接</div>
+        <div class="link-opts">
+          <el-checkbox v-model="customLinkPrev">同时连接上一轨迹点 → 本段起点</el-checkbox>
+          <el-checkbox v-model="customLinkNext">同时连接本段终点 → 下一轨迹点</el-checkbox>
         </div>
       </template>
 
@@ -423,7 +548,7 @@
 </template>
 
 <script setup>
-import { computed, getCurrentInstance, ref, watch } from 'vue'
+import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 import {
   addCustomSegment,
@@ -435,13 +560,16 @@ import {
   previewTrackRoute,
   queryTrains,
   searchTrackPlace,
+  setTrackGpxTravelMode,
   updateTrackPoints
 } from '@/api/album/track'
-import { isWaypointPoint, TRAVEL_MODES, toMapLatLng } from '@/utils/photoMapCluster'
+  import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, wgs84ToGcj02 } from '@/utils/photoMapCluster'
 
 const props = defineProps({
   track: { type: Object, default: null },
   points: { type: Array, default: () => [] },
+  /** 相册 GPX 叠层（与照片/自定义轨迹同图显示） */
+  gpxOverlays: { type: Array, default: () => [] },
   /** 是否允许在地图上编辑路段 */
   editable: { type: Boolean, default: false }
 })
@@ -462,6 +590,18 @@ const draftDesc = ref('')
 const routeHint = ref('')
 const travelModes = TRAVEL_MODES
 
+const localGpxOverlays = ref([])
+watch(() => props.gpxOverlays, (list) => {
+  localGpxOverlays.value = Array.isArray(list)
+    ? list.map(o => (o ? { ...o, matchedPhotos: Array.isArray(o.matchedPhotos) ? o.matchedPhotos.slice() : [] } : o))
+    : []
+}, { immediate: true, deep: true })
+
+const gpxPanelOpen = ref(false)
+const activeGpx = ref(null)
+const gpxDraftMode = ref('walk')
+const gpxModeSaving = ref(false)
+
 const customOpen = ref(false)
 const customTab = ref('place')
 const customFromId = ref('')
@@ -472,6 +612,14 @@ const customFromOptions = ref([])
 const customToOptions = ref([])
 const customFromSearching = ref(false)
 const customToSearching = ref(false)
+const customFromGpxKey = ref('')
+const customToGpxKey = ref('')
+const customFromTrackKey = ref('')
+const customToTrackKey = ref('')
+/** 地图点选时填入哪一侧：auto | from | to */
+const gpxPickSide = ref('auto')
+const customLinkPrev = ref(false)
+const customLinkNext = ref(false)
 const customMode = ref('walk')
 const customInsertPos = ref('end')
 const customAfterPointId = ref(null)
@@ -556,6 +704,91 @@ const usedModes = computed(() => {
   return TRAVEL_MODES.filter(m => keys.has(m.key))
 })
 
+const hasGpxPathOverlay = computed(() => localGpxOverlays.value.some(o => {
+  if (!o || o.showPath === false) return false
+  if (Array.isArray(o.path) && o.path.length >= 2) return true
+  return Number(o.pathPointCount) >= 2
+}))
+
+/** 增补路段可选的 GPX 起/终点锚点（只读坐标，不改 GPX） */
+const gpxAnchorOptions = computed(() => {
+  const list = []
+  localGpxOverlays.value.forEach((o) => {
+    if (!o || o.showPath === false) return
+    const path = Array.isArray(o.path) ? o.path : []
+    if (path.length < 2) return
+    const fileName = o.fileName || (`GPX #${o.gpxId || ''}`)
+    const start = pathPointToAnchor(path[0], o.gpxId, 'start', `GPX《${fileName}》起点`)
+    const end = pathPointToAnchor(path[path.length - 1], o.gpxId, 'end', `GPX《${fileName}》终点`)
+    if (start) list.push(start)
+    if (end) list.push(end)
+  })
+  return list
+})
+
+/** 现有照片/途经点，可选手动连接 */
+const trackPointAnchorOptions = computed(() => {
+  return displayPoints.value
+    .filter(p => p && p.pointId != null && p.latitude != null && p.longitude != null)
+    .map((p) => {
+      const wgsLat = Number(p.latitude)
+      const wgsLng = Number(p.longitude)
+      const [gcjLng, gcjLat] = wgs84ToGcj02(wgsLng, wgsLat)
+      const kind = isWaypointPoint(p) ? '途经' : '照片'
+      const label = pointLabel(p)
+      return {
+        key: `pt-${p.pointId}`,
+        pointId: p.pointId,
+        name: `#${p.sequence ?? ''} ${kind} ${label}`.trim(),
+        id: `pt-${p.pointId}`,
+        address: kind,
+        lat: gcjLat,
+        lng: gcjLng,
+        wgsLat,
+        wgsLng,
+        source: 'track',
+        photoId: p.photoId
+      }
+    })
+})
+
+function pathPointToAnchor(p, gpxId, kind, name) {
+  if (!p) return null
+  const lat = Number(p.lat != null ? p.lat : p[0])
+  const lng = Number(p.lng != null ? p.lng : p[1])
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null
+  const wgsLat = p.latWgs != null ? Number(p.latWgs) : null
+  const wgsLng = p.lngWgs != null ? Number(p.lngWgs) : null
+  return {
+    key: `gpx-${gpxId}-${kind}`,
+    gpxId,
+    kind,
+    name,
+    id: `gpx-${gpxId}-${kind}`,
+    address: 'GPX端点（只读）',
+    lat,
+    lng,
+    wgsLat: Number.isNaN(wgsLat) ? null : wgsLat,
+    wgsLng: Number.isNaN(wgsLng) ? null : wgsLng,
+    source: 'gpx'
+  }
+}
+
+/** 照片轨 + GPX 的出行方式，统一圆点图例（颜色一致） */
+const legendItems = computed(() => {
+  const keys = new Set()
+  if (trackLineVisible.value) {
+    usedModes.value.forEach(m => keys.add(m.key))
+  }
+  localGpxOverlays.value.forEach(o => {
+    if (!o || o.showPath === false) return
+    const hasPath = (Array.isArray(o.path) && o.path.length >= 2) || Number(o.pathPointCount) >= 2
+    if (!hasPath) return
+    if (o.travelMode) keys.add(String(o.travelMode).toLowerCase())
+  })
+  return TRAVEL_MODES.filter(m => keys.has(m.key))
+})
+
 /** 选中的出行方式；空数组表示显示全部 */
 const modeFilter = ref([])
 
@@ -586,14 +819,146 @@ function clearModeFilter() {
   modeFilter.value = []
 }
 
-watch(usedModes, (modes) => {
-  const keys = new Set(modes.map(m => m.key))
+watch(legendItems, (items) => {
+  const keys = new Set(items.map(m => m.key))
   modeFilter.value = modeFilter.value.filter(k => keys.has(k))
 })
 
 watch(editing, (val) => {
-  if (val) modeFilter.value = []
+  if (val) {
+    modeFilter.value = []
+    closeGpxPanel()
+  }
 })
+
+function onGpxClick({ overlay }) {
+  // 增补选点时不打开出行方式面板，避免打断锚点选择
+  if (customOpen.value) return
+  if (!overlay?.gpxId) return
+  activeGpx.value = overlay
+  gpxDraftMode.value = overlay.travelMode || 'walk'
+  gpxPanelOpen.value = true
+}
+
+function applyGpxAnchor(which, anchor) {
+  if (!anchor) return
+  if (which === 'from') {
+    customFrom.value = { ...anchor }
+    customFromId.value = ''
+    customFromGpxKey.value = anchor.key
+    customFromTrackKey.value = ''
+  } else {
+    customTo.value = { ...anchor }
+    customToId.value = ''
+    customToGpxKey.value = anchor.key
+    customToTrackKey.value = ''
+  }
+  customPreviewPath.value = null
+  customHint.value = `已选用 ${anchor.name} 作为${which === 'from' ? '起点' : '终点'}（不改 GPX）`
+}
+
+function applyTrackAnchor(which, anchor) {
+  if (!anchor) return
+  if (which === 'from') {
+    customFrom.value = { ...anchor }
+    customFromId.value = ''
+    customFromTrackKey.value = anchor.key
+    customFromGpxKey.value = ''
+  } else {
+    customTo.value = { ...anchor }
+    customToId.value = ''
+    customToTrackKey.value = anchor.key
+    customToGpxKey.value = ''
+  }
+  customPreviewPath.value = null
+  customHint.value = `已选用 ${anchor.name} 作为${which === 'from' ? '起点' : '终点'}`
+}
+
+function onPickGpxAnchor(which) {
+  const key = which === 'from' ? customFromGpxKey.value : customToGpxKey.value
+  if (!key) {
+    if (which === 'from' && customFrom.value?.source === 'gpx') customFrom.value = null
+    if (which === 'to' && customTo.value?.source === 'gpx') customTo.value = null
+    customPreviewPath.value = null
+    return
+  }
+  const found = gpxAnchorOptions.value.find(o => o.key === key)
+  if (found) applyGpxAnchor(which, found)
+}
+
+function onPickTrackAnchor(which) {
+  const key = which === 'from' ? customFromTrackKey.value : customToTrackKey.value
+  if (!key) {
+    if (which === 'from' && customFrom.value?.source === 'track') customFrom.value = null
+    if (which === 'to' && customTo.value?.source === 'track') customTo.value = null
+    customPreviewPath.value = null
+    return
+  }
+  const found = trackPointAnchorOptions.value.find(o => o.key === key)
+  if (found) applyTrackAnchor(which, found)
+}
+
+function resolvePickSide() {
+  let which = gpxPickSide.value
+  if (which === 'auto') {
+    which = !customFrom.value ? 'from' : 'to'
+  }
+  return which
+}
+
+function onGpxEndpointClick({ overlay, kind }) {
+  if (!customOpen.value || customTab.value !== 'place') return
+  const path = Array.isArray(overlay?.path) ? overlay.path : []
+  if (path.length < 2) return
+  const fileName = overlay.fileName || (`GPX #${overlay.gpxId || ''}`)
+  const pt = kind === 'end' ? path[path.length - 1] : path[0]
+  const label = kind === 'end' ? `GPX《${fileName}》终点` : `GPX《${fileName}》起点`
+  const anchor = pathPointToAnchor(pt, overlay.gpxId, kind, label)
+  if (!anchor) return
+  const which = resolvePickSide()
+  applyGpxAnchor(which, anchor)
+  if (gpxPickSide.value === 'auto' && which === 'from' && !customTo.value) {
+    customHint.value = `已选起点：${anchor.name}。再点 GPX 端点 / 轨迹点或搜索终点`
+  }
+}
+
+function onTrackPointPick({ point }) {
+  if (!customOpen.value || customTab.value !== 'place' || !point?.pointId) return
+  const found = trackPointAnchorOptions.value.find(o => o.pointId === point.pointId)
+  if (!found) return
+  const which = resolvePickSide()
+  applyTrackAnchor(which, found)
+  if (gpxPickSide.value === 'auto' && which === 'from' && !customTo.value) {
+    customHint.value = `已选起点：${found.name}。再选终点`
+  }
+}
+
+function closeGpxPanel() {
+  gpxPanelOpen.value = false
+  activeGpx.value = null
+}
+
+async function saveGpxTravelMode() {
+  const gpx = activeGpx.value
+  if (!gpx?.gpxId || !gpxDraftMode.value) return
+  gpxModeSaving.value = true
+  try {
+    await setTrackGpxTravelMode(gpx.gpxId, gpxDraftMode.value)
+    const mode = gpxDraftMode.value
+    const color = travelModeColor(mode, gpx.color || '#10B981')
+    localGpxOverlays.value = localGpxOverlays.value.map(o => {
+      if (!o || o.gpxId !== gpx.gpxId) return o
+      return { ...o, travelMode: mode, color }
+    })
+    activeGpx.value = { ...gpx, travelMode: mode, color }
+    proxy.$modal.msgSuccess('已更新 GPX 出行方式')
+    nextTick(() => clusterMapRef.value?.refresh?.({ fit: false }))
+  } catch (e) {
+    proxy.$modal.msgError('更新失败')
+  } finally {
+    gpxModeSaving.value = false
+  }
+}
 
 const fromPoint = computed(() => {
   if (activeIndex.value < 0) return null
@@ -662,8 +1027,15 @@ function onPickCustomPlace(which) {
   const id = which === 'from' ? customFromId.value : customToId.value
   const opts = which === 'from' ? customFromOptions.value : customToOptions.value
   const found = opts.find(o => placeKey(o) === id) || null
-  if (which === 'from') customFrom.value = found
-  else customTo.value = found
+  if (which === 'from') {
+    customFrom.value = found
+    customFromGpxKey.value = ''
+    customFromTrackKey.value = ''
+  } else {
+    customTo.value = found
+    customToGpxKey.value = ''
+    customToTrackKey.value = ''
+  }
   customPreviewPath.value = null
 }
 
@@ -681,7 +1053,11 @@ function toggleCustomPanel() {
     customOpen.value = true
     activeIndex.value = -1
     customTab.value = 'place'
-    customHint.value = '搜索并选择起点、终点后预览，再添加到轨迹'
+    gpxPickSide.value = 'auto'
+    closeGpxPanel()
+    customHint.value = gpxAnchorOptions.value.length || trackPointAnchorOptions.value.length
+      ? '可选：搜索地点 / GPX 起终 / 现有轨迹点；默认不自动接邻点'
+      : '搜索并选择起点、终点后预览，再添加到轨迹'
     loadTrainApiStatus()
   }
 }
@@ -690,6 +1066,13 @@ function closeCustomPanel() {
   customOpen.value = false
   customPreviewPath.value = null
   customHint.value = ''
+  customFromGpxKey.value = ''
+  customToGpxKey.value = ''
+  customFromTrackKey.value = ''
+  customToTrackKey.value = ''
+  customLinkPrev.value = false
+  customLinkNext.value = false
+  gpxPickSide.value = 'auto'
   trainOptions.value = []
   selectedTrainKey.value = ''
   trainPlannedStops.value = null
@@ -858,7 +1241,12 @@ async function previewCustomSegment() {
     return
   }
   if (!customFrom.value || !customTo.value) {
-    customHint.value = '请先搜索并选择起点和终点'
+    customHint.value = '请先选择起点和终点（可搜索或点选 GPX 起/终点）'
+    return
+  }
+  if (customFrom.value.wgsLat == null || customFrom.value.wgsLng == null
+    || customTo.value.wgsLat == null || customTo.value.wgsLng == null) {
+    customHint.value = '起终点缺少有效坐标，请重新选择'
     return
   }
   if (!customMode.value) {
@@ -979,7 +1367,8 @@ async function previewTrainSegment() {
 
 async function submitCustomSegment() {
   if (!props.track?.trackId) return
-  if (customInsertPos.value === 'after' && !customAfterPointId.value) {
+  const reusePoint = !!(customFrom.value?.pointId || customTo.value?.pointId)
+  if (!reusePoint && customInsertPos.value === 'after' && !customAfterPointId.value) {
     customHint.value = '请选择插入锚点'
     return
   }
@@ -1004,9 +1393,22 @@ async function submitCustomSegment() {
       travelMode: customMode.value,
       routePath: JSON.stringify(customPreviewPath.value),
       append: customInsertPos.value === 'end',
-      afterPointId: customInsertPos.value === 'after' ? customAfterPointId.value : null
+      afterPointId: customInsertPos.value === 'after' ? customAfterPointId.value : null,
+      linkPrev: !!customLinkPrev.value,
+      linkNext: !!customLinkNext.value
+    }
+    if (customFrom.value.source === 'track' && customFrom.value.pointId) {
+      body.fromPointId = customFrom.value.pointId
+    }
+    if (customTo.value.source === 'track' && customTo.value.pointId) {
+      body.toPointId = customTo.value.pointId
     }
     if (customInsertPos.value === 'start') {
+      body.append = false
+      body.afterPointId = null
+    }
+    // 起终点已引用现有点时，插入位置由后端按点位衔接，忽略面板插入位
+    if (body.fromPointId || body.toPointId) {
       body.append = false
       body.afterPointId = null
     }
@@ -1489,7 +1891,6 @@ defineExpose({ refresh, startEdit })
 .mode-legend {
   position: absolute;
   z-index: 500;
-  /* 放右下角，避开左下角缩放按钮与右下角 attribution 文字区略上移 */
   right: 12px;
   bottom: 28px;
   left: auto;
@@ -1573,6 +1974,16 @@ defineExpose({ refresh, startEdit })
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+
+.gpx-panel {
+  top: 72px;
+}
+
+.mode-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .seg-panel-hd {
@@ -1750,5 +2161,16 @@ defineExpose({ refresh, startEdit })
   margin-top: 6px;
   color: #67c23a;
   font-size: 12px;
+}
+
+.gpx-anchor-row {
+  margin-bottom: 4px;
+}
+
+.link-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
 }
 </style>

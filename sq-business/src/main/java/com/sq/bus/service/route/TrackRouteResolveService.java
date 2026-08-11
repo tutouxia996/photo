@@ -76,6 +76,21 @@ public class TrackRouteResolveService {
                 continue;
             }
 
+            boolean fromWp = isWaypoint(from);
+            boolean toWp = isWaypoint(to);
+            // 触及自定义途经点：有折线则保留（用户手动连接）；无折线不自动补
+            if (fromWp || toWp) {
+                if (StringUtils.isEmpty(from.getRoutePath())) {
+                    skipped++;
+                    continue;
+                }
+                // 已有手动连接：非 force 保留；force 时仅两端都是自定义才重算
+                if (!force || !(fromWp && toWp)) {
+                    skipped++;
+                    continue;
+                }
+            }
+
             double km = GeoDistanceUtils.haversineKm(
                     from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
                     to.getLatitude().doubleValue(), to.getLongitude().doubleValue());
@@ -248,5 +263,9 @@ public class TrackRouteResolveService {
         map.put("failed", failed);
         map.put("remaining", remaining);
         return map;
+    }
+
+    private static boolean isWaypoint(BizTrackPoint p) {
+        return p == null || p.getPhotoId() == null;
     }
 }

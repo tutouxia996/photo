@@ -46,9 +46,12 @@
         </template>
       </el-table-column>
       <el-table-column label="名称" prop="trackName" />
+      <el-table-column label="来源" width="80">
+        <template #default="scope">{{ sourceTypeLabel(scope.row.sourceType) }}</template>
+      </el-table-column>
       <el-table-column label="点位数" prop="pointCount" width="90" />
-      <el-table-column label="里程(km)" prop="totalDistance" width="100" />
-      <el-table-column label="时长" min-width="160">
+      <el-table-column label="里程(km)不包含增补路段" prop="totalDistance" min-width="170" />
+      <el-table-column label="时长(不包含增补路段)" min-width="180">
         <template #default="scope">{{ formatDuration(scope.row.totalDuration) }}</template>
       </el-table-column>
       <el-table-column label="启用轨迹" width="110" align="center">
@@ -64,14 +67,29 @@
           />
         </template>
       </el-table-column>
+      <el-table-column label="启用GPX" width="110" align="center">
+        <template #default="scope">
+          <el-switch
+            :model-value="isGpxEnabled(scope.row)"
+            :loading="gpxEnabledLoadingId === scope.row.trackId"
+            :disabled="!canEditTrack || !hasGpxFiles(scope.row)"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :title="hasGpxFiles(scope.row) ? '控制地图是否显示 GPX 线路' : '请先导入 GPX'"
+            @change="(val) => handleGpxEnabledChange(scope.row, val)"
+          />
+        </template>
+      </el-table-column>
       <el-table-column label="公开" prop="isPublic" width="80">
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
       <el-table-column label="行程说明" prop="remark" min-width="160" :show-overflow-tooltip="true" />
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="handleView(scope.row)">查看</el-button>
           <el-button link type="primary" @click="handleEdit(scope.row)" v-hasPermi="['album:track:edit']">编辑</el-button>
+          <el-button link type="success" @click="openGpxImport(scope.row)" v-hasPermi="['album:track:generate']">导入GPX</el-button>
           <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:track:remove']">删除</el-button>
         </template>
       </el-table-column>
@@ -97,6 +115,40 @@
       <template #footer>
         <el-button type="primary" :loading="genLoading" @click="submitGenerate">生成</el-button>
         <el-button @click="genOpen = false">取消</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog title="导入 GPX" v-model="gpxImportOpen" width="520px" append-to-body destroy-on-close>
+      <el-form label-width="90px">
+        <el-form-item label="相册">
+          <span>{{ albumNameMap[gpxImportAlbumId] || gpxImportAlbumId || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="轨迹">
+          <span>{{ gpxImportTrackName || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="GPX 文件" required>
+          <el-upload
+            ref="gpxUploadRef"
+            drag
+            multiple
+            :auto-upload="false"
+            accept=".gpx"
+            :limit="20"
+            v-model:file-list="gpxFileList"
+          >
+            <div class="el-upload__text">将 .gpx 拖到此处，或<em>点击选择</em>（可多选）</div>
+          </el-upload>
+        </el-form-item>
+        <p class="gpx-tip">
+          适配 GPSLogger（GPX 1.1）：导入后叠加到当前轨迹地图的绿色 GPX 折线（只读，不可贴合路网或编辑）。
+          同相册下同名 GPX 会覆盖旧文件，不会重复累加点位/里程。
+          拍摄时间与 GPX 点相差在 10 秒内的照片/视频会挂到 GPX 对应位置。
+          导入后将自动开启「启用GPX」，列表中的来源/点位/里程/时长会合并 GPX 数据。
+        </p>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" :loading="gpxImportLoading" @click="submitGpxImport">导入并叠加</el-button>
+        <el-button @click="gpxImportOpen = false">取消</el-button>
       </template>
     </el-dialog>
 
@@ -151,6 +203,7 @@
           ref="mapViewerRef"
           :track="detailTrack"
           :points="detailPoints"
+          :gpx-overlays="detailGpxOverlays"
           :editable="canEditTrack && isTrackEnabled(detailTrack)"
           @saved="onTrackMapSaved"
           @replan="onTrackReplan"
@@ -168,7 +221,8 @@ import {
   generateTrack,
   updateTrack,
   delTrack,
-  resolveTrackRoutes
+  resolveTrackRoutes,
+  importTrackGpx
 } from '@/api/album/track'
 import TrackMapViewer from '@/components/TrackMapViewer/index.vue'
 import { hasMissingRoutePaths, hasUnstableAutoRoutes } from '@/utils/photoMapCluster'
@@ -203,6 +257,7 @@ const detailOpen = ref(false)
 const detailLoading = ref(false)
 const detailTrack = ref(null)
 const detailPoints = ref([])
+const detailGpxOverlays = ref([])
 const mapViewerRef = ref(null)
 let viewerRectRaf = 0
 const queryParams = ref({
@@ -212,14 +267,37 @@ const queryParams = ref({
   trackName: undefined
 })
 const genForm = ref({ albumId: undefined, trackName: '' })
+const gpxImportOpen = ref(false)
+const gpxImportLoading = ref(false)
+const gpxImportAlbumId = ref(undefined)
+const gpxImportTrackId = ref(undefined)
+const gpxImportTrackName = ref('')
+const gpxFileList = ref([])
+const gpxUploadRef = ref(null)
+const gpxEnabledLoadingId = ref(null)
 
 function albumLabel(item) {
   if (!item) return ''
   return `${item.albumName || '未命名'}（ID:${item.albumId}）`
 }
 
+function sourceTypeLabel(type) {
+  if (type === 'gpx') return 'GPX'
+  if (type === 'mixed') return '混合'
+  return '照片'
+}
+
 function isTrackEnabled(track) {
   return track == null || track.enabled == null || track.enabled === 1
+}
+
+function hasGpxFiles(row) {
+  return row?.hasGpx === 1
+}
+
+function isGpxEnabled(row) {
+  if (!hasGpxFiles(row)) return false
+  return row.gpxEnabled == null || row.gpxEnabled === 1
 }
 
 function formatDuration(sec) {
@@ -318,10 +396,11 @@ async function loadTrackWithRoutes(trackId, force = false) {
   const data = res.data || {}
   let track = data.track || null
   let points = data.points || []
+  let gpxOverlays = data.gpxOverlays || []
   // 打开查看：缺折线才修补；不要因个别直线段 force 全量重算（会把上百段又打一遍高德/OSM）
   const needRepair = force || hasMissingRoutePaths(points) || hasUnstableAutoRoutes(points)
   if (!needRepair) {
-    return { track, points }
+    return { track, points, gpxOverlays }
   }
   try {
     // 仅用户点「贴合路网」时 force；自动打开只用增量修补
@@ -334,10 +413,11 @@ async function loadTrackWithRoutes(trackId, force = false) {
     const fresh = await getTrack(trackId)
     track = fresh.data?.track || track
     points = fresh.data?.points || points
+    gpxOverlays = fresh.data?.gpxOverlays || gpxOverlays
   } catch (e) {
     console.warn('resolve track routes failed', e)
   }
-  return { track, points }
+  return { track, points, gpxOverlays }
 }
 
 function openTrackViewer(trackId) {
@@ -346,6 +426,7 @@ function openTrackViewer(trackId) {
   detailOpen.value = true
   detailTrack.value = null
   detailPoints.value = []
+  detailGpxOverlays.value = []
   nextTick(() => {
     startViewerRectSync()
   })
@@ -354,6 +435,7 @@ function openTrackViewer(trackId) {
     const data = res.data || {}
     detailTrack.value = data.track || null
     detailPoints.value = data.points || []
+    detailGpxOverlays.value = data.gpxOverlays || []
     nextTick(() => mapViewerRef.value?.refresh?.({ fit: true }))
   }).catch(() => {
     detailOpen.value = false
@@ -450,9 +532,9 @@ async function handleEnabledChange(row, val) {
   try {
     await updateTrack({ trackId: row.trackId, enabled })
     if (enabled === 1) {
-      proxy.$modal.msgSuccess('已开启：将自动同步生成，并在地图展示')
+      proxy.$modal.msgSuccess('已开启：将自动同步生成，并在地图展示；列表计入照片轨点位/里程/时长')
     } else {
-      proxy.$modal.msgSuccess('已关闭：保留轨迹数据，地图不再展示')
+      proxy.$modal.msgSuccess('已关闭：地图不再展示照片轨；列表点位/里程/时长不再计入照片轨')
     }
     getList()
   } catch (e) {
@@ -474,6 +556,7 @@ function onTrackMapSaved() {
     const data = res.data || {}
     detailTrack.value = data.track || detailTrack.value
     detailPoints.value = data.points || []
+    detailGpxOverlays.value = data.gpxOverlays || []
     getList()
     nextTick(() => mapViewerRef.value?.refresh?.({ fit: false }))
   }).catch(() => {
@@ -487,9 +570,10 @@ function onTrackReplan({ trackId, done }) {
     done?.()
     return
   }
-  loadTrackWithRoutes(id, true).then(({ track, points }) => {
+  loadTrackWithRoutes(id, true).then(({ track, points, gpxOverlays }) => {
     detailTrack.value = track || detailTrack.value
     detailPoints.value = points || []
+    detailGpxOverlays.value = gpxOverlays || []
     proxy.$modal.msgSuccess('已按照片坐标重新贴合路网')
     nextTick(() => mapViewerRef.value?.refresh?.({ fit: true }))
   }).catch(() => {
@@ -506,6 +590,80 @@ function handleDelete(row) {
   }).catch(() => {})
 }
 
+function openGpxImport(row) {
+  if (!row?.albumId) {
+    proxy.$modal.msgError('轨迹未关联相册')
+    return
+  }
+  gpxImportAlbumId.value = row.albumId
+  gpxImportTrackId.value = row.trackId
+  gpxImportTrackName.value = row.trackName || ''
+  gpxFileList.value = []
+  gpxImportOpen.value = true
+}
+
+function submitGpxImport() {
+  if (!gpxImportAlbumId.value) {
+    proxy.$modal.msgError('相册无效')
+    return
+  }
+  const rawFiles = (gpxFileList.value || [])
+    .map(f => f.raw)
+    .filter(Boolean)
+  if (!rawFiles.length) {
+    proxy.$modal.msgError('请选择至少一个 .gpx 文件')
+    return
+  }
+  const formData = new FormData()
+  rawFiles.forEach(file => formData.append('files', file))
+  gpxImportLoading.value = true
+  importTrackGpx(gpxImportAlbumId.value, formData).then(res => {
+    const data = res.data || {}
+    const track = data.track
+    const replaced = Number(data.replaced) || 0
+    const imported = data.imported || rawFiles.length
+    proxy.$modal.msgSuccess(replaced > 0
+      ? `已导入 ${imported} 个 GPX（覆盖同名 ${replaced} 个），已叠加到轨迹地图`
+      : `已导入 ${imported} 个 GPX，已叠加到轨迹地图`)
+    gpxImportOpen.value = false
+    gpxFileList.value = []
+    getList()
+    const viewId = track?.trackId || gpxImportTrackId.value
+    if (viewId) {
+      openTrackViewer(viewId)
+    } else {
+      proxy.$modal.msgWarning('相册尚无照片轨迹，请先「生成轨迹」后再查看叠加效果')
+    }
+  }).finally(() => {
+    gpxImportLoading.value = false
+  })
+}
+
+async function handleGpxEnabledChange(row, val) {
+  if (!row?.trackId) return
+  if (!hasGpxFiles(row)) {
+    proxy.$modal.msgWarning('请先在操作中导入 GPX')
+    return
+  }
+  const enabled = val ? 1 : 0
+  const prev = row.gpxEnabled == null ? 1 : row.gpxEnabled
+  if (prev === enabled) return
+  gpxEnabledLoadingId.value = row.trackId
+  row.gpxEnabled = enabled
+  try {
+    await updateTrack({ trackId: row.trackId, gpxEnabled: enabled })
+    proxy.$modal.msgSuccess(enabled === 1
+      ? '已开启：地图展示 GPX 线路；列表计入 GPX 点位/里程/时长'
+      : '已关闭：地图不再展示 GPX 线路；列表点位/里程/时长不再计入 GPX')
+    getList()
+  } catch (e) {
+    row.gpxEnabled = prev
+    proxy.$modal.msgError('更新失败')
+  } finally {
+    gpxEnabledLoadingId.value = null
+  }
+}
+
 loadAlbums().finally(() => getList())
 </script>
 
@@ -515,6 +673,13 @@ loadAlbums().finally(() => getList())
   color: #909399;
   font-size: 13px;
   vertical-align: middle;
+}
+
+.gpx-tip {
+  margin: 0 0 0 90px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* 遮罩与弹窗都对齐主内容区（侧栏右侧、顶栏下方的白色区域） */

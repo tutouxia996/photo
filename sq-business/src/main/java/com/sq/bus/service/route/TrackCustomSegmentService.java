@@ -1,6 +1,7 @@
 package com.sq.bus.service.route;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.service.IBizTrackPointService;
@@ -23,7 +24,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 自定义增补路段：插入无照片途经点并写入高德真实折线。
+ * 自定义增补路段：支持地点 / 现有轨迹点互连；可选邻接连接。
+ * 默认不自动贴「上一照片点↔新段」；仅当 linkPrev/linkNext 为 true 或起终点引用已有点时写入连接折线。
  */
 @Service
 public class TrackCustomSegmentService {
@@ -55,43 +57,17 @@ public class TrackCustomSegmentService {
         boolean append = Boolean.TRUE.equals(body.get("append"))
                 || "true".equalsIgnoreCase(str(body.get("append")));
         Long afterPointId = toLong(body.get("afterPointId"));
+        Long fromPointId = toLong(body.get("fromPointId"));
+        Long toPointId = toLong(body.get("toPointId"));
+        boolean linkPrev = Boolean.TRUE.equals(body.get("linkPrev"))
+                || "true".equalsIgnoreCase(str(body.get("linkPrev")));
+        boolean linkNext = Boolean.TRUE.equals(body.get("linkNext"))
+                || "true".equalsIgnoreCase(str(body.get("linkNext")));
 
-        if (fromLat == null || fromLng == null || toLat == null || toLng == null) {
-            throw new ServiceException("起终点坐标不能为空");
-        }
         if (StringUtils.isEmpty(travelMode)) {
             throw new ServiceException("请选择出行方式");
         }
         travelMode = travelMode.trim().toLowerCase(Locale.ROOT);
-
-        boolean gcj = coords == null || coords.isEmpty() || "gcj02".equalsIgnoreCase(coords);
-        double fromLatWgs;
-        double fromLngWgs;
-        double toLatWgs;
-        double toLngWgs;
-        if (gcj) {
-            double[] fromWgs = CoordTransformUtils.gcj02ToWgs84(fromLng, fromLat);
-            double[] toWgs = CoordTransformUtils.gcj02ToWgs84(toLng, toLat);
-            fromLngWgs = fromWgs[0];
-            fromLatWgs = fromWgs[1];
-            toLngWgs = toWgs[0];
-            toLatWgs = toWgs[1];
-        } else {
-            fromLatWgs = fromLat;
-            fromLngWgs = fromLng;
-            toLatWgs = toLat;
-            toLngWgs = toLng;
-        }
-
-        // routePath 始终按 GCJ 存（与现有路网折线一致）；未传则规划
-        if (StringUtils.isEmpty(routePath)) {
-            TrackRoutePlanResult planned = amapDirectionService.plan(
-                    fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, travelMode);
-            if (!planned.hasPath()) {
-                throw new ServiceException(planned.getMessage() == null ? "未能规划路线" : planned.getMessage());
-            }
-            routePath = amapDirectionService.toRoutePathJson(planned.getPath());
-        }
 
         List<BizTrackPoint> existing = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
                 .eq(BizTrackPoint::getTrackId, trackId)
@@ -101,69 +77,162 @@ public class TrackCustomSegmentService {
             existing = new ArrayList<BizTrackPoint>();
         }
 
-        int insertAt;
-        if (append || existing.isEmpty()) {
-            insertAt = existing.size();
-        } else if (afterPointId == null) {
-            insertAt = 0;
+        BizTrackPoint reuseFrom = findPoint(existing, fromPointId);
+        BizTrackPoint reuseTo = findPoint(existing, toPointId);
+        if (fromPointId != null && reuseFrom == null) {
+            throw new ServiceException("起点轨迹点不存在");
+        }
+        if (toPointId != null && reuseTo == null) {
+            throw new ServiceException("终点轨迹点不存在");
+        }
+        if (reuseFrom != null && reuseTo != null && reuseFrom.getPointId().equals(reuseTo.getPointId())) {
+            throw new ServiceException("起终点不能是同一个轨迹点");
+        }
+
+        // 复用已有点：坐标以库为准（WGS84）
+        double fromLatWgs;
+        double fromLngWgs;
+        double toLatWgs;
+        double toLngWgs;
+        if (reuseFrom != null) {
+            fromLatWgs = reuseFrom.getLatitude().doubleValue();
+            fromLngWgs = reuseFrom.getLongitude().doubleValue();
+            if (StringUtils.isEmpty(fromName)) {
+                fromName = reuseFrom.getDescription();
+            }
         } else {
-            insertAt = -1;
-            for (int i = 0; i < existing.size(); i++) {
-                if (afterPointId.equals(existing.get(i).getPointId())) {
-                    insertAt = i + 1;
-                    break;
-                }
+            if (fromLat == null || fromLng == null) {
+                throw new ServiceException("起点坐标不能为空");
             }
-            if (insertAt < 0) {
-                throw new ServiceException("插入位置点位不存在");
+            double[] wgs = toWgs(fromLat, fromLng, coords);
+            fromLatWgs = wgs[1];
+            fromLngWgs = wgs[0];
+        }
+        if (reuseTo != null) {
+            toLatWgs = reuseTo.getLatitude().doubleValue();
+            toLngWgs = reuseTo.getLongitude().doubleValue();
+            if (StringUtils.isEmpty(toName)) {
+                toName = reuseTo.getDescription();
             }
+        } else {
+            if (toLat == null || toLng == null) {
+                throw new ServiceException("终点坐标不能为空");
+            }
+            double[] wgs = toWgs(toLat, toLng, coords);
+            toLatWgs = wgs[1];
+            toLngWgs = wgs[0];
+        }
+
+        if (StringUtils.isEmpty(routePath)) {
+            TrackRoutePlanResult planned = amapDirectionService.plan(
+                    fromLatWgs, fromLngWgs, toLatWgs, toLngWgs, travelMode);
+            if (!planned.hasPath()) {
+                throw new ServiceException(planned.getMessage() == null ? "未能规划路线" : planned.getMessage());
+            }
+            routePath = amapDirectionService.toRoutePathJson(planned.getPath());
         }
 
         Date now = new Date();
-        BizTrackPoint fromPoint = new BizTrackPoint();
-        fromPoint.setTrackId(trackId);
-        fromPoint.setPhotoId(null);
-        fromPoint.setLatitude(BigDecimal.valueOf(fromLatWgs));
-        fromPoint.setLongitude(BigDecimal.valueOf(fromLngWgs));
-        fromPoint.setPointTime(now);
-        fromPoint.setDescription(StringUtils.isEmpty(fromName) ? "自定义起点" : fromName.trim());
-        fromPoint.setTravelMode(travelMode);
-        fromPoint.setRoutePath(routePath);
+        List<BizTrackPoint> merged = new ArrayList<BizTrackPoint>(existing);
+        BizTrackPoint fromPoint;
+        BizTrackPoint toPoint;
+        int fromIdx;
+        int toIdx;
 
-        BizTrackPoint toPoint = new BizTrackPoint();
-        toPoint.setTrackId(trackId);
-        toPoint.setPhotoId(null);
-        toPoint.setLatitude(BigDecimal.valueOf(toLatWgs));
-        toPoint.setLongitude(BigDecimal.valueOf(toLngWgs));
-        toPoint.setPointTime(now);
-        toPoint.setDescription(StringUtils.isEmpty(toName) ? "自定义终点" : toName.trim());
+        if (reuseFrom != null && reuseTo != null) {
+            // 两端都是已有点：把终点挪到起点之后，写入连接折线
+            fromIdx = indexOf(merged, reuseFrom.getPointId());
+            toIdx = indexOf(merged, reuseTo.getPointId());
+            if (fromIdx < 0 || toIdx < 0) {
+                throw new ServiceException("起终点轨迹点不存在");
+            }
+            if (toIdx != fromIdx + 1) {
+                BizTrackPoint moved = merged.remove(toIdx);
+                if (toIdx < fromIdx) {
+                    fromIdx--;
+                }
+                merged.add(fromIdx + 1, moved);
+            }
+            fromPoint = merged.get(fromIdx);
+            toPoint = merged.get(fromIdx + 1);
+            fromPoint.setTravelMode(travelMode);
+            fromPoint.setRoutePath(routePath);
+            toIdx = fromIdx + 1;
+        } else if (reuseFrom != null) {
+            fromIdx = indexOf(merged, reuseFrom.getPointId());
+            if (fromIdx < 0) {
+                throw new ServiceException("起点轨迹点不存在");
+            }
+            toPoint = newWaypoint(trackId, toLatWgs, toLngWgs, toName, now, null, null);
+            merged.add(fromIdx + 1, toPoint);
+            fromPoint = merged.get(fromIdx);
+            fromPoint.setTravelMode(travelMode);
+            fromPoint.setRoutePath(routePath);
+            toIdx = fromIdx + 1;
+        } else if (reuseTo != null) {
+            toIdx = indexOf(merged, reuseTo.getPointId());
+            if (toIdx < 0) {
+                throw new ServiceException("终点轨迹点不存在");
+            }
+            fromPoint = newWaypoint(trackId, fromLatWgs, fromLngWgs, fromName, now, travelMode, routePath);
+            merged.add(toIdx, fromPoint);
+            toPoint = merged.get(toIdx + 1);
+            fromIdx = toIdx;
+            toIdx = toIdx + 1;
+        } else {
+            int insertAt;
+            if (append || merged.isEmpty()) {
+                insertAt = merged.size();
+            } else if (afterPointId == null) {
+                insertAt = 0;
+            } else {
+                insertAt = -1;
+                for (int i = 0; i < merged.size(); i++) {
+                    if (afterPointId.equals(merged.get(i).getPointId())) {
+                        insertAt = i + 1;
+                        break;
+                    }
+                }
+                if (insertAt < 0) {
+                    throw new ServiceException("插入位置点位不存在");
+                }
+            }
+            fromPoint = newWaypoint(trackId, fromLatWgs, fromLngWgs, fromName, now, travelMode, routePath);
+            toPoint = newWaypoint(trackId, toLatWgs, toLngWgs, toName, now, null, null);
+            merged.add(insertAt, fromPoint);
+            merged.add(insertAt + 1, toPoint);
+            fromIdx = insertAt;
+            toIdx = insertAt + 1;
+        }
 
-        List<BizTrackPoint> merged = new ArrayList<BizTrackPoint>(existing.size() + 2);
-        merged.addAll(existing.subList(0, insertAt));
-        merged.add(fromPoint);
-        merged.add(toPoint);
-        merged.addAll(existing.subList(insertAt, existing.size()));
-
-        // 重排序号并保存新点
         int seq = 1;
         for (BizTrackPoint p : merged) {
             p.setSequence(seq++);
         }
-        trackPointService.save(fromPoint);
-        trackPointService.save(toPoint);
-        for (BizTrackPoint p : existing) {
-            trackPointService.updateById(p);
-        }
 
-        // 补邻接：prev→from、to→next
-        int fromIdx = insertAt;
-        int toIdx = insertAt + 1;
-        if (fromIdx > 0) {
+        // 持久化：新点 save，已有点 update（含序号）
+        for (BizTrackPoint p : merged) {
+            if (p.getPointId() == null) {
+                trackPointService.save(p);
+            } else {
+                trackPointService.updateById(p);
+            }
+        }
+        // 确保 from 的折线/方式写入（updateById 对非 null 字段有效）
+        fromPoint.setTravelMode(travelMode);
+        fromPoint.setRoutePath(routePath);
+        trackPointService.updateById(fromPoint);
+
+        // 可选：连接插入段与前后邻点
+        if (linkPrev && fromIdx > 0) {
             BizTrackPoint prev = merged.get(fromIdx - 1);
             linkSegment(prev, fromPoint);
             trackPointService.updateById(prev);
+        } else if (fromIdx > 0 && reuseFrom == null && reuseTo == null) {
+            // 全新两点插入且未勾选连接上一：断开前一点旧折线，避免误指向新段
+            clearRoutePath(merged.get(fromIdx - 1).getPointId());
         }
-        if (toIdx + 1 < merged.size()) {
+        if (linkNext && toIdx + 1 < merged.size()) {
             BizTrackPoint next = merged.get(toIdx + 1);
             linkSegment(toPoint, next);
             trackPointService.updateById(toPoint);
@@ -177,8 +246,27 @@ public class TrackCustomSegmentService {
         result.put("fromPointId", fromPoint.getPointId());
         result.put("toPointId", toPoint.getPointId());
         result.put("pointCount", merged.size());
-        result.put("insertAt", insertAt);
+        result.put("fromIdx", fromIdx);
+        result.put("toIdx", toIdx);
         return result;
+    }
+
+    private BizTrackPoint newWaypoint(Long trackId, double latWgs, double lngWgs, String name,
+                                      Date now, String travelMode, String routePath) {
+        BizTrackPoint p = new BizTrackPoint();
+        p.setTrackId(trackId);
+        p.setPhotoId(null);
+        p.setLatitude(BigDecimal.valueOf(latWgs));
+        p.setLongitude(BigDecimal.valueOf(lngWgs));
+        p.setPointTime(now);
+        p.setDescription(StringUtils.isEmpty(name) ? "自定义途经点" : name.trim());
+        if (StringUtils.isNotEmpty(travelMode)) {
+            p.setTravelMode(travelMode);
+        }
+        if (StringUtils.isNotEmpty(routePath)) {
+            p.setRoutePath(routePath);
+        }
+        return p;
     }
 
     private void linkSegment(BizTrackPoint from, BizTrackPoint to) {
@@ -212,6 +300,48 @@ public class TrackCustomSegmentService {
         if (planned.hasPath()) {
             from.setRoutePath(amapDirectionService.toRoutePathJson(planned.getPath()));
         }
+    }
+
+    private void clearRoutePath(Long pointId) {
+        if (pointId == null) {
+            return;
+        }
+        trackPointService.update(new LambdaUpdateWrapper<BizTrackPoint>()
+                .eq(BizTrackPoint::getPointId, pointId)
+                .set(BizTrackPoint::getRoutePath, null));
+    }
+
+    private static BizTrackPoint findPoint(List<BizTrackPoint> list, Long pointId) {
+        if (pointId == null || list == null) {
+            return null;
+        }
+        for (BizTrackPoint p : list) {
+            if (pointId.equals(p.getPointId())) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    private static int indexOf(List<BizTrackPoint> list, Long pointId) {
+        if (pointId == null || list == null) {
+            return -1;
+        }
+        for (int i = 0; i < list.size(); i++) {
+            if (pointId.equals(list.get(i).getPointId())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** @return [lngWgs, latWgs] */
+    private static double[] toWgs(double lat, double lng, String coords) {
+        boolean gcj = coords == null || coords.isEmpty() || "gcj02".equalsIgnoreCase(coords);
+        if (gcj) {
+            return CoordTransformUtils.gcj02ToWgs84(lng, lat);
+        }
+        return new double[]{lng, lat};
     }
 
     private String str(Object v) {

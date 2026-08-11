@@ -31,6 +31,8 @@ public class AlbumProperties {
 
     private MapConfig map = new MapConfig();
 
+    private GpxConfig gpx = new GpxConfig();
+
     @Data
     public static class Thumb {
         private int smallWidth = 300;
@@ -69,5 +71,20 @@ public class AlbumProperties {
         private String queryUrl = "https://apis.juhe.cn/fapigw/train/query";
         /** 按车次查经停（聚合经典 train/s，可选） */
         private String detailUrl = "https://apis.juhe.cn/train/s";
+    }
+
+    @Data
+    public static class GpxConfig {
+        /** 媒体拍摄时间与 GPX 点匹配窗口（秒） */
+        private int matchWindowSeconds = 10;
+        /**
+         * 将 GPX 时间（多为 UTC）平移到与 EXIF 本地时间对齐的小时数。
+         * 中国常见为 8；若录制设备与照片时区已一致可设 0。
+         */
+        private int timeOffsetHours = 8;
+        /** 抽稀：相邻保留点最小间距（米）；0 表示不按距离抽稀，保留全部点 */
+        private double simplifyMinMeters = 0;
+        /** 单段折线最大点数；0 或负数表示不限制，保留全部点 */
+        private int maxPathPoints = 0;
     }
 }

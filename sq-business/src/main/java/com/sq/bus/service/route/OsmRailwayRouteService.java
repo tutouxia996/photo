@@ -55,9 +55,10 @@ public class OsmRailwayRouteService {
     private static final double MAX_SNAP_KM = 3.0;
 
     private static final String[] DEFAULT_MIRRORS = new String[]{
-            "https://overpass-api.de/api/interpreter",
+            // overpass-api.de 常 504，放到后面；优先其它镜像
             "https://overpass.kumi.systems/api/interpreter",
-            "https://overpass.openstreetmap.ru/api/interpreter"
+            "https://overpass.openstreetmap.ru/api/interpreter",
+            "https://overpass-api.de/api/interpreter"
     };
 
     @Autowired
@@ -226,24 +227,24 @@ public class OsmRailwayRouteService {
     private String buildQuery(double south, double west, double north, double east, String pass) {
         String bbox = "(" + south + "," + west + "," + north + "," + east + ")";
         if ("metro".equals(pass)) {
-            return "[out:json][timeout:45];("
+            return "[out:json][timeout:20];("
                     + "way[\"railway\"~\"^(subway|light_rail|monorail)$\"]" + bbox + ";"
                     + ");out geom;";
         }
         // 仅高铁/城际（京张等），不含京包老线
         if ("hsr".equals(pass)) {
-            return "[out:json][timeout:45];("
+            return "[out:json][timeout:20];("
                     + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + bbox + ";"
                     + ");out geom;";
         }
         if ("main".equals(pass)) {
-            return "[out:json][timeout:45];("
+            return "[out:json][timeout:20];("
                     + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + bbox + ";"
                     + "way[\"railway\"=\"rail\"][\"usage\"=\"main\"]" + bbox + ";"
                     + "way[\"railway\"=\"rail\"][\"usage\"=\"branch\"]" + bbox + ";"
                     + ");out geom;";
         }
-        return "[out:json][timeout:45];("
+        return "[out:json][timeout:20];("
                 + "way[\"railway\"=\"rail\"][\"railway\"!~\"abandoned|disused|construction|razed|proposed\"]" + bbox + ";"
                 + ");out geom;";
     }
@@ -283,8 +284,8 @@ public class OsmRailwayRouteService {
         if (conn instanceof HttpsURLConnection && trustAllSsl()) {
             applyTrustAll((HttpsURLConnection) conn);
         }
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(50000);
+        conn.setConnectTimeout(8000);
+        conn.setReadTimeout(22000);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");

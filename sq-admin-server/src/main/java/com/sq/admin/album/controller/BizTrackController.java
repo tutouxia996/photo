@@ -6,6 +6,7 @@ import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
 import com.sq.bus.service.IBizPhotoService;
+import com.sq.bus.service.IBizTrackGpxFileService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.service.route.AmapDirectionService;
@@ -28,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.util.Arrays;
@@ -73,6 +75,9 @@ public class BizTrackController extends BaseController {
     @Autowired
     private TrainSegmentService trainSegmentService;
 
+    @Autowired
+    private IBizTrackGpxFileService trackGpxFileService;
+
     @PreAuthorize("@ss.hasPermi('album:track:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizTrack query) {
@@ -83,7 +88,9 @@ public class BizTrackController extends BaseController {
                 .eq(query.getIsPublic() != null, BizTrack::getIsPublic, query.getIsPublic())
                 .eq(BizTrack::getDeleted, 0)
                 .orderByDesc(BizTrack::getTrackId);
-        return getDataTable(trackService.list(wrapper));
+        List<BizTrack> list = trackService.list(wrapper);
+        trackGpxFileService.enrichTracks(list);
+        return getDataTable(list);
     }
 
     /**
@@ -160,9 +167,11 @@ public class BizTrackController extends BaseController {
                 .eq(BizTrackPoint::getTrackId, trackId)
                 .orderByAsc(BizTrackPoint::getSequence));
         fillPointMedia(points);
+        trackGpxFileService.enrichTracks(java.util.Collections.singletonList(track));
         Map<String, Object> data = new HashMap<String, Object>();
         data.put("track", track);
         data.put("points", points);
+        data.put("gpxOverlays", trackGpxFileService.listOverlaysForTrack(track));
         return success(data);
     }
 
@@ -231,6 +240,9 @@ public class BizTrackController extends BaseController {
         }
         if (track.getEnabled() != null) {
             db.setEnabled(track.getEnabled() == 1 ? 1 : 0);
+        }
+        if (track.getGpxEnabled() != null) {
+            db.setGpxEnabled(track.getGpxEnabled() == 1 ? 1 : 0);
         }
         // 允许清空行程说明
         if (track.getRemark() != null) {
@@ -468,5 +480,45 @@ public class BizTrackController extends BaseController {
                 .set(BizTrack::getDeleted, 1)
                 .set(BizTrack::getUpdateBy, getUsername())
                 .set(BizTrack::getUpdateTime, new Date())));
+    }
+
+    /** 相册下 GPX 文件列表 */
+    @PreAuthorize("@ss.hasPermi('album:track:list')")
+    @GetMapping("/gpx/list")
+    public AjaxResult gpxList(@RequestParam Long albumId) {
+        return success(trackGpxFileService.listByAlbum(albumId));
+    }
+
+    /** 导入 GPX（可多文件），作为叠层显示在既有轨迹地图上，不新建轨迹 */
+    @PreAuthorize("@ss.hasPermi('album:track:generate')")
+    @Log(title = "轨迹GPX导入", businessType = BusinessType.INSERT)
+    @PostMapping("/gpx/import")
+    public AjaxResult importGpx(@RequestParam Long albumId,
+                                @RequestParam("files") MultipartFile[] files) {
+        return success(trackGpxFileService.importGpxFiles(albumId, files, getUsername()));
+    }
+
+    /** 启用/停用单个 GPX（影响地图叠层） */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @Log(title = "轨迹GPX启用", businessType = BusinessType.UPDATE)
+    @PutMapping("/gpx/{gpxId}/enabled")
+    public AjaxResult gpxEnabled(@PathVariable Long gpxId, @RequestParam boolean enabled) {
+        return toAjax(trackGpxFileService.setEnabled(gpxId, enabled, getUsername()));
+    }
+
+    /** 设置 GPX 出行方式（影响线路颜色） */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @Log(title = "轨迹GPX出行方式", businessType = BusinessType.UPDATE)
+    @PutMapping("/gpx/{gpxId}/travel-mode")
+    public AjaxResult gpxTravelMode(@PathVariable Long gpxId, @RequestParam String travelMode) {
+        return toAjax(trackGpxFileService.setTravelMode(gpxId, travelMode, getUsername()));
+    }
+
+    /** 删除 GPX（影响地图叠层） */
+    @PreAuthorize("@ss.hasPermi('album:track:remove')")
+    @Log(title = "轨迹GPX删除", businessType = BusinessType.DELETE)
+    @DeleteMapping("/gpx/{gpxId}")
+    public AjaxResult removeGpx(@PathVariable Long gpxId) {
+        return toAjax(trackGpxFileService.removeGpx(gpxId, getUsername()));
     }
 }

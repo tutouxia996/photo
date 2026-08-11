@@ -62,12 +62,28 @@ const props = defineProps({
   /** 临时预览折线（GCJ [[lat,lng],...]），不落库 */
   previewPath: { type: Array, default: null },
   /**
+   * GPX 等叠层折线：[{ path: [[lat,lng],...], color?, fileName? }]
+   */
+  overlayPaths: { type: Array, default: () => [] },
+  /**
    * 出行方式筛选：空数组/null 显示全部；非空则仅绘制 travelMode 命中的路段
    */
-  visibleTravelModes: { type: Array, default: null }
+  visibleTravelModes: { type: Array, default: null },
+  /** 增补路段时：GPX 起/终点标记可点击选用为锚点 */
+  gpxEndpointPickable: { type: Boolean, default: false },
+  /** 增补路段时：照片/途经点可点击选用为锚点 */
+  pointPickable: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['segment-click', 'segment-path-change', 'waypoint-click', 'ready'])
+const emit = defineEmits([
+  'segment-click',
+  'segment-path-change',
+  'waypoint-click',
+  'point-click',
+  'gpx-click',
+  'gpx-endpoint-click',
+  'ready'
+])
 
 const mapEl = ref(null)
 const currentStyle = ref('normal')
@@ -80,6 +96,8 @@ let lineLayer = null
 let clusterGroup = null
 /** 无照片途经点单独图层，不参与聚合（避免接合处显示「图」缩略图） */
 let waypointLayer = null
+/** GPX 等叠层折线 */
+let gpxOverlayLayer = null
 /** 轨迹线用 SVG，才能做流动虚线 CSS 动画 */
 let svgRenderer = null
 let canvasRenderer = null
@@ -90,7 +108,45 @@ let segmentRefs = []
 let pathEditMarkers = []
 
 const validPoints = computed(() => filterValidPoints(props.points))
-const hasPoints = computed(() => validPoints.value.length > 0)
+const overlayList = computed(() => {
+  const list = Array.isArray(props.overlayPaths) ? props.overlayPaths : []
+  return list.filter(o => {
+    if (!o) return false
+    if (o.showPath === false) {
+      return Array.isArray(o.matchedPhotos) && o.matchedPhotos.length > 0
+    }
+    if (Array.isArray(o.path) && o.path.length >= 2) return true
+    if (Number(o.pathPointCount) >= 2) return true
+    return Array.isArray(o.matchedPhotos) && o.matchedPhotos.length > 0
+  })
+})
+
+const hasGpxPathOverlay = computed(() => overlayList.value.some(o => {
+  if (!o || o.showPath === false) return false
+  if (Array.isArray(o.path) && o.path.length >= 2) return true
+  return Number(o.pathPointCount) >= 2
+}))
+
+/** GPX 时间匹配到的媒体（挂在 GPX 坐标上） */
+const gpxMatchedPhotos = computed(() => {
+  const out = []
+  const seen = new Set()
+  for (const o of overlayList.value) {
+    const photos = Array.isArray(o.matchedPhotos) ? o.matchedPhotos : []
+    for (const p of photos) {
+      const id = p?.photoId
+      if (id == null || seen.has(String(id))) continue
+      if (p.latitude == null || p.longitude == null) continue
+      if (Number.isNaN(Number(p.latitude)) || Number.isNaN(Number(p.longitude))) continue
+      seen.add(String(id))
+      out.push(p)
+    }
+  }
+  return out
+})
+const hasPoints = computed(() =>
+  validPoints.value.length > 0 || hasGpxPathOverlay.value || gpxMatchedPhotos.value.length > 0
+)
 
 const modeFilterSet = computed(() => {
   const list = props.visibleTravelModes
@@ -103,6 +159,24 @@ function isSegmentModeVisible(travelMode) {
   if (!set) return true
   const key = String(travelMode || '').toLowerCase()
   return key ? set.has(key) : false
+}
+
+function isGpxItemVisible(item) {
+  const set = modeFilterSet.value
+  if (!set) return true
+  if (set.has('gpx')) return true
+  const mode = String(item?.travelMode || '').toLowerCase()
+  return mode ? set.has(mode) : false
+}
+
+/** 图例只筛线路，不隐藏 GPX 匹配到的照片/视频 */
+function shouldShowGpxMatchedPhotos() {
+  return gpxMatchedPhotos.value.length > 0
+}
+
+function visibleMatchedPhotos() {
+  // 始终展示全部 GPX 匹配媒体；出行方式筛选仅作用于折线
+  return gpxMatchedPhotos.value
 }
 
 function invalidateMapSize() {
@@ -126,6 +200,7 @@ function applyBaseLayers(styleKey) {
     labelLayer = L.tileLayer(conf.labelUrl, conf.labelOptions || conf.options).addTo(map)
   }
   if (lineLayer) lineLayer.bringToFront()
+  if (gpxOverlayLayer) gpxOverlayLayer.bringToFront()
   if (clusterGroup) clusterGroup.bringToFront()
   if (waypointLayer) waypointLayer.bringToFront()
 }
@@ -162,6 +237,7 @@ function clearOverlays() {
   clearPathEditMarkers()
   segmentRefs = []
   if (lineLayer) lineLayer.clearLayers()
+  if (gpxOverlayLayer) gpxOverlayLayer.clearLayers()
   if (clusterGroup) clusterGroup.clearLayers()
   if (waypointLayer) waypointLayer.clearLayers()
 }
@@ -343,6 +419,7 @@ function drawDirectionDecorations(fullPath, list) {
       const from = list[i]
       if (!isSegmentModeVisible(from.travelMode)) continue
       const latlngs = segmentLatLngs(from, list[i + 1])
+      if (!latlngs || latlngs.length < 2) continue
       const color = props.segmentByTravelMode
         ? travelModeColor(from.travelMode, defaultColor)
         : defaultColor
@@ -379,6 +456,10 @@ function drawSegments(list) {
     const from = list[i]
     const to = list[i + 1]
     const latlngs = segmentLatLngs(from, to)
+    if (!latlngs || latlngs.length < 2) {
+      segmentRefs[i] = null
+      continue
+    }
     const visible = isSegmentModeVisible(from.travelMode)
     if (visible) {
       if (!fullPath.length) {
@@ -483,6 +564,238 @@ function drawPreviewPath() {
   }).addTo(lineLayer)
 }
 
+function normalizeOverlayLatLngs(path) {
+  if (!Array.isArray(path) || path.length < 2) return []
+  const latlngs = []
+  for (const p of path) {
+    let lat
+    let lng
+    if (Array.isArray(p) && p.length >= 2) {
+      lat = Number(p[0])
+      lng = Number(p[1])
+    } else if (p && typeof p === 'object') {
+      lat = Number(p.lat != null ? p.lat : p.latitude)
+      lng = Number(p.lng != null ? p.lng : p.longitude)
+    } else {
+      continue
+    }
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue
+    latlngs.push([lat, lng])
+  }
+  return latlngs
+}
+
+function findNearestGpxPoint(path, latlng) {
+  if (!Array.isArray(path) || !latlng) return null
+  let best = null
+  let bestD = Infinity
+  for (const p of path) {
+    const lat = Number(p?.lat != null ? p.lat : p?.[0])
+    const lng = Number(p?.lng != null ? p.lng : p?.[1])
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue
+    const dlat = lat - latlng.lat
+    const dlng = lng - latlng.lng
+    const d = dlat * dlat + dlng * dlng
+    if (d < bestD) {
+      bestD = d
+      best = p
+    }
+  }
+  return best
+}
+
+function buildGpxPopupHtml(item, nearest) {
+  const stats = item.stats || {}
+  const mode = item.travelMode || ''
+  const modeText = travelModeLabel(mode) || mode || '-'
+  const rows = []
+  rows.push(`<div class="pmc-gpx-title">GPX：${escapeHtml(item.fileName || '')}</div>`)
+  rows.push(`<div class="pmc-gpx-tag">线路不可贴合路网 · 可修改出行方式</div>`)
+  rows.push(metaRow('出行方式', modeText))
+  if (stats.startTime) rows.push(metaRow('开始', stats.startTime))
+  if (stats.endTime) rows.push(metaRow('结束', stats.endTime))
+  if (stats.durationText) rows.push(metaRow('时长', stats.durationText))
+  if (stats.distanceText) rows.push(metaRow('里程', stats.distanceText))
+  if (stats.pointCount != null) rows.push(metaRow('点数', String(stats.pointCount)))
+  if (stats.minEle != null) rows.push(metaRow('海拔', `${stats.minEle} ~ ${stats.maxEle} m`))
+  if (stats.ascent != null) rows.push(metaRow('爬升/下降', `↑${stats.ascent} m / ↓${stats.descent} m`))
+  if (nearest) {
+    rows.push(`<div class="pmc-gpx-section">点击最近点 #${nearest.seq || '-'}</div>`)
+    if (nearest.time) rows.push(metaRow('时间', nearest.time))
+    if (nearest.rawTime) rows.push(metaRow('原始UTC', nearest.rawTime))
+    if (nearest.ele != null) rows.push(metaRow('海拔', `${nearest.ele} m`))
+    if (nearest.sat != null) rows.push(metaRow('卫星', String(nearest.sat)))
+    if (nearest.speedKmh != null) rows.push(metaRow('速度', `${nearest.speedKmh} km/h`))
+    if (nearest.segDistM != null) rows.push(metaRow('段距', `${nearest.segDistM} m`))
+    if (nearest.latWgs != null) rows.push(metaRow('WGS84', `${Number(nearest.latWgs).toFixed(6)}, ${Number(nearest.lngWgs).toFixed(6)}`))
+  }
+  return `<div class="pmc-popup pmc-gpx-popup">${rows.join('')}</div>`
+}
+
+function metaRow(label, value) {
+  return `<div class="pmc-meta"><span class="pmc-gpx-k">${escapeHtml(label)}</span>${escapeHtml(String(value))}</div>`
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function drawGpxFlow(latlngs, color) {
+  if (!gpxOverlayLayer || !latlngs || latlngs.length < 2) return
+  const common = {
+    renderer: svgRenderer || undefined,
+    interactive: false,
+    bubblingMouseEvents: false,
+    smoothFactor: 0,
+    lineCap: 'round',
+    lineJoin: 'round'
+  }
+  L.polyline(latlngs, {
+    ...common,
+    color: '#ffffff',
+    weight: 3,
+    opacity: 0.9,
+    dashArray: '10 22',
+    className: 'pmc-flow-line'
+  }).addTo(gpxOverlayLayer)
+  L.polyline(latlngs, {
+    ...common,
+    color: color || '#059669',
+    weight: 2,
+    opacity: 0.9,
+    dashArray: '10 22',
+    className: 'pmc-flow-line pmc-flow-line--accent'
+  }).addTo(gpxOverlayLayer)
+}
+
+function drawGpxOverlays() {
+  if (!gpxOverlayLayer || !hasGpxPathOverlay.value) return []
+  const all = []
+  overlayList.value.forEach((item) => {
+    if (item?.showPath === false) return
+    if (!isGpxItemVisible(item)) return
+    const latlngs = normalizeOverlayLatLngs(item.path)
+    if (latlngs.length < 2) {
+      console.warn('[GPX] path points too few', item.fileName, item.pathPointCount, item.path?.length)
+      return
+    }
+    all.push(...(all.length ? latlngs.slice(1) : latlngs))
+    const color = travelModeColor(item.travelMode, item.color || '#10B981')
+    // 底线：可点击查看/改出行方式，不可贴合路网编辑折线
+    const line = L.polyline(latlngs, {
+      color,
+      weight: 5,
+      opacity: 0.92,
+      smoothFactor: 0,
+      noClip: true,
+      lineJoin: 'round',
+      lineCap: 'round',
+      interactive: true,
+      className: 'pmc-gpx-overlay'
+    }).addTo(gpxOverlayLayer)
+    // 加宽命中层，方便点击
+    const hit = L.polyline(latlngs, {
+      color,
+      weight: 16,
+      opacity: 0,
+      smoothFactor: 0,
+      interactive: true,
+      className: 'pmc-gpx-hit'
+    }).addTo(gpxOverlayLayer)
+
+    const openPopup = (e) => {
+      // 增补选点模式下点线路不弹窗，避免挡住选端点
+      if (props.gpxEndpointPickable) return
+      L.DomEvent.stopPropagation(e)
+      const nearest = findNearestGpxPoint(item.path, e.latlng)
+      const html = buildGpxPopupHtml(item, nearest)
+      L.popup({ maxWidth: 320, className: 'pmc-popup-wrap', autoPan: true })
+        .setLatLng(e.latlng)
+        .setContent(html)
+        .openOn(map)
+      emit('gpx-click', { overlay: item, nearest, latlng: e.latlng })
+    }
+    line.on('click', openPopup)
+    hit.on('click', openPopup)
+    const modeText = travelModeLabel(item.travelMode) || item.travelMode || 'GPX'
+    line.bindTooltip(
+      props.gpxEndpointPickable
+        ? `GPX：${item.fileName || ''} · 请点「起/终」标记选用为增补锚点`
+        : `GPX：${item.fileName || ''}（${modeText}，${item.pathPointCount || latlngs.length}点）· 点击查看/修改`,
+      { sticky: true, direction: 'top' }
+    )
+
+    drawGpxFlow(latlngs, color)
+
+    const pickable = !!props.gpxEndpointPickable
+    const pinClass = pickable ? 'pmc-gpx-pin is-pickable' : 'pmc-gpx-pin'
+    const startIcon = L.divIcon({
+      className: 'pmc-end-marker',
+      html: `<div class="${pinClass} start" title="${pickable ? '点击选用为增补锚点（GPX起点）' : 'GPX起点'}"><span class="pmc-gpx-pin-dot"></span><span class="pmc-gpx-pin-label">起</span></div>`,
+      iconSize: [40, 28],
+      iconAnchor: [12, 14]
+    })
+    const endIcon = L.divIcon({
+      className: 'pmc-end-marker',
+      html: `<div class="${pinClass} end" title="${pickable ? '点击选用为增补锚点（GPX终点）' : 'GPX终点'}"><span class="pmc-gpx-pin-dot"></span><span class="pmc-gpx-pin-label">终</span></div>`,
+      iconSize: [40, 28],
+      iconAnchor: [12, 14]
+    })
+    const startMarker = L.marker(latlngs[0], {
+      icon: startIcon,
+      interactive: pickable,
+      zIndexOffset: 650,
+      keyboard: false
+    }).addTo(gpxOverlayLayer)
+    const endMarker = L.marker(latlngs[latlngs.length - 1], {
+      icon: endIcon,
+      interactive: pickable,
+      zIndexOffset: 650,
+      keyboard: false
+    }).addTo(gpxOverlayLayer)
+    if (pickable) {
+      const emitEndpoint = (kind, e) => {
+        L.DomEvent.stopPropagation(e)
+        emit('gpx-endpoint-click', {
+          overlay: item,
+          kind,
+          latlng: e.latlng || (kind === 'start' ? latlngs[0] : latlngs[latlngs.length - 1])
+        })
+      }
+      startMarker.on('click', (e) => emitEndpoint('start', e))
+      endMarker.on('click', (e) => emitEndpoint('end', e))
+    }
+  })
+  return all
+}
+
+/** 把时间匹配的照片/视频画在 GPX 坐标上 */
+function drawGpxMatchedPhotos() {
+  const photos = visibleMatchedPhotos()
+  if (!clusterGroup || !photos.length) return []
+  const markers = []
+  const bounds = []
+  photos.forEach(p => {
+    const point = {
+      ...p,
+      description: p.description || (p.matchDeltaSec != null
+        ? `GPX对齐（Δ${p.matchDeltaSec}s）`
+        : 'GPX对齐')
+    }
+    const marker = createPhotoMarker(point)
+    markers.push(marker)
+    bounds.push(toMapLatLng(point))
+  })
+  if (markers.length) {
+    clusterGroup.addLayers(markers)
+  }
+  return bounds
+}
+
 function renderPoints({ fit = props.autoFit } = {}) {
   if (!map || !clusterGroup) return
   clearOverlays()
@@ -490,8 +803,11 @@ function renderPoints({ fit = props.autoFit } = {}) {
   const preview = Array.isArray(props.previewPath) && props.previewPath.length >= 2
     ? props.previewPath
     : null
+  const gpxPath = drawGpxOverlays()
+  const matchedBounds = drawGpxMatchedPhotos()
+  const matchedIds = new Set(visibleMatchedPhotos().map(p => String(p.photoId)).filter(Boolean))
 
-  if (!list.length && !preview) {
+  if (!list.length && !preview && !gpxPath.length && !matchedBounds.length) {
     map.setView([35.0, 105.0], 4)
     return
   }
@@ -523,11 +839,19 @@ function renderPoints({ fit = props.autoFit } = {}) {
   if (list.length) {
     const photoMarkers = []
     list.forEach((p, index) => {
+      // 已挂到 GPX 上的媒体不再在照片轨坐标重复打点
+      if (p.photoId != null && matchedIds.has(String(p.photoId))) {
+        return
+      }
       const marker = createPhotoMarker(p)
       if (isWaypointPoint(p)) {
-        if (props.editable) {
+        if (props.pointPickable || props.editable) {
           marker.on('click', (e) => {
             L.DomEvent.stopPropagation(e)
+            if (props.pointPickable) {
+              emit('point-click', { index, point: p })
+              return
+            }
             emit('waypoint-click', { index, point: p })
           })
           marker.on('mouseover', () => {
@@ -539,15 +863,27 @@ function renderPoints({ fit = props.autoFit } = {}) {
         }
         if (waypointLayer) waypointLayer.addLayer(marker)
       } else {
+        if (props.pointPickable) {
+          marker.on('click', (e) => {
+            L.DomEvent.stopPropagation(e)
+            emit('point-click', { index, point: p })
+          })
+        }
         photoMarkers.push(marker)
       }
     })
     if (photoMarkers.length && clusterGroup) clusterGroup.addLayers(photoMarkers)
   }
 
-  const boundsPts = preview
+  let boundsPts = preview
     ? preview
     : (fullPath.length >= 2 ? fullPath : list.map(p => toMapLatLng(p)))
+  if (gpxPath.length) {
+    boundsPts = boundsPts && boundsPts.length ? boundsPts.concat(gpxPath) : gpxPath
+  }
+  if (matchedBounds.length) {
+    boundsPts = boundsPts && boundsPts.length ? boundsPts.concat(matchedBounds) : matchedBounds
+  }
   if ((fit || !didFit) && boundsPts.length) {
     map.fitBounds(L.latLngBounds(boundsPts), {
       padding: [48, 48],
@@ -582,10 +918,13 @@ function initMap() {
   svgRenderer = L.svg({ padding: 0.5 })
   applyBaseLayers(currentStyle.value)
   lineLayer = L.layerGroup().addTo(map)
+  gpxOverlayLayer = L.layerGroup().addTo(map)
   clusterGroup = createClusterGroup().addTo(map)
   waypointLayer = L.layerGroup().addTo(map)
   map.on('zoomstart', onZoomStart)
   map.on('zoomend', onZoomEnd)
+  map.getContainer().classList.toggle('pmc-edit-cursor', !!props.editable)
+  map.getContainer().classList.toggle('pmc-gpx-pick', !!props.gpxEndpointPickable)
   bindResizeObserver()
   emit('ready')
 }
@@ -610,7 +949,10 @@ watch(
     props.pathEditIndex,
     props.segmentLabels,
     props.showDirection,
-    props.previewPath
+    props.previewPath,
+    props.overlayPaths,
+    props.gpxEndpointPickable,
+    props.pointPickable
   ],
   () => refresh({ fit: props.autoFit && !props.editable }),
   { deep: true }
@@ -625,6 +967,10 @@ watch(
 watch(() => props.editable, (val) => {
   if (map) map.getContainer().classList.toggle('pmc-edit-cursor', !!val)
 })
+
+watch(() => props.gpxEndpointPickable, (val) => {
+  if (map) map.getContainer().classList.toggle('pmc-gpx-pick', !!val)
+}, { immediate: true })
 
 onMounted(() => refresh({ fit: true }))
 
@@ -643,6 +989,7 @@ onBeforeUnmount(() => {
     lineLayer = null
     clusterGroup = null
     waypointLayer = null
+    gpxOverlayLayer = null
     svgRenderer = null
     canvasRenderer = null
   }

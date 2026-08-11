@@ -1,6 +1,7 @@
 package com.sq.bus.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -44,6 +45,16 @@ public class BizTrack implements Serializable {
 
     /** 是否启用轨迹：0关闭（不自动生成、地图不显示）1开启 */
     private Integer enabled;
+
+    /** 是否在地图启用 GPX 线路：0否 1是 */
+    private Integer gpxEnabled;
+
+    /** 来源：photo / gpx / mixed */
+    private String sourceType;
+
+    /** 相册是否已导入 GPX（非表字段，接口回填） */
+    @TableField(exist = false)
+    private Integer hasGpx;
 
     private String createBy;
 

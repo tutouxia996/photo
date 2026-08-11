@@ -76,6 +76,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
     }
 
+    /**
+     * 仅维护照片/自定义主轨迹（sourceType=photo），不触碰 GPX 轨迹。
+     */
     private BizTrack doAutoSyncAlbumTrack(Long albumId) {
         List<BizPhoto> photos = listGpsPhotos(albumId, null, null);
         if (photos.isEmpty()) {
@@ -86,6 +89,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         BizTrack existing = getOne(new LambdaQueryWrapper<BizTrack>()
                 .eq(BizTrack::getAlbumId, albumId)
                 .eq(BizTrack::getDeleted, 0)
+                .and(w -> w.isNull(BizTrack::getSourceType)
+                        .or().eq(BizTrack::getSourceType, "")
+                        .or().eq(BizTrack::getSourceType, "photo"))
                 .orderByAsc(BizTrack::getTrackId)
                 .last("LIMIT 1"), false);
         if (existing == null) {
@@ -124,6 +130,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
                 built.startTime,
                 built.endTime);
         applyBuilt(existing, mergedBuilt);
+        existing.setSourceType("photo");
         existing.setUpdateTime(new Date());
         updateById(existing);
         if (!merged.isEmpty()) {
@@ -235,6 +242,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         track.setTrackColor("#3B82F6");
         track.setIsPublic(1);
         track.setEnabled(1);
+        track.setSourceType("photo");
         track.setDeleted(0);
         track.setCreateTime(new Date());
         save(track);

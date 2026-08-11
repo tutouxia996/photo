@@ -137,18 +137,32 @@ export function parseRoutePath(routePath) {
   return latlngs.length >= 2 ? latlngs : null
 }
 
-/** 路段折线：优先真实路线，否则两点直线 */
+/** 路段折线：有 routePath 则绘制（含手动连接的照片↔自定义/GPX 锚点）；无折线不自动跨类型拉线 */
 export function segmentLatLngs(fromPoint, toPoint) {
   const routed = parseRoutePath(fromPoint?.routePath)
   if (routed) return routed
+  const fromWp = isWaypointPoint(fromPoint)
+  const toWp = isWaypointPoint(toPoint)
+  // 无显式折线：触及自定义点则断开；照片↔照片仍可画虚直线
+  if (fromWp || toWp) return null
+  if (fromPoint?.latitude == null || fromPoint?.longitude == null
+    || toPoint?.latitude == null || toPoint?.longitude == null) {
+    return null
+  }
   return [toMapLatLng(fromPoint), toMapLatLng(toPoint)]
 }
 
-/** 轨迹是否还有未规划真实路线的路段 */
+/** 轨迹是否还有未规划真实路线的路段（触及自定义途经点的空隙不算缺失） */
 export function hasMissingRoutePaths(points) {
   const list = filterValidPoints(points)
   for (let i = 0; i < list.length - 1; i++) {
-    if (!parseRoutePath(list[i].routePath)) return true
+    const from = list[i]
+    const to = list[i + 1]
+    if (isWaypointPoint(from) || isWaypointPoint(to)) {
+      // 照片↔自定义 / 自定义无折线：刻意断开
+      continue
+    }
+    if (!parseRoutePath(from.routePath)) return true
   }
   return false
 }
@@ -167,14 +181,17 @@ function approxKmBetween(a, b) {
 export function hasUnstableAutoRoutes(points) {
   const list = filterValidPoints(points)
   for (let i = 0; i < list.length - 1; i++) {
-    const mode = String(list[i]?.travelMode || '').toLowerCase()
+    const from = list[i]
+    const to = list[i + 1]
+    if (isWaypointPoint(from) || isWaypointPoint(to)) continue
+    const mode = String(from?.travelMode || '').toLowerCase()
     // 用户手选长途方式：两点折线不视为「损坏」
     if (mode === 'hsr' || mode === 'train' || mode === 'flight' || mode === 'metro' || mode === 'bus') {
       continue
     }
-    const path = parseRoutePath(list[i].routePath)
-    const a = toMapLatLng(list[i])
-    const b = toMapLatLng(list[i + 1])
+    const path = parseRoutePath(from.routePath)
+    const a = toMapLatLng(from)
+    const b = toMapLatLng(to)
     const approxKm = approxKmBetween(a, b)
     if (approxKm <= 0.03) continue
     // 有一定距离却只有直线两点（步行/驾车等应贴路）
@@ -355,7 +372,8 @@ export function filterValidPoints(points) {
 /** 无关联照片的自定义途经点（增补路段插入） */
 export function isWaypointPoint(point) {
   if (!point) return false
-  const hasPhoto = point.photoId != null && point.photoId !== ''
+  const pid = point.photoId
+  const hasPhoto = pid != null && pid !== '' && Number(pid) !== 0
   if (hasPhoto) return false
   // 有缩略图/原图的一律按照片点处理
   if (point.fileUrl || point.thumbUrl) return false
@@ -390,9 +408,10 @@ export function buildPopupHtml(point) {
       </div>
     `
   }
+  // 弹层优先用缩略图，避免每次点击都拉原图导致很慢
   const media = isVideo
-    ? `<video class="pmc-media" controls preload="metadata" poster="${thumb}" src="${original}"></video>`
-    : `<img class="pmc-media" src="${original || thumb}" alt="${title}" />`
+    ? `<video class="pmc-media" controls preload="none" poster="${thumb}" src="${original}"></video>`
+    : `<img class="pmc-media" src="${thumb || original}" alt="${title}" loading="eager" decoding="async" />`
   return `
     <div class="pmc-popup">
       <div class="pmc-title">${point.sequence != null ? '#' + point.sequence + ' ' : ''}${title}</div>
