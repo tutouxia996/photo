@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
+import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizScanLog;
@@ -14,6 +15,7 @@ import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizScanLogService;
 import com.sq.bus.service.IBizScanPathService;
 import com.sq.bus.service.IBizTrackService;
+import com.sq.bus.service.IPhotoFallbackLocationService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
@@ -64,6 +66,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     @Autowired
     private IBizTrackService trackService;
+
+    @Autowired
+    private IPhotoFallbackLocationService fallbackLocationService;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -188,10 +193,11 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 log.warn("刷新相册统计失败 albumId={}", scanPath.getDefaultAlbumId(), e);
             }
 
-            // 扫描入库或补齐视频 GPS 后自动同步轨迹（无 GPS 则跳过）
+            // 扫描后：先时间插值兜底（不进主轨迹），再按权威 GPS 同步照片轨
             try {
                 if (scanPath.getDefaultAlbumId() != null
                         && (counter.created > 0 || counter.gpsUpdated > 0)) {
+                    fallbackLocationService.fillMissingByTimeInterp(scanPath.getDefaultAlbumId());
                     trackService.autoSyncAlbumTrack(scanPath.getDefaultAlbumId());
                 }
             } catch (Exception e) {
@@ -491,8 +497,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     private static void applyMediaMeta(BizPhoto photo, MediaMeta meta, Date fallbackShootTime) {
         photo.setShootTime(meta.shootTime != null ? meta.shootTime : fallbackShootTime);
-        photo.setLatitude(meta.latitude);
-        photo.setLongitude(meta.longitude);
+        int fileType = photo.getFileType() != null ? photo.getFileType() : 1;
+        PhotoLocationSource.applyDeviceGps(photo, meta.latitude, meta.longitude, fileType);
         photo.setCameraModel(meta.cameraModel);
         photo.setLensInfo(meta.lensInfo);
         photo.setAperture(meta.aperture);
@@ -508,11 +514,11 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     private boolean enrichExistingVideo(BizPhoto photo, File file, BizScanPath scanPath) {
         boolean gpsFilled = false;
         boolean dirty = false;
-        if (photo.getLatitude() == null || photo.getLongitude() == null) {
+        if (photo.getLatitude() == null || photo.getLongitude() == null
+                || PhotoLocationSource.isFallback(photo.getLocationSource())) {
             VideoMetaUtils.MetaInfo meta = VideoMetaUtils.parse(file);
             if (meta.getLatitude() != null && meta.getLongitude() != null) {
-                photo.setLatitude(meta.getLatitude());
-                photo.setLongitude(meta.getLongitude());
+                PhotoLocationSource.applyDeviceGps(photo, meta.getLatitude(), meta.getLongitude(), 2);
                 if (meta.getShootTime() != null) {
                     photo.setShootTime(meta.getShootTime());
                 }

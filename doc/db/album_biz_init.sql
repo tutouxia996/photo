@@ -47,6 +47,8 @@ CREATE TABLE `biz_photo` (
   `shoot_time` datetime DEFAULT NULL COMMENT '拍摄时间',
   `latitude` decimal(10,7) DEFAULT NULL COMMENT '纬度',
   `longitude` decimal(10,7) DEFAULT NULL COMMENT '经度',
+  `location_source` varchar(32) DEFAULT NULL COMMENT '坐标来源：exif/video/gpx_match/manual/time_interp/ai_landmark/region_center',
+  `location_confidence` decimal(4,3) DEFAULT NULL COMMENT '坐标置信度 0~1（兜底估计用）',
   `address` varchar(200) DEFAULT NULL COMMENT '详细地址',
   `province` varchar(50) DEFAULT NULL COMMENT '省份',
   `city` varchar(50) DEFAULT NULL COMMENT '城市',

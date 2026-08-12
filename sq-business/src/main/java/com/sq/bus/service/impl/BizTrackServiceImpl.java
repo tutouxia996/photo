@@ -3,6 +3,8 @@ package com.sq.bus.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.sq.bus.config.AlbumProperties;
+import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
@@ -61,6 +63,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private AlbumProperties albumProperties;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -285,7 +290,20 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
             query.le(BizPhoto::getShootTime, endTime);
         }
         List<BizPhoto> photos = photoService.list(query);
-        return photos == null ? new ArrayList<BizPhoto>() : photos;
+        if (photos == null || photos.isEmpty()) {
+            return new ArrayList<BizPhoto>();
+        }
+        AlbumProperties.FallbackLocationConfig cfg = albumProperties.getFallbackLocation();
+        if (cfg != null && cfg.isIncludeInTrack()) {
+            return photos;
+        }
+        List<BizPhoto> authoritative = new ArrayList<BizPhoto>();
+        for (BizPhoto photo : photos) {
+            if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+                authoritative.add(photo);
+            }
+        }
+        return authoritative;
     }
 
     private BizTrack createTrack(Long albumId, String trackName, TrackBuildResult built) {

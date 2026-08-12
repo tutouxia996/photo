@@ -1,7 +1,9 @@
 package com.sq.admin.portal.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
+import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
@@ -18,6 +20,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -41,6 +44,9 @@ public class PortalAlbumController extends BaseController {
 
     @Autowired
     private IBizTrackPointService trackPointService;
+
+    @Autowired
+    private AlbumProperties albumProperties;
 
     /**
      * 公开相册列表
@@ -105,12 +111,13 @@ public class PortalAlbumController extends BaseController {
     }
 
     /**
-     * 地图点位
+     * 地图点位（默认不含时间插值等兜底坐标）
      */
     @GetMapping("/photo/mapPoints")
     public AjaxResult mapPoints(@RequestParam(required = false) Long albumId,
                                 @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date startTime,
-                                @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime) {
+                                @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime,
+                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated) {
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .isNotNull(BizPhoto::getLatitude)
@@ -133,13 +140,30 @@ public class PortalAlbumController extends BaseController {
             if (publicAlbums.isEmpty()) {
                 return success(java.util.Collections.emptyList());
             }
-            java.util.List<Long> ids = new java.util.ArrayList<Long>();
+            List<Long> ids = new ArrayList<Long>();
             for (BizAlbum a : publicAlbums) {
                 ids.add(a.getAlbumId());
             }
             wrapper.in(BizPhoto::getAlbumId, ids);
         }
-        return success(photoService.list(wrapper));
+        List<BizPhoto> list = photoService.list(wrapper);
+        if (list == null) {
+            list = new ArrayList<BizPhoto>();
+        }
+        boolean include = includeEstimated != null
+                ? includeEstimated
+                : (albumProperties.getFallbackLocation() != null
+                && albumProperties.getFallbackLocation().isIncludeInMap());
+        if (!include) {
+            List<BizPhoto> authoritative = new ArrayList<BizPhoto>();
+            for (BizPhoto photo : list) {
+                if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+                    authoritative.add(photo);
+                }
+            }
+            list = authoritative;
+        }
+        return success(list);
     }
 
     /**

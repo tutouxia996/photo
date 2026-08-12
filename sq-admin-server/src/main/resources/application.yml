@@ -165,3 +165,12 @@ album:
     simplifyMinMeters: 0
     # 0 = 不限制点数
     maxPathPoints: 0
+  # 无设备 GPS 时：用同相册权威坐标按拍摄时间插值（默认不进主轨迹/地图）
+  fallbackLocation:
+    enabled: true
+    maxInterpGapHours: 24
+    maxExtrapolateKm: 5.0
+    maxSnapGapMinutes: 30
+    maxReasonableSpeedKmh: 200.0
+    includeInMap: true
+    includeInTrack: false

@@ -36,6 +36,17 @@
       <el-col :span="1.5">
         <el-button type="primary" plain icon="Plus" @click="openGenerate" v-hasPermi="['album:track:generate']">生成轨迹</el-button>
       </el-col>
+      <el-col :span="1.5">
+        <el-button
+          type="warning"
+          plain
+          icon="Location"
+          :loading="fallbackLoading"
+          :disabled="!queryParams.albumId"
+          @click="handleFallbackLocate(queryParams.albumId)"
+          v-hasPermi="['album:photo:edit']"
+        >估计补点</el-button>
+      </el-col>
     </el-row>
 
     <el-table v-loading="loading" :data="trackList">
@@ -85,10 +96,11 @@
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
       <el-table-column label="行程说明" prop="remark" min-width="160" :show-overflow-tooltip="true" />
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="handleView(scope.row)">查看</el-button>
           <el-button link type="primary" @click="handleEdit(scope.row)" v-hasPermi="['album:track:edit']">编辑</el-button>
+          <el-button link type="warning" @click="handleFallbackLocate(scope.row.albumId, scope.row)" v-hasPermi="['album:photo:edit']">估计补点</el-button>
           <el-button link type="success" @click="openGpxImport(scope.row)" v-hasPermi="['album:track:generate']">导入GPX</el-button>
           <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:track:remove']">删除</el-button>
         </template>
@@ -224,18 +236,21 @@ import {
   resolveTrackRoutes,
   importTrackGpx
 } from '@/api/album/track'
+import { fallbackLocateAlbum } from '@/api/album/photo'
 import TrackMapViewer from '@/components/TrackMapViewer/index.vue'
 import { hasMissingRoutePaths, hasUnstableAutoRoutes } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 import useAppStore from '@/store/modules/app'
 
 const { proxy } = getCurrentInstance()
+const router = useRouter()
 const appStore = useAppStore()
 const canEditTrack = computed(() => checkPermi(['album:track:edit']))
 const trackList = ref([])
 const albumOptions = ref([])
 const albumNameMap = ref({})
 const loading = ref(true)
+const fallbackLoading = ref(false)
 const total = ref(0)
 const genOpen = ref(false)
 const genLoading = ref(false)
@@ -344,6 +359,29 @@ function resetQuery() {
     trackName: undefined
   }
   getList()
+}
+
+function handleFallbackLocate(albumId, row) {
+  const id = albumId != null ? albumId : row?.albumId
+  if (id == null || id === '') {
+    proxy.$modal.msgWarning('请先选择相册，或在行内点击「估计补点」')
+    return
+  }
+  const name = albumNameMap.value[id] || id
+  proxy.$modal.confirm(
+    `将根据相册「${name}」内已有 GPS 照片/视频，按拍摄时间为无坐标媒体估计位置。估计点会显示在照片地图上（橙色「估」），确认后才加入主轨迹。是否继续？`
+  ).then(() => {
+    fallbackLoading.value = true
+    return fallbackLocateAlbum(id)
+  }).then(res => {
+    const n = res?.data ?? 0
+    proxy.$modal.msgSuccess(`已更新 ${n} 条估计坐标`)
+    return proxy.$modal.confirm('是否打开该相册的照片地图，查看并微调估计点？').then(() => {
+      router.push({ path: '/photos/map', query: { albumId: id } })
+    }).catch(() => {})
+  }).catch(() => {}).finally(() => {
+    fallbackLoading.value = false
+  })
 }
 
 function openGenerate() {

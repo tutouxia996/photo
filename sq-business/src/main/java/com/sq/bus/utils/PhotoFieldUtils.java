@@ -27,6 +27,7 @@ public final class PhotoFieldUtils {
         photo.setAperture(trim(photo.getAperture(), 20));
         photo.setShutterSpeed(trim(photo.getShutterSpeed(), 20));
         photo.setFocalLength(trim(photo.getFocalLength(), 20));
+        photo.setLocationSource(trim(photo.getLocationSource(), 32));
         photo.setMd5(trim(photo.getMd5(), 32));
         photo.setRemark(trim(photo.getRemark(), 500));
     }

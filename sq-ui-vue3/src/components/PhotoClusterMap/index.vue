@@ -26,9 +26,13 @@ import L from '@/utils/leaflet'
 import {
   MAP_STYLES,
   STYLE_LAYERS,
+  cleanRailDisplayPath,
   createClusterGroup,
   createPhotoMarker,
   filterValidPoints,
+  fromMapLatLng,
+  isEstimatedLocation,
+  isRailTravelMode,
   isWaypointPoint,
   segmentLatLngs,
   toMapLatLng,
@@ -72,7 +76,9 @@ const props = defineProps({
   /** 增补路段时：GPX 起/终点标记可点击选用为锚点 */
   gpxEndpointPickable: { type: Boolean, default: false },
   /** 增补路段时：照片/途经点可点击选用为锚点 */
-  pointPickable: { type: Boolean, default: false }
+  pointPickable: { type: Boolean, default: false },
+  /** 估计坐标点可拖动微调（单独图层，不参与聚合） */
+  estimatedDraggable: { type: Boolean, default: false }
 })
 
 const emit = defineEmits([
@@ -82,6 +88,9 @@ const emit = defineEmits([
   'point-click',
   'gpx-click',
   'gpx-endpoint-click',
+  'estimated-drag-end',
+  'estimated-select',
+  'confirm-estimated',
   'ready'
 ])
 
@@ -96,6 +105,8 @@ let lineLayer = null
 let clusterGroup = null
 /** 无照片途经点单独图层，不参与聚合（避免接合处显示「图」缩略图） */
 let waypointLayer = null
+/** 可拖动的估计坐标点（不参与聚合） */
+let estimatedLayer = null
 /** GPX 等叠层折线 */
 let gpxOverlayLayer = null
 /** 轨迹线用 SVG，才能做流动虚线 CSS 动画 */
@@ -203,6 +214,7 @@ function applyBaseLayers(styleKey) {
   if (gpxOverlayLayer) gpxOverlayLayer.bringToFront()
   if (clusterGroup) clusterGroup.bringToFront()
   if (waypointLayer) waypointLayer.bringToFront()
+  if (estimatedLayer) estimatedLayer.bringToFront()
 }
 
 function switchMapStyle(key) {
@@ -216,6 +228,8 @@ function setMarkerPaneVisible(visible) {
   if (pane) pane.style.visibility = visible ? '' : 'hidden'
   const shadow = map?.getPane?.('shadowPane')
   if (shadow) shadow.style.visibility = visible ? '' : 'hidden'
+  const estimatedPane = map?.getPane?.('estimatedPane')
+  if (estimatedPane) estimatedPane.style.visibility = visible ? '' : 'hidden'
 }
 
 function onZoomStart() {
@@ -240,6 +254,7 @@ function clearOverlays() {
   if (gpxOverlayLayer) gpxOverlayLayer.clearLayers()
   if (clusterGroup) clusterGroup.clearLayers()
   if (waypointLayer) waypointLayer.clearLayers()
+  if (estimatedLayer) estimatedLayer.clearLayers()
 }
 
 function distToSegmentSq(p, a, b) {
@@ -392,6 +407,15 @@ function drawFlowOverlay(latlngs, baseColor) {
   }).addTo(lineLayer)
 }
 
+function resolveSegmentLatLngs(from, to) {
+  const raw = segmentLatLngs(from, to)
+  if (!raw || raw.length < 2) return raw
+  if (isRailTravelMode(from?.travelMode)) {
+    return cleanRailDisplayPath(raw)
+  }
+  return raw
+}
+
 function drawDirectionDecorations(fullPath, list) {
   if (!props.showDirection || !lineLayer) return
 
@@ -418,7 +442,7 @@ function drawDirectionDecorations(fullPath, list) {
     for (let i = 0; i < list.length - 1; i++) {
       const from = list[i]
       if (!isSegmentModeVisible(from.travelMode)) continue
-      const latlngs = segmentLatLngs(from, list[i + 1])
+      const latlngs = resolveSegmentLatLngs(from, list[i + 1])
       if (!latlngs || latlngs.length < 2) continue
       const color = props.segmentByTravelMode
         ? travelModeColor(from.travelMode, defaultColor)
@@ -455,7 +479,7 @@ function drawSegments(list) {
   for (let i = 0; i < list.length - 1; i++) {
     const from = list[i]
     const to = list[i + 1]
-    const latlngs = segmentLatLngs(from, to)
+    const latlngs = resolveSegmentLatLngs(from, to)
     if (!latlngs || latlngs.length < 2) {
       segmentRefs[i] = null
       continue
@@ -678,10 +702,13 @@ function drawGpxOverlays() {
   overlayList.value.forEach((item) => {
     if (item?.showPath === false) return
     if (!isGpxItemVisible(item)) return
-    const latlngs = normalizeOverlayLatLngs(item.path)
+    let latlngs = normalizeOverlayLatLngs(item.path)
     if (latlngs.length < 2) {
       console.warn('[GPX] path points too few', item.fileName, item.pathPointCount, item.path?.length)
       return
+    }
+    if (isRailTravelMode(item.travelMode)) {
+      latlngs = cleanRailDisplayPath(latlngs, { minMeters: 35 })
     }
     all.push(...(all.length ? latlngs.slice(1) : latlngs))
     const color = travelModeColor(item.travelMode, item.color || '#10B981')
@@ -796,6 +823,53 @@ function drawGpxMatchedPhotos() {
   return bounds
 }
 
+function bindEstimatedMarker(marker, point, index) {
+  marker.on('click', (e) => {
+    L.DomEvent.stopPropagation(e)
+    const ll = marker.getLatLng()
+    const wgs = fromMapLatLng(ll.lat, ll.lng)
+    emit('estimated-select', {
+      index,
+      point,
+      photoId: point.photoId,
+      latitude: wgs.latitude,
+      longitude: wgs.longitude
+    })
+  })
+  if (!props.estimatedDraggable) {
+    marker.on('mouseover', () => {
+      if (map) map.getContainer().style.cursor = 'pointer'
+    })
+    marker.on('mouseout', () => {
+      if (map) map.getContainer().style.cursor = ''
+    })
+    return
+  }
+  marker.on('dragstart', () => {
+    try { marker.closePopup() } catch (e) { /* ignore */ }
+    if (map) map.getContainer().style.cursor = 'grabbing'
+  })
+  marker.on('dragend', (e) => {
+    if (map) map.getContainer().style.cursor = ''
+    const ll = e.target.getLatLng()
+    const wgs = fromMapLatLng(ll.lat, ll.lng)
+    emit('estimated-drag-end', {
+      index,
+      point,
+      photoId: point.photoId,
+      latitude: wgs.latitude,
+      longitude: wgs.longitude,
+      mapLatLng: [ll.lat, ll.lng]
+    })
+  })
+  marker.on('mouseover', () => {
+    if (map) map.getContainer().style.cursor = 'grab'
+  })
+  marker.on('mouseout', () => {
+    if (map) map.getContainer().style.cursor = ''
+  })
+}
+
 function renderPoints({ fit = props.autoFit } = {}) {
   if (!map || !clusterGroup) return
   clearOverlays()
@@ -843,6 +917,17 @@ function renderPoints({ fit = props.autoFit } = {}) {
       if (p.photoId != null && matchedIds.has(String(p.photoId))) {
         return
       }
+      const estimated = isEstimatedLocation(p)
+      // 估计点始终置于最高图层，避免被普通点聚合遮挡
+      if (estimated && estimatedLayer && !isWaypointPoint(p)) {
+        const marker = createPhotoMarker(p, {
+          draggable: props.estimatedDraggable,
+          pane: 'estimatedPane'
+        })
+        bindEstimatedMarker(marker, p, index)
+        estimatedLayer.addLayer(marker)
+        return
+      }
       const marker = createPhotoMarker(p)
       if (isWaypointPoint(p)) {
         if (props.pointPickable || props.editable) {
@@ -884,7 +969,8 @@ function renderPoints({ fit = props.autoFit } = {}) {
   if (matchedBounds.length) {
     boundsPts = boundsPts && boundsPts.length ? boundsPts.concat(matchedBounds) : matchedBounds
   }
-  if ((fit || !didFit) && boundsPts.length) {
+  // 仅当显式要求 fit 时缩放；避免数据微更新（拖动同步）导致视野被拉远
+  if (fit && boundsPts.length) {
     map.fitBounds(L.latLngBounds(boundsPts), {
       padding: [48, 48],
       maxZoom: props.fitMaxZoom
@@ -917,10 +1003,18 @@ function initMap() {
   canvasRenderer = L.canvas({ padding: 0.5 })
   svgRenderer = L.svg({ padding: 0.5 })
   applyBaseLayers(currentStyle.value)
+  // 估计点专用最高图层（高于普通 marker 600，低于 popup 700）
+  if (!map.getPane('estimatedPane')) {
+    map.createPane('estimatedPane')
+    const pane = map.getPane('estimatedPane')
+    pane.style.zIndex = 650
+    pane.style.pointerEvents = 'auto'
+  }
   lineLayer = L.layerGroup().addTo(map)
   gpxOverlayLayer = L.layerGroup().addTo(map)
   clusterGroup = createClusterGroup().addTo(map)
   waypointLayer = L.layerGroup().addTo(map)
+  estimatedLayer = L.layerGroup().addTo(map)
   map.on('zoomstart', onZoomStart)
   map.on('zoomend', onZoomEnd)
   map.getContainer().classList.toggle('pmc-edit-cursor', !!props.editable)
@@ -952,7 +1046,8 @@ watch(
     props.previewPath,
     props.overlayPaths,
     props.gpxEndpointPickable,
-    props.pointPickable
+    props.pointPickable,
+    props.estimatedDraggable
   ],
   () => refresh({ fit: props.autoFit && !props.editable }),
   { deep: true }
@@ -989,13 +1084,24 @@ onBeforeUnmount(() => {
     lineLayer = null
     clusterGroup = null
     waypointLayer = null
+    estimatedLayer = null
     gpxOverlayLayer = null
     svgRenderer = null
     canvasRenderer = null
   }
 })
 
-defineExpose({ refresh, invalidateMapSize })
+defineExpose({
+  refresh,
+  invalidateMapSize,
+  /** 将地图中心移到 WGS84 坐标（用于估计点预览） */
+  focusWgs(lat, lng, zoom = 16) {
+    if (!map || lat == null || lng == null) return
+    const ll = toMapLatLng({ latitude: lat, longitude: lng })
+    const z = Math.max(Number(zoom) || 16, map.getZoom() || 3)
+    map.setView(ll, Math.min(z, 18), { animate: true })
+  }
+})
 </script>
 
 <style scoped>

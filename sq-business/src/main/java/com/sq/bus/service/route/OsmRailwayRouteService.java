@@ -44,6 +44,7 @@ import javax.net.ssl.X509TrustManager;
 
 /**
  * OSM 铁路贴轨：用 Overpass {@code out geom}（快、不易超时），多镜像重试。
+ * <p>排除站场股道；高铁不退到全网；结果去打结并抽稀。
  * <p>入参 WGS84；出参 GCJ-02 [[lat,lng],...]
  */
 @Service
@@ -53,6 +54,13 @@ public class OsmRailwayRouteService {
 
     private static final double MAX_SPAN_KM = 280.0;
     private static final double MAX_SNAP_KM = 3.0;
+    /** 展示抽稀：相邻点最小间距（米） */
+    private static final double SIMPLIFY_MIN_METERS = 40.0;
+    /** 局部打结：闭合距离（米）内若绕行过长则剪掉中间点 */
+    private static final double LOOP_CLOSE_METERS = 90.0;
+    private static final double LOOP_MIN_DETOUR_METERS = 220.0;
+    /** 换轨惩罚（米代价），抑制平行复线来回切换形成泡泡 */
+    private static final double WAY_SWITCH_PENALTY_M = 900.0;
 
     private static final String[] DEFAULT_MIRRORS = new String[]{
             // overpass-api.de 常 504，放到后面；优先其它镜像
@@ -96,20 +104,21 @@ public class OsmRailwayRouteService {
             double west = Math.min(fromLngWgs, toLngWgs) - padDeg;
             double east = Math.max(fromLngWgs, toLngWgs) + padDeg;
 
-            // 高铁：必须先只走 highspeed，避免串到京包老线等 usage=main
+            // 高铁：只走 highspeed，必要时带正线；禁止退到 all（易串京包/站场）
             String[] passes;
             if ("metro".equals(mode)) {
                 passes = new String[]{"metro"};
             } else if ("hsr".equals(mode)) {
-                passes = new String[]{"hsr", "main", "all"};
+                passes = new String[]{"hsr", "hsr_main"};
             } else {
-                passes = new String[]{"main", "all"};
+                passes = new String[]{"main", "main_ext"};
             }
 
             List<Long> bestPath = null;
             RailGraph bestGraph = null;
             String usedPass = null;
             String lastErr = null;
+            double bestScore = Double.POSITIVE_INFINITY;
 
             for (String pass : passes) {
                 try {
@@ -120,13 +129,17 @@ public class OsmRailwayRouteService {
                         lastErr = pass + " 无铁路几何";
                         continue;
                     }
-                    Long startId = snap(graph, fromLatWgs, fromLngWgs, true);
-                    Long endId = snap(graph, toLatWgs, toLngWgs, true);
+                    Long startId = snap(graph, fromLatWgs, fromLngWgs, true,
+                            toLatWgs, toLngWgs);
+                    Long endId = snap(graph, toLatWgs, toLngWgs, true,
+                            fromLatWgs, fromLngWgs);
                     if (startId == null) {
-                        startId = snap(graph, fromLatWgs, fromLngWgs, false);
+                        startId = snap(graph, fromLatWgs, fromLngWgs, false,
+                                toLatWgs, toLngWgs);
                     }
                     if (endId == null) {
-                        endId = snap(graph, toLatWgs, toLngWgs, false);
+                        endId = snap(graph, toLatWgs, toLngWgs, false,
+                                fromLatWgs, fromLngWgs);
                     }
                     if (startId == null || endId == null) {
                         lastErr = pass + " 车站吸附失败";
@@ -142,14 +155,24 @@ public class OsmRailwayRouteService {
                         continue;
                     }
                     double pathKm = pathLengthKm(graph, path);
-                    if (pathKm > Math.max(spanKm * 4.0, spanKm + 50)) {
+                    double maxDetour = "hsr".equals(mode)
+                            ? Math.max(spanKm * 2.2, spanKm + 25)
+                            : Math.max(spanKm * 3.0, spanKm + 40);
+                    if (pathKm > maxDetour) {
                         lastErr = pass + " 绕路过多(" + Math.round(pathKm) + "km)";
                         continue;
                     }
-                    bestPath = path;
-                    bestGraph = graph;
-                    usedPass = pass;
-                    break;
+                    double score = scorePath(graph, path, spanKm, pathKm, pass, mode);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestPath = path;
+                        bestGraph = graph;
+                        usedPass = pass;
+                    }
+                    // 高铁第一档成功且质量够好则不再退到正线混网
+                    if ("hsr".equals(mode) && "hsr".equals(pass) && score < 2.5) {
+                        break;
+                    }
                 } catch (Exception e) {
                     lastErr = pass + ": " + e.getMessage();
                     log.warn("OSM pass {} failed: {}", pass, e.getMessage());
@@ -161,27 +184,29 @@ public class OsmRailwayRouteService {
                 return result;
             }
 
-            List<double[]> gcjPath = new ArrayList<double[]>();
-            append(gcjPath, toGcj(fromLatWgs, fromLngWgs));
-            double meters = 0;
-            double[] prev = null;
+            List<double[]> rawWgs = new ArrayList<double[]>();
+            append(rawWgs, new double[]{fromLatWgs, fromLngWgs});
             for (Long id : bestPath) {
                 Node n = bestGraph.nodes.get(id);
                 if (n == null) {
                     continue;
                 }
-                double[] p = toGcj(n.lat, n.lng);
+                append(rawWgs, new double[]{n.lat, n.lng});
+            }
+            append(rawWgs, new double[]{toLatWgs, toLngWgs});
+
+            List<double[]> cleanWgs = cleanRailwayPath(rawWgs);
+            List<double[]> gcjPath = new ArrayList<double[]>(cleanWgs.size());
+            double meters = 0;
+            double[] prev = null;
+            for (double[] wgs : cleanWgs) {
+                double[] p = toGcj(wgs[0], wgs[1]);
                 if (prev != null) {
                     meters += GeoDistanceUtils.haversineKm(prev[0], prev[1], p[0], p[1]) * 1000;
                 }
                 append(gcjPath, p);
                 prev = p;
             }
-            double[] end = toGcj(toLatWgs, toLngWgs);
-            if (prev != null) {
-                meters += GeoDistanceUtils.haversineKm(prev[0], prev[1], end[0], end[1]) * 1000;
-            }
-            append(gcjPath, end);
 
             if (gcjPath.size() < 3) {
                 result.setMessage("OSM 折线过短");
@@ -192,11 +217,12 @@ public class OsmRailwayRouteService {
             result.setPath(gcjPath);
             result.setDistanceMeters(meters);
             String tip = "已按 OSM 铁路贴轨（" + usedPass + "，" + gcjPath.size() + " 点）";
-            if ("hsr".equals(mode) || "hsr".equals(usedPass)) {
+            if ("hsr".equals(mode) || (usedPass != null && usedPass.startsWith("hsr"))) {
                 tip += "；高铁含隧道段，不会贴着地表京包线转弯";
             }
             result.setMessage(tip);
-            log.info("OSM ok mode={} pass={} pts={} m≈{}", mode, usedPass, gcjPath.size(), Math.round(meters));
+            log.info("OSM ok mode={} pass={} pts={} m≈{} score≈{}",
+                    mode, usedPass, gcjPath.size(), Math.round(meters), Math.round(bestScore * 100) / 100.0);
             return result;
         } catch (Exception e) {
             log.warn("OSM route failed: {}", e.getMessage());
@@ -226,26 +252,38 @@ public class OsmRailwayRouteService {
 
     private String buildQuery(double south, double west, double north, double east, String pass) {
         String bbox = "(" + south + "," + west + "," + north + "," + east + ")";
+        // 站场股道不进图，避免贴轨在道岔/到发线打结
+        String noYard = "[\"service\"!~\"^(yard|siding|spur|crossover)$\"]";
         if ("metro".equals(pass)) {
             return "[out:json][timeout:20];("
                     + "way[\"railway\"~\"^(subway|light_rail|monorail)$\"]" + bbox + ";"
                     + ");out geom;";
         }
-        // 仅高铁/城际（京张等），不含京包老线
+        // 仅高铁/城际（京张等）
         if ("hsr".equals(pass)) {
             return "[out:json][timeout:20];("
-                    + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + bbox + ";"
+                    + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + noYard + bbox + ";"
+                    + ");out geom;";
+        }
+        // 高铁优先，必要时带正线（仍不含支线/全网）
+        if ("hsr_main".equals(pass)) {
+            return "[out:json][timeout:20];("
+                    + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + noYard + bbox + ";"
+                    + "way[\"railway\"=\"rail\"][\"usage\"=\"main\"]" + noYard + bbox + ";"
                     + ");out geom;";
         }
         if ("main".equals(pass)) {
             return "[out:json][timeout:20];("
-                    + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + bbox + ";"
-                    + "way[\"railway\"=\"rail\"][\"usage\"=\"main\"]" + bbox + ";"
-                    + "way[\"railway\"=\"rail\"][\"usage\"=\"branch\"]" + bbox + ";"
+                    + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + noYard + bbox + ";"
+                    + "way[\"railway\"=\"rail\"][\"usage\"=\"main\"]" + noYard + bbox + ";"
+                    + "way[\"railway\"=\"rail\"][\"usage\"=\"branch\"]" + noYard + bbox + ";"
                     + ");out geom;";
         }
+        // main_ext：连通不够时放宽到一般正线几何，仍排除站场/工业线
         return "[out:json][timeout:20];("
-                + "way[\"railway\"=\"rail\"][\"railway\"!~\"abandoned|disused|construction|razed|proposed\"]" + bbox + ";"
+                + "way[\"railway\"=\"rail\"][\"highspeed\"=\"yes\"]" + noYard + bbox + ";"
+                + "way[\"railway\"=\"rail\"][\"usage\"~\"^(main|branch)$\"]" + noYard + bbox + ";"
+                + "way[\"railway\"=\"rail\"][\"usage\"!~\"^(industrial|military)$\"]" + noYard + bbox + ";"
                 + ");out geom;";
     }
 
@@ -290,7 +328,7 @@ public class OsmRailwayRouteService {
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
         conn.setRequestProperty("Accept", "application/json");
-        conn.setRequestProperty("User-Agent", "AlbumTrackOsmRailway/1.2");
+        conn.setRequestProperty("User-Agent", "AlbumTrackOsmRailway/1.3");
         byte[] body = ("data=" + java.net.URLEncoder.encode(query, "UTF-8")).getBytes(StandardCharsets.UTF_8);
         try (OutputStream os = conn.getOutputStream()) {
             os.write(body);
@@ -440,10 +478,18 @@ public class OsmRailwayRouteService {
                 continue;
             }
             JSONObject tags = el.getJSONObject("tags");
+            if (isExcludedWay(tags)) {
+                continue;
+            }
             double factor = edgeCostFactor(tags, mode);
             int quality = wayQuality(tags);
-            if ("hsr".equals(mode) && factor >= 20) {
+            // 高铁模式彻底丢掉高代价股道（站场/工业）
+            if ("hsr".equals(mode) && factor >= 8.0) {
                 continue;
+            }
+            long wayId = el.getLongValue("id");
+            if (wayId == 0L) {
+                wayId = 1_000_000_000L + i;
             }
             Long prevId = null;
             double prevLat = 0;
@@ -464,8 +510,8 @@ public class OsmRailwayRouteService {
                     double meters = GeoDistanceUtils.haversineKm(prevLat, prevLng, lat, lng) * 1000;
                     if (meters >= 0.2) {
                         double cost = meters * factor;
-                        addEdge(graph, prevId, id, cost);
-                        addEdge(graph, id, prevId, cost);
+                        addEdge(graph, prevId, id, cost, wayId);
+                        addEdge(graph, id, prevId, cost, wayId);
                     }
                 }
                 prevId = id;
@@ -474,6 +520,22 @@ public class OsmRailwayRouteService {
             }
         }
         return graph;
+    }
+
+    private boolean isExcludedWay(JSONObject tags) {
+        if (tags == null) {
+            return false;
+        }
+        String service = lower(tags.getString("service"));
+        if ("yard".equals(service) || "siding".equals(service) || "spur".equals(service)
+                || "crossover".equals(service)) {
+            return true;
+        }
+        String usage = lower(tags.getString("usage"));
+        if ("industrial".equals(usage) || "military".equals(usage)) {
+            return true;
+        }
+        return false;
     }
 
     private long nodeKey(double lat, double lng) {
@@ -487,33 +549,28 @@ public class OsmRailwayRouteService {
         if (tags == null) {
             return "hsr".equals(mode) ? 8.0 : 1.4;
         }
-        String service = lower(tags.getString("service"));
-        if ("yard".equals(service) || "siding".equals(service) || "spur".equals(service)
-                || "crossover".equals(service)) {
-            return "hsr".equals(mode) ? 25.0 : 8.0;
-        }
         if ("yes".equals(lower(tags.getString("highspeed")))) {
             return 0.85;
         }
         // 高铁模式下：非高铁正线大幅惩罚，避免串京包老线
         if ("hsr".equals(mode)) {
             String usage = lower(tags.getString("usage"));
-            if ("main".equals(usage) || "branch".equals(usage)) {
-                return 6.0;
+            if ("main".equals(usage)) {
+                return 5.5;
             }
-            return 10.0;
+            if ("branch".equals(usage)) {
+                return 9.0;
+            }
+            return 12.0;
         }
         String usage = lower(tags.getString("usage"));
         if ("main".equals(usage)) {
             return 1.0;
         }
         if ("branch".equals(usage)) {
-            return 1.2;
+            return 1.25;
         }
-        if ("industrial".equals(usage) || "military".equals(usage)) {
-            return 12.0;
-        }
-        return 1.45;
+        return 1.55;
     }
 
     private int wayQuality(JSONObject tags) {
@@ -544,7 +601,7 @@ public class OsmRailwayRouteService {
         }
     }
 
-    private void addEdge(RailGraph graph, long from, long to, double cost) {
+    private void addEdge(RailGraph graph, long from, long to, double cost, long wayId) {
         List<Edge> list = graph.adj.get(from);
         if (list == null) {
             list = new ArrayList<Edge>();
@@ -553,15 +610,20 @@ public class OsmRailwayRouteService {
         for (int i = 0; i < list.size(); i++) {
             if (list.get(i).to == to) {
                 if (cost < list.get(i).cost) {
-                    list.set(i, new Edge(to, cost));
+                    list.set(i, new Edge(to, cost, wayId));
                 }
                 return;
             }
         }
-        list.add(new Edge(to, cost));
+        list.add(new Edge(to, cost, wayId));
     }
 
-    private Long snap(RailGraph graph, double lat, double lng, boolean preferMain) {
+    /**
+     * 吸附到铁路节点。preferMain 时优先正线/高铁；并对「起终点走廊」做横向偏离惩罚，
+     * 避免吸到站旁平行老线或站场边缘。
+     */
+    private Long snap(RailGraph graph, double lat, double lng, boolean preferMain,
+                      double otherLat, double otherLng) {
         Long best = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (Node n : graph.nodes.values()) {
@@ -576,7 +638,9 @@ public class OsmRailwayRouteService {
             if (km > MAX_SNAP_KM) {
                 continue;
             }
-            double score = km - Math.min(q, 100) * 0.002;
+            double corridor = perpendicularKm(lat, lng, otherLat, otherLng, n.lat, n.lng);
+            // 质量高优先；偏离起终点连线越远越差
+            double score = km + corridor * 0.55 - Math.min(q, 100) * 0.003;
             if (score < bestScore) {
                 bestScore = score;
                 best = n.id;
@@ -585,9 +649,191 @@ public class OsmRailwayRouteService {
         return best;
     }
 
+    /** 点 P 到线段 AB 的近似横向距离（km） */
+    private double perpendicularKm(double aLat, double aLng, double bLat, double bLng,
+                                   double pLat, double pLng) {
+        double ab = GeoDistanceUtils.haversineKm(aLat, aLng, bLat, bLng);
+        if (ab < 0.05) {
+            return GeoDistanceUtils.haversineKm(aLat, aLng, pLat, pLng);
+        }
+        double ap = GeoDistanceUtils.haversineKm(aLat, aLng, pLat, pLng);
+        double bp = GeoDistanceUtils.haversineKm(bLat, bLng, pLat, pLng);
+        // 海伦公式面积 → 高
+        double s = (ab + ap + bp) / 2.0;
+        double area2 = s * (s - ab) * (s - ap) * (s - bp);
+        if (area2 <= 0) {
+            return 0;
+        }
+        return (2.0 * Math.sqrt(area2)) / ab;
+    }
+
+    /** 越小越好 */
+    private double scorePath(RailGraph graph, List<Long> path, double spanKm, double pathKm,
+                             String pass, String mode) {
+        double detour = spanKm < 0.1 ? 1.0 : pathKm / spanKm;
+        double avgQ = 0;
+        int n = 0;
+        for (Long id : path) {
+            avgQ += graph.nodeQuality.getOrDefault(id, 0);
+            n++;
+        }
+        if (n > 0) {
+            avgQ /= n;
+        }
+        double zig = zigzagPenalty(graph, path);
+        double passPenalty = 0;
+        if ("hsr".equals(mode)) {
+            if ("hsr_main".equals(pass)) {
+                passPenalty = 0.35;
+            }
+        } else if ("main_ext".equals(pass)) {
+            passPenalty = 0.25;
+        }
+        return detour + zig * 0.8 + (1.0 - avgQ / 100.0) * 0.6 + passPenalty;
+    }
+
+    private double zigzagPenalty(RailGraph graph, List<Long> path) {
+        if (path.size() < 3) {
+            return 0;
+        }
+        int sharp = 0;
+        for (int i = 1; i < path.size() - 1; i++) {
+            Node a = graph.nodes.get(path.get(i - 1));
+            Node b = graph.nodes.get(path.get(i));
+            Node c = graph.nodes.get(path.get(i + 1));
+            if (a == null || b == null || c == null) {
+                continue;
+            }
+            double turn = turnDeg(a.lat, a.lng, b.lat, b.lng, c.lat, c.lng);
+            if (turn > 120) {
+                sharp++;
+            }
+        }
+        return sharp / (double) Math.max(1, path.size() - 2);
+    }
+
+    /** 转向角 0=直行，180=折返 */
+    private double turnDeg(double aLat, double aLng, double bLat, double bLng,
+                           double cLat, double cLng) {
+        double x1 = (bLng - aLng) * Math.cos(Math.toRadians((aLat + bLat) / 2));
+        double y1 = bLat - aLat;
+        double x2 = (cLng - bLng) * Math.cos(Math.toRadians((bLat + cLat) / 2));
+        double y2 = cLat - bLat;
+        double n1 = Math.hypot(x1, y1);
+        double n2 = Math.hypot(x2, y2);
+        if (n1 < 1e-12 || n2 < 1e-12) {
+            return 0;
+        }
+        double dot = (x1 * x2 + y1 * y2) / (n1 * n2);
+        if (dot > 1) {
+            dot = 1;
+        }
+        if (dot < -1) {
+            dot = -1;
+        }
+        return Math.toDegrees(Math.acos(dot));
+    }
+
+    /** 去站场打结 + 抽稀（入参 WGS84 [[lat,lng],...]） */
+    private List<double[]> cleanRailwayPath(List<double[]> path) {
+        if (path == null || path.size() < 3) {
+            return path;
+        }
+        List<double[]> out = removeLocalLoops(path);
+        out = removeSharpSpikes(out);
+        out = simplifyByDistance(out, SIMPLIFY_MIN_METERS);
+        return out.size() >= 2 ? out : path;
+    }
+
+    private List<double[]> removeLocalLoops(List<double[]> path) {
+        List<double[]> pts = new ArrayList<double[]>(path);
+        boolean changed = true;
+        int guard = 0;
+        while (changed && guard++ < 8) {
+            changed = false;
+            for (int i = 0; i < pts.size(); i++) {
+                double[] a = pts.get(i);
+                double along = 0;
+                int bestJ = -1;
+                double bestDetour = 0;
+                for (int j = i + 2; j < pts.size(); j++) {
+                    double[] prev = pts.get(j - 1);
+                    double[] cur = pts.get(j);
+                    along += GeoDistanceUtils.haversineKm(prev[0], prev[1], cur[0], cur[1]) * 1000;
+                    if (along > 2500) {
+                        break;
+                    }
+                    double close = GeoDistanceUtils.haversineKm(a[0], a[1], cur[0], cur[1]) * 1000;
+                    if (close <= LOOP_CLOSE_METERS && along >= LOOP_MIN_DETOUR_METERS) {
+                        if (along - close > bestDetour) {
+                            bestDetour = along - close;
+                            bestJ = j;
+                        }
+                    }
+                }
+                if (bestJ > i + 1) {
+                    // 删掉 i+1 .. bestJ-1，保留闭合点
+                    pts.subList(i + 1, bestJ).clear();
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        return pts;
+    }
+
+    private List<double[]> removeSharpSpikes(List<double[]> path) {
+        if (path.size() < 3) {
+            return path;
+        }
+        List<double[]> out = new ArrayList<double[]>();
+        out.add(path.get(0));
+        for (int i = 1; i < path.size() - 1; i++) {
+            double[] a = out.get(out.size() - 1);
+            double[] b = path.get(i);
+            double[] c = path.get(i + 1);
+            double turn = turnDeg(a[0], a[1], b[0], b[1], c[0], c[1]);
+            double ab = GeoDistanceUtils.haversineKm(a[0], a[1], b[0], b[1]) * 1000;
+            double bc = GeoDistanceUtils.haversineKm(b[0], b[1], c[0], c[1]) * 1000;
+            double ac = GeoDistanceUtils.haversineKm(a[0], a[1], c[0], c[1]) * 1000;
+            // 急折返且绕行明显：丢掉尖刺点
+            if (turn >= 110 && ab + bc > ac * 1.25 && ab + bc - ac > 35) {
+                continue;
+            }
+            out.add(b);
+        }
+        out.add(path.get(path.size() - 1));
+        return out;
+    }
+
+    private List<double[]> simplifyByDistance(List<double[]> path, double minMeters) {
+        if (path.size() <= 2 || minMeters <= 0) {
+            return path;
+        }
+        List<double[]> out = new ArrayList<double[]>();
+        out.add(path.get(0));
+        double[] last = path.get(0);
+        for (int i = 1; i < path.size() - 1; i++) {
+            double[] p = path.get(i);
+            double m = GeoDistanceUtils.haversineKm(last[0], last[1], p[0], p[1]) * 1000;
+            if (m >= minMeters) {
+                out.add(p);
+                last = p;
+            }
+        }
+        double[] end = path.get(path.size() - 1);
+        if (out.size() == 1
+                || GeoDistanceUtils.haversineKm(out.get(out.size() - 1)[0], out.get(out.size() - 1)[1],
+                end[0], end[1]) * 1000 > 1) {
+            out.add(end);
+        }
+        return out;
+    }
+
     private List<Long> dijkstra(RailGraph graph, long start, long end) {
         Map<Long, Double> dist = new HashMap<Long, Double>();
         Map<Long, Long> prev = new HashMap<Long, Long>();
+        Map<Long, Long> wayAt = new HashMap<Long, Long>();
         PriorityQueue<long[]> pq = new PriorityQueue<long[]>(new Comparator<long[]>() {
             @Override
             public int compare(long[] a, long[] b) {
@@ -595,6 +841,7 @@ public class OsmRailwayRouteService {
             }
         });
         dist.put(start, 0.0);
+        wayAt.put(start, 0L);
         pq.offer(new long[]{start, Double.doubleToRawLongBits(0.0)});
         Set<Long> settled = new HashSet<Long>();
         while (!pq.isEmpty()) {
@@ -607,6 +854,7 @@ public class OsmRailwayRouteService {
                 break;
             }
             double du = dist.getOrDefault(u, Double.POSITIVE_INFINITY);
+            long uWay = wayAt.getOrDefault(u, 0L);
             List<Edge> edges = graph.adj.get(u);
             if (edges == null) {
                 continue;
@@ -615,11 +863,16 @@ public class OsmRailwayRouteService {
                 if (settled.contains(e.to)) {
                     continue;
                 }
-                double nd = du + e.cost;
+                double switchPenalty = 0;
+                if (uWay != 0L && e.wayId != 0L && uWay != e.wayId) {
+                    switchPenalty = WAY_SWITCH_PENALTY_M;
+                }
+                double nd = du + e.cost + switchPenalty;
                 Double old = dist.get(e.to);
                 if (old == null || nd < old) {
                     dist.put(e.to, nd);
                     prev.put(e.to, u);
+                    wayAt.put(e.to, e.wayId);
                     pq.offer(new long[]{e.to, Double.doubleToRawLongBits(nd)});
                 }
             }
@@ -701,10 +954,12 @@ public class OsmRailwayRouteService {
     private static final class Edge {
         final long to;
         final double cost;
+        final long wayId;
 
-        Edge(long to, double cost) {
+        Edge(long to, double cost, long wayId) {
             this.to = to;
             this.cost = cost;
+            this.wayId = wayId;
         }
     }
 

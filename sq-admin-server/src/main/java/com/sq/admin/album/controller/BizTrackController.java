@@ -94,9 +94,9 @@ public class BizTrackController extends BaseController {
     }
 
     /**
-     * 高德地名/POI 搜索（用于自定义增补路段选点）
+     * 高德地名/POI 搜索（轨迹增补选点、估计位置预览共用）
      */
-    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @PreAuthorize("@ss.hasAnyPermi('album:track:edit,album:photo:edit')")
     @GetMapping("/place/search")
     public AjaxResult searchPlace(@RequestParam String keywords,
                                   @RequestParam(required = false) String city,

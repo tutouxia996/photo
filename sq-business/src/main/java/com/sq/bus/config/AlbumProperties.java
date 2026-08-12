@@ -33,6 +33,9 @@ public class AlbumProperties {
 
     private GpxConfig gpx = new GpxConfig();
 
+    /** 无 EXIF/GPX 时的坐标兜底（默认不进主轨迹/地图） */
+    private FallbackLocationConfig fallbackLocation = new FallbackLocationConfig();
+
     @Data
     public static class Thumb {
         private int smallWidth = 300;
@@ -86,5 +89,23 @@ public class AlbumProperties {
         private double simplifyMinMeters = 0;
         /** 单段折线最大点数；0 或负数表示不限制，保留全部点 */
         private int maxPathPoints = 0;
+    }
+
+    @Data
+    public static class FallbackLocationConfig {
+        /** 是否启用相册内权威 GPS 时间插值兜底 */
+        private boolean enabled = true;
+        /** 两端锚点最大时间跨度（小时），超过则不插值 */
+        private int maxInterpGapHours = 24;
+        /** 单侧外推最大距离（公里） */
+        private double maxExtrapolateKm = 5.0;
+        /** 仅一个锚点时，时间差在此分钟内可吸附到该点 */
+        private int maxSnapGapMinutes = 30;
+        /** 插值/外推允许的最大合理速度（km/h），用于抑制异常跳变 */
+        private double maxReasonableSpeedKmh = 200.0;
+        /** 默认地图是否包含兜底坐标（估计点需在地图标记并可微调） */
+        private boolean includeInMap = true;
+        /** 主轨迹是否包含兜底坐标（false=确认采纳后才进主轨迹） */
+        private boolean includeInTrack = false;
     }
 }

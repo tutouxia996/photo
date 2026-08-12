@@ -46,6 +46,14 @@ public class BizPhoto implements Serializable {
 
     private BigDecimal longitude;
 
+    /**
+     * 坐标来源：exif / video / gpx_match / manual / time_interp / ai_landmark / region_center
+     */
+    private String locationSource;
+
+    /** 坐标置信度 0~1（兜底估计用） */
+    private BigDecimal locationConfidence;
+
     private String address;
 
     private String province;

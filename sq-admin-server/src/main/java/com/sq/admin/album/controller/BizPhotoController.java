@@ -3,11 +3,13 @@ package com.sq.admin.album.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
+import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackService;
+import com.sq.bus.service.IPhotoFallbackLocationService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
@@ -30,11 +32,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
-import java.math.BigDecimal;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
@@ -60,6 +62,9 @@ public class BizPhotoController extends BaseController {
 
     @Autowired
     private IBizTrackService trackService;
+
+    @Autowired
+    private IPhotoFallbackLocationService fallbackLocationService;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -110,11 +115,12 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 地图点位（含 GPS 的正常照片，供前端缩放距离聚合）
+     * 地图点位（默认仅权威 GPS，不含时间插值等兜底；includeEstimated=true 可包含）
      */
     @PreAuthorize("@ss.hasPermi('album:photo:list')")
     @GetMapping("/mapPoints")
-    public AjaxResult mapPoints(@RequestParam(required = false) Long albumId) {
+    public AjaxResult mapPoints(@RequestParam(required = false) Long albumId,
+                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated) {
         if (albumId != null) {
             BizAlbum album = albumService.getById(albumId);
             if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
@@ -128,7 +134,123 @@ public class BizPhotoController extends BaseController {
                 .eq(albumId != null, BizPhoto::getAlbumId, albumId)
                 .orderByAsc(BizPhoto::getShootTime)
                 .orderByAsc(BizPhoto::getPhotoId);
-        return success(photoService.list(wrapper));
+        List<BizPhoto> list = photoService.list(wrapper);
+        if (list == null) {
+            list = new ArrayList<BizPhoto>();
+        }
+        boolean include = includeEstimated != null
+                ? includeEstimated
+                : (albumProperties.getFallbackLocation() != null
+                && albumProperties.getFallbackLocation().isIncludeInMap());
+        if (!include) {
+            List<BizPhoto> authoritative = new ArrayList<BizPhoto>();
+            for (BizPhoto photo : list) {
+                if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+                    authoritative.add(photo);
+                }
+            }
+            list = authoritative;
+        }
+        return success(list);
+    }
+
+    /**
+     * 按同相册权威 GPS 对无坐标媒体做时间插值兜底（不影响主轨迹）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "照片坐标兜底", businessType = BusinessType.UPDATE)
+    @PostMapping("/fallbackLocate/{albumId}")
+    public AjaxResult fallbackLocate(@PathVariable Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在");
+        }
+        int updated = fallbackLocationService.fillMissingByTimeInterp(albumId);
+        return success(updated);
+    }
+
+    /**
+     * 微调估计坐标（仍为兜底来源，不上主轨迹）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "微调估计坐标", businessType = BusinessType.UPDATE)
+    @PutMapping("/estimatedPosition")
+    public AjaxResult updateEstimatedPosition(@RequestBody BizPhoto body) {
+        if (body == null || body.getPhotoId() == null) {
+            return error("图片ID不能为空");
+        }
+        if (body.getLatitude() == null || body.getLongitude() == null) {
+            return error("经纬度不能为空");
+        }
+        BizPhoto existing = photoService.getById(body.getPhotoId());
+        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("图片不存在或已删除");
+        }
+        if (!PhotoLocationSource.isFallback(existing.getLocationSource())) {
+            return error("仅允许调整估计坐标的照片/视频");
+        }
+        existing.setLatitude(body.getLatitude());
+        existing.setLongitude(body.getLongitude());
+        if (body.getAddress() != null) {
+            existing.setAddress(body.getAddress());
+        }
+        existing.setLocationSource(PhotoLocationSource.TIME_INTERP);
+        if (existing.getLocationConfidence() == null) {
+            existing.setLocationConfidence(java.math.BigDecimal.valueOf(0.6).setScale(3, java.math.BigDecimal.ROUND_HALF_UP));
+        }
+        existing.setUpdateBy(getUsername());
+        existing.setUpdateTime(new Date());
+        PhotoFieldUtils.clamp(existing);
+        return toAjax(photoService.updateById(existing));
+    }
+
+    /**
+     * 确认估计坐标：转为手工权威点并同步主轨迹
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "确认估计坐标上主轨迹", businessType = BusinessType.UPDATE)
+    @PostMapping("/confirmEstimated")
+    public AjaxResult confirmEstimated(@RequestBody BizPhoto body) {
+        if (body == null || body.getPhotoId() == null) {
+            return error("图片ID不能为空");
+        }
+        BizPhoto existing = photoService.getById(body.getPhotoId());
+        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("图片不存在或已删除");
+        }
+        if (!PhotoLocationSource.isFallback(existing.getLocationSource())
+                && !PhotoLocationSource.MANUAL.equals(existing.getLocationSource())) {
+            // 已是 EXIF/视频权威点无需再确认
+            if (PhotoLocationSource.isAuthoritativeGps(existing)) {
+                return success(existing);
+            }
+            return error("当前媒体不是估计坐标，无法确认");
+        }
+        if (body.getLatitude() != null && body.getLongitude() != null) {
+            existing.setLatitude(body.getLatitude());
+            existing.setLongitude(body.getLongitude());
+        }
+        if (existing.getLatitude() == null || existing.getLongitude() == null) {
+            return error("经纬度不能为空");
+        }
+        if (body.getAddress() != null) {
+            existing.setAddress(body.getAddress());
+        }
+        existing.setLocationSource(PhotoLocationSource.MANUAL);
+        existing.setLocationConfidence(java.math.BigDecimal.ONE);
+        existing.setUpdateBy(getUsername());
+        existing.setUpdateTime(new Date());
+        PhotoFieldUtils.clamp(existing);
+        boolean ok = photoService.updateById(existing);
+        if (ok && existing.getAlbumId() != null) {
+            try {
+                fallbackLocationService.fillMissingByTimeInterp(existing.getAlbumId());
+                trackService.autoSyncAlbumTrack(existing.getAlbumId());
+            } catch (Exception ignored) {
+            }
+            albumService.refreshAlbumStats(existing.getAlbumId());
+        }
+        return ok ? success(existing) : error("保存失败");
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:query')")
@@ -196,7 +318,7 @@ public class BizPhotoController extends BaseController {
                 albumService.refreshAlbumStats(oldAlbumId);
             }
             albumService.refreshAlbumStats(albumId);
-            autoSyncTrackIfHasGps(albumId, reusable.getLatitude(), reusable.getLongitude());
+            afterUploadLocation(albumId, reusable);
             return success(reusable);
         }
 
@@ -223,7 +345,7 @@ public class BizPhotoController extends BaseController {
         PhotoFieldUtils.clamp(photo);
         photoService.save(photo);
         albumService.refreshAlbumStats(albumId);
-        autoSyncTrackIfHasGps(albumId, photo.getLatitude(), photo.getLongitude());
+        afterUploadLocation(albumId, photo);
         return success(photo);
     }
 
@@ -261,8 +383,7 @@ public class BizPhotoController extends BaseController {
         if (fileType == 2) {
             VideoMetaUtils.MetaInfo meta = VideoMetaUtils.parse(dest);
             photo.setShootTime(meta.getShootTime() != null ? meta.getShootTime() : new Date());
-            photo.setLatitude(meta.getLatitude());
-            photo.setLongitude(meta.getLongitude());
+            PhotoLocationSource.applyDeviceGps(photo, meta.getLatitude(), meta.getLongitude(), fileType);
             photo.setCameraModel(null);
             photo.setLensInfo(null);
             photo.setAperture(null);
@@ -273,8 +394,7 @@ public class BizPhotoController extends BaseController {
         }
         ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
         photo.setShootTime(exif.getShootTime() != null ? exif.getShootTime() : new Date());
-        photo.setLatitude(exif.getLatitude());
-        photo.setLongitude(exif.getLongitude());
+        PhotoLocationSource.applyDeviceGps(photo, exif.getLatitude(), exif.getLongitude(), fileType);
         photo.setCameraModel(exif.getCameraModel());
         photo.setLensInfo(exif.getLensInfo());
         photo.setAperture(exif.getAperture());
@@ -283,14 +403,26 @@ public class BizPhotoController extends BaseController {
         photo.setFocalLength(exif.getFocalLength());
     }
 
-    /** 上传带 GPS 的媒体后自动同步相册轨迹，失败不影响上传结果 */
-    private void autoSyncTrackIfHasGps(Long albumId, BigDecimal latitude, BigDecimal longitude) {
-        if (albumId == null || latitude == null || longitude == null) {
-            return;
-        }
+    /** 上传后：先尝试时间插值兜底，再对权威 GPS 同步主轨迹 */
+    private void afterUploadLocation(Long albumId, BizPhoto photo) {
         try {
-            trackService.autoSyncAlbumTrack(albumId);
+            fallbackLocationService.fillMissingByTimeInterp(albumId);
         } catch (Exception ignored) {
+        }
+        if (photo != null && photo.getPhotoId() != null) {
+            BizPhoto latest = photoService.getById(photo.getPhotoId());
+            if (latest != null) {
+                photo.setLatitude(latest.getLatitude());
+                photo.setLongitude(latest.getLongitude());
+                photo.setLocationSource(latest.getLocationSource());
+                photo.setLocationConfidence(latest.getLocationConfidence());
+            }
+        }
+        if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+            try {
+                trackService.autoSyncAlbumTrack(albumId);
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -298,14 +430,48 @@ public class BizPhotoController extends BaseController {
     @Log(title = "图片管理", businessType = BusinessType.UPDATE)
     @PutMapping
     public AjaxResult edit(@RequestBody BizPhoto photo) {
+        if (photo.getPhotoId() == null) {
+            return error("图片ID不能为空");
+        }
+        BizPhoto existing = photoService.getById(photo.getPhotoId());
+        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("图片不存在或已删除");
+        }
+        boolean coordsChanged = !sameCoord(existing.getLatitude(), photo.getLatitude())
+                || !sameCoord(existing.getLongitude(), photo.getLongitude());
+        if (coordsChanged && photo.getLatitude() != null && photo.getLongitude() != null) {
+            photo.setLocationSource(PhotoLocationSource.MANUAL);
+            photo.setLocationConfidence(java.math.BigDecimal.ONE);
+        } else if (photo.getLocationSource() == null) {
+            photo.setLocationSource(existing.getLocationSource());
+            photo.setLocationConfidence(existing.getLocationConfidence());
+        }
         PhotoFieldUtils.clamp(photo);
         photo.setUpdateBy(getUsername());
         photo.setUpdateTime(new Date());
         boolean ok = photoService.updateById(photo);
-        if (ok && photo.getAlbumId() != null) {
-            albumService.refreshAlbumStats(photo.getAlbumId());
+        Long albumId = photo.getAlbumId() != null ? photo.getAlbumId() : existing.getAlbumId();
+        if (ok && albumId != null) {
+            albumService.refreshAlbumStats(albumId);
+            if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+                try {
+                    fallbackLocationService.fillMissingByTimeInterp(albumId);
+                    trackService.autoSyncAlbumTrack(albumId);
+                } catch (Exception ignored) {
+                }
+            }
         }
         return toAjax(ok);
+    }
+
+    private static boolean sameCoord(java.math.BigDecimal a, java.math.BigDecimal b) {
+        if (a == null && b == null) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.compareTo(b) == 0;
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:remove')")

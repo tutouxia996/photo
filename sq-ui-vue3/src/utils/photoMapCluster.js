@@ -64,6 +64,114 @@ export function travelModeColor(mode, fallback = '#3B82F6') {
   return getTravelMode(mode)?.color || fallback
 }
 
+/** 火车/高铁/地铁：绘制前清洗折线几何 */
+export function isRailTravelMode(mode) {
+  const m = String(mode || '').toLowerCase()
+  return m === 'hsr' || m === 'train' || m === 'metro'
+}
+
+function approxMeters(a, b) {
+  const lat1 = Number(a[0])
+  const lng1 = Number(a[1])
+  const lat2 = Number(b[0])
+  const lng2 = Number(b[1])
+  const mid = ((lat1 + lat2) / 2) * Math.PI / 180
+  const dx = (lng2 - lng1) * Math.cos(mid) * 111320
+  const dy = (lat2 - lat1) * 110540
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+function turnDegrees(a, b, c) {
+  const mid = (Number(b[0]) * Math.PI) / 180
+  const x1 = (Number(b[1]) - Number(a[1])) * Math.cos(mid)
+  const y1 = Number(b[0]) - Number(a[0])
+  const x2 = (Number(c[1]) - Number(b[1])) * Math.cos(mid)
+  const y2 = Number(c[0]) - Number(b[0])
+  const n1 = Math.hypot(x1, y1)
+  const n2 = Math.hypot(x2, y2)
+  if (n1 < 1e-12 || n2 < 1e-12) return 0
+  let dot = (x1 * x2 + y1 * y2) / (n1 * n2)
+  if (dot > 1) dot = 1
+  if (dot < -1) dot = -1
+  return Math.acos(dot) * 180 / Math.PI
+}
+
+/**
+ * 铁路展示折线清洗：去掉站场打结、急折返与过密点（旧 routePath 立刻生效）。
+ * 入参/出参均为地图坐标 [[lat,lng],...]
+ */
+export function cleanRailDisplayPath(latlngs, options = {}) {
+  if (!Array.isArray(latlngs) || latlngs.length < 3) return latlngs
+  const minMeters = options.minMeters != null ? options.minMeters : 40
+  const loopClose = options.loopCloseMeters != null ? options.loopCloseMeters : 90
+  const loopDetour = options.loopDetourMeters != null ? options.loopDetourMeters : 220
+
+  let pts = []
+  for (const p of latlngs) {
+    if (!Array.isArray(p) || p.length < 2) continue
+    const lat = Number(p[0])
+    const lng = Number(p[1])
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue
+    pts.push([lat, lng])
+  }
+  if (pts.length < 3) return pts.length >= 2 ? pts : latlngs
+
+  // 局部闭环（平行轨「泡泡」）
+  let changed = true
+  let guard = 0
+  while (changed && guard++ < 10) {
+    changed = false
+    for (let i = 0; i < pts.length; i++) {
+      let along = 0
+      let bestJ = -1
+      let bestDetour = 0
+      for (let j = i + 2; j < pts.length; j++) {
+        along += approxMeters(pts[j - 1], pts[j])
+        if (along > 4000) break
+        const close = approxMeters(pts[i], pts[j])
+        if (close <= loopClose && along >= loopDetour && along - close > bestDetour) {
+          bestDetour = along - close
+          bestJ = j
+        }
+      }
+      if (bestJ > i + 1) {
+        pts = pts.slice(0, i + 1).concat(pts.slice(bestJ))
+        changed = true
+        break
+      }
+    }
+  }
+
+  // 急折返尖刺
+  const noSpike = [pts[0]]
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = noSpike[noSpike.length - 1]
+    const b = pts[i]
+    const c = pts[i + 1]
+    const turn = turnDegrees(a, b, c)
+    const ab = approxMeters(a, b)
+    const bc = approxMeters(b, c)
+    const ac = approxMeters(a, c)
+    if (turn >= 110 && ab + bc > ac * 1.25 && ab + bc - ac > 35) continue
+    noSpike.push(b)
+  }
+  noSpike.push(pts[pts.length - 1])
+  pts = noSpike
+
+  // 距离抽稀
+  const out = [pts[0]]
+  let last = pts[0]
+  for (let i = 1; i < pts.length - 1; i++) {
+    if (approxMeters(last, pts[i]) >= minMeters) {
+      out.push(pts[i])
+      last = pts[i]
+    }
+  }
+  const end = pts[pts.length - 1]
+  if (approxMeters(out[out.length - 1], end) > 1) out.push(end)
+  return out.length >= 2 ? out : latlngs
+}
+
 const PI = Math.PI
 const A = 6378245.0
 const EE = 0.00669342162296594323
@@ -102,9 +210,31 @@ export function wgs84ToGcj02(lng, lat) {
   return [lng + dLng, lat + dLat]
 }
 
+/** 地图 GCJ-02 → 库内 WGS84 */
+export function gcj02ToWgs84(lng, lat) {
+  if (outOfChina(lng, lat)) return [lng, lat]
+  const [mgLng, mgLat] = wgs84ToGcj02(lng, lat)
+  return [lng * 2 - mgLng, lat * 2 - mgLat]
+}
+
 export function toMapLatLng(point) {
   const [lng, lat] = wgs84ToGcj02(Number(point.longitude), Number(point.latitude))
   return [lat, lng]
+}
+
+/** Leaflet latlng(GCJ) → 库内 latitude/longitude(WGS84) */
+export function fromMapLatLng(lat, lng) {
+  const [wgsLng, wgsLat] = gcj02ToWgs84(Number(lng), Number(lat))
+  return {
+    latitude: Number(wgsLat.toFixed(7)),
+    longitude: Number(wgsLng.toFixed(7))
+  }
+}
+
+/** 时间插值 / AI 等兜底坐标（待确认上主轨迹） */
+export function isEstimatedLocation(point) {
+  const s = point?.locationSource
+  return s === 'time_interp' || s === 'ai_landmark' || s === 'region_center'
 }
 
 /**
@@ -318,17 +448,18 @@ function pickCoverPoint(markers) {
 /** 缩略图 DivIcon；count>1 时显示数量角标 */
 export function createThumbDivIcon(point, count = 1) {
   const isVideo = point?.fileType === 2
+  const estimated = count <= 1 && isEstimatedLocation(point)
   const thumb = mediaSrc(point, false)
   const badge = count > 1
     ? `<span class="pmc-badge">${formatCount(count)}</span>`
-    : ''
+    : (estimated ? '<span class="pmc-est-badge" title="估计位置，可拖动微调后确认上主轨迹">估</span>' : '')
   const video = isVideo && count <= 1 ? '<span class="pmc-video">▶</span>' : ''
   const img = thumb
     ? `<img src="${thumb}" loading="lazy" decoding="async" alt="" />`
     : `<span class="pmc-fallback">${isVideo ? '视频' : '图'}</span>`
   // 角标放在 pin 外，pin 内 overflow:hidden 才能完整包住缩略图
   return L.divIcon({
-    className: 'pmc-marker',
+    className: estimated ? 'pmc-marker pmc-marker--estimated' : 'pmc-marker',
     html: `<div class="pmc-wrap"><div class="pmc-pin">${img}${video}</div>${badge}</div>`,
     iconSize: [52, 52],
     iconAnchor: [26, 52],
@@ -396,6 +527,10 @@ export function buildPopupHtml(point) {
   const modeLabel = escapeHtml(travelModeLabel(point.travelMode))
   const lat = point.latitude
   const lng = point.longitude
+  const estimated = isEstimatedLocation(point)
+  const estTip = estimated
+    ? '<div class="pmc-est-tip">估计位置（未上主轨迹）· 拖动微调后，在右侧面板填写位置名并点保存</div>'
+    : ''
   if (waypoint) {
     return `
       <div class="pmc-popup">
@@ -415,6 +550,7 @@ export function buildPopupHtml(point) {
   return `
     <div class="pmc-popup">
       <div class="pmc-title">${point.sequence != null ? '#' + point.sequence + ' ' : ''}${title}</div>
+      ${estTip}
       ${media}
       ${modeLabel ? `<div class="pmc-mode">下一程：${modeLabel}</div>` : ''}
       ${desc ? `<div class="pmc-desc">${desc}</div>` : ''}
@@ -436,14 +572,23 @@ function createWaypointDivIcon(point) {
   })
 }
 
-export function createPhotoMarker(point) {
+export function createPhotoMarker(point, options = {}) {
   const waypoint = isWaypointPoint(point)
-  const marker = L.marker(toMapLatLng(point), {
+  const estimated = isEstimatedLocation(point)
+  const draggable = !!(options.draggable && estimated && !waypoint)
+  const markerOpts = {
     icon: waypoint ? createWaypointDivIcon(point) : createThumbDivIcon(point, 1),
     keyboard: false,
     riseOnHover: true,
-    photoPoint: point
-  })
+    draggable,
+    autoPan: draggable,
+    photoPoint: point,
+    zIndexOffset: estimated ? 2000 : 0
+  }
+  if (options.pane) {
+    markerOpts.pane = options.pane
+  }
+  const marker = L.marker(toMapLatLng(point), markerOpts)
   marker.bindPopup(() => buildPopupHtml(point), {
     maxWidth: 320,
     className: 'pmc-popup-wrap',

@@ -33,3 +33,16 @@ export function uploadPhoto(data) {
     timeout: 600000
   })
 }
+
+/** 按同相册权威 GPS 时间插值，为无坐标媒体补估计位置 */
+export function fallbackLocateAlbum(albumId) {
+  return request({ url: '/album/photo/fallbackLocate/' + albumId, method: 'post' })
+}
+
+export function updateEstimatedPosition(data) {
+  return request({ url: '/album/photo/estimatedPosition', method: 'put', data })
+}
+
+export function confirmEstimatedPhoto(data) {
+  return request({ url: '/album/photo/confirmEstimated', method: 'post', data })
+}
