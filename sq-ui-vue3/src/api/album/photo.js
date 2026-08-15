@@ -39,6 +39,16 @@ export function fallbackLocateAlbum(albumId) {
   return request({ url: '/album/photo/fallbackLocate/' + albumId, method: 'post' })
 }
 
+/** 按国家/省/市/区为无 GPS 媒体写入区域中心粗定位 */
+export function regionLocateAlbum(albumId, data) {
+  return request({ url: '/album/photo/regionLocate/' + albumId, method: 'post', data })
+}
+
+/** 行政区/地址地理编码预览 */
+export function geocodeAddress(address) {
+  return request({ url: '/album/photo/geocode', method: 'get', params: { address } })
+}
+
 export function updateEstimatedPosition(data) {
   return request({ url: '/album/photo/estimatedPosition', method: 'put', data })
 }

@@ -17,7 +17,7 @@
         <span class="dot-right"></span>
       </router-link>
       <router-link v-else key="expand" class="sidebar-logo-link" to="/">
-        <span class="sidebar-title" :data-text="title">{{ title }}</span>
+        <span class="sidebar-title">{{ title }}</span>
         <span class="status-led"></span>
       </router-link>
     </transition>
@@ -327,45 +327,8 @@ const getLogoTextColor = computed(() => {
     background-clip: text;
     -webkit-text-fill-color: transparent;
     filter: drop-shadow(0 0 10px rgba(64,158,255,.3));
-    animation: titleGlow 3s ease-in-out infinite, titleGlitch 9s steps(1) infinite;
+    animation: titleGlow 3s ease-in-out infinite;
     transition: letter-spacing .3s ease;
-  }
-
-  /* chromatic aberration 错位伪元素 */
-  .sidebar-title::before,
-  .sidebar-title::after {
-    content: attr(data-text);
-    position: absolute;
-    top: 50%;
-    left: 0;
-    transform: translateY(-50%);
-    width: 100%;
-    pointer-events: none;
-    -webkit-text-fill-color: initial;
-    background: none;
-    mix-blend-mode: screen;
-    opacity: 0;
-  }
-  .sidebar-title::before {
-    color: rgba(255, 60, 100, .65);
-    animation: chromaR 9s steps(1) infinite;
-  }
-  .sidebar-title::after {
-    color: rgba(0, 220, 255, .65);
-    animation: chromaB 9s steps(1) infinite;
-  }
-
-  @keyframes chromaR {
-    0%, 96%, 100% { transform: translate(0, -50%); opacity: 0; }
-    97% { transform: translate(-2px, -50%); opacity: .8; }
-    98% { transform: translate(1px, -50%); opacity: .6; }
-    99% { transform: translate(-1px, -50%); opacity: .4; }
-  }
-  @keyframes chromaB {
-    0%, 96%, 100% { transform: translate(0, -50%); opacity: 0; }
-    97% { transform: translate(2px, -50%); opacity: .8; }
-    98% { transform: translate(-1px, -50%); opacity: .6; }
-    99% { transform: translate(1px, -50%); opacity: .4; }
   }
 
   @keyframes titleGlow {
@@ -375,13 +338,6 @@ const getLogoTextColor = computed(() => {
     50% {
       filter: drop-shadow(0 0 22px rgba(64,158,255,.6));
     }
-  }
-
-  @keyframes titleGlitch {
-    0%, 96%, 100% { transform: translateX(0); }
-    97% { transform: translateX(-1px); }
-    98% { transform: translateX(2px); }
-    99% { transform: translateX(-1px); }
   }
 
   .sidebar-logo-link:hover .sidebar-title {

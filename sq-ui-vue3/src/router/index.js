@@ -100,21 +100,21 @@ export const constantRoutes = [
         component: () => import('@/views/photos/detail'),
         name: 'PhotosAlbumDetail',
         hidden: true,
-        meta: { title: '相册详情', activeMenu: '/photos/index', noCache: true }
+        meta: { title: '相册详情', activeMenu: '/photos/index', noCache: true, noTagsView: true }
       },
       {
         path: 'recycle',
         component: () => import('@/views/photos/recycle'),
         name: 'PhotosRecycle',
         hidden: true,
-        meta: { title: '回收站', activeMenu: '/photos/index', noCache: true }
+        meta: { title: '回收站', activeMenu: '/photos/index', noCache: true, noTagsView: true }
       },
       {
         path: 'map',
         component: () => import('@/views/photos/map'),
         name: 'PhotosMap',
         hidden: true,
-        meta: { title: '照片地图', activeMenu: '/photos/index', noCache: true }
+        meta: { title: '照片地图', activeMenu: '/photos/index', noCache: true, noTagsView: true }
       }
     ]
   }

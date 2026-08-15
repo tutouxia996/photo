@@ -26,7 +26,7 @@
     </header>
     <div v-if="estimatedCount > 0" class="est-banner">
       <span class="dot" />
-      橙色「估」为估计位置。可拖动，或用高德搜索位置后点「预览」定位；再「保存调整 / 确认上主轨迹」。
+      蓝色「区」为区域粗定位，橙色「估」为时间推算。均可拖动，或用高德搜索后「预览」；再「保存调整 / 确认上主轨迹」。
       <span class="est-count">待确认 {{ estimatedCount }}</span>
     </div>
     <div class="map-page-body">
@@ -57,6 +57,7 @@
           <img :src="editThumb" alt="" />
         </div>
         <div class="panel-name" :title="editEst.fileName">{{ editEst.fileName || '未命名媒体' }}</div>
+        <div v-if="editSourceLabel" class="panel-source">来源：{{ editSourceLabel }}</div>
         <div class="panel-coords">{{ editEst.latitude }}, {{ editEst.longitude }}</div>
         <el-form label-position="top" size="small">
           <el-form-item label="高德搜索位置">
@@ -133,7 +134,7 @@ import {
 } from '@/api/photos/photo'
 import { searchTrackPlace } from '@/api/album/track'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
-import { isEstimatedLocation, mediaSrc } from '@/utils/photoMapCluster'
+import { isEstimatedLocation, mediaSrc, estimatedSourceTitle } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const route = useRoute()
@@ -174,6 +175,11 @@ const editThumb = computed(() => {
   return mediaSrc(editEst.value, false)
 })
 
+const editSourceLabel = computed(() => {
+  if (!editEst.value) return ''
+  return estimatedSourceTitle(editEst.value)
+})
+
 const metaTitle = computed(() => {
   if (albumId.value == null || albumId.value === '') return '全部相册'
   return albumNameMap.value[albumId.value] || '相册'
@@ -196,7 +202,7 @@ function goBack() {
     router.back()
     return
   }
-  proxy.$tab.closeOpenPage({ path: '/photos/index' })
+  proxy.$tab.navigatePage({ path: '/photos/index' })
 }
 
 function loadAlbums() {
@@ -214,7 +220,12 @@ function loadPoints() {
   listPhotoMapPoints(params).then(res => {
     points.value = res.data || []
     // 仅首次/切换相册时自动适配视野，拖动微调不再 fitBounds
-    nextTick(() => mapRef.value?.refresh?.({ fit: true }))
+    nextTick(() => {
+      mapRef.value?.refresh?.({ fit: true })
+      // 页签原地跳转 / 过渡动画后容器尺寸可能延后就绪，补两次校准
+      setTimeout(() => mapRef.value?.invalidateMapSize?.(), 50)
+      setTimeout(() => mapRef.value?.invalidateMapSize?.(), 300)
+    })
   }).catch(() => {
     points.value = []
   }).finally(() => {
@@ -544,6 +555,16 @@ watch(() => route.query.albumId, (val) => {
   flex: 1;
   min-height: 0;
   position: relative;
+  overflow: hidden;
+}
+
+/* Leaflet 需父级有明确宽高；绝对铺满避免 flex/% 高度塌成 0 导致灰屏无瓦片 */
+.map-page-body > :deep(.photo-cluster-map) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .map-meta {
@@ -627,6 +648,13 @@ watch(() => route.query.albumId, (val) => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.panel-source {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b88230;
+  line-height: 1.4;
 }
 
 .panel-coords {

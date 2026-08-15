@@ -165,7 +165,7 @@ function formatTime(time) {
 }
 
 function goBack() {
-  proxy.$tab.closeOpenPage({ path: '/photos/index' })
+  proxy.$tab.navigatePage({ path: '/photos/index' })
 }
 
 function isSelected(id) {

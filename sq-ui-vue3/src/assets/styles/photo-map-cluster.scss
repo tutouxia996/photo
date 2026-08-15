@@ -85,6 +85,18 @@
   pointer-events: none;
 }
 
+.pmc-est-badge--region_center {
+  background: #409eff;
+}
+
+.pmc-est-badge--ai_landmark {
+  background: #9b59b6;
+}
+
+.pmc-est-badge--time_interp {
+  background: #e6a23c;
+}
+
 .leaflet-div-icon.pmc-marker--estimated .pmc-pin {
   border: 2px dashed #e6a23c;
   box-shadow: 0 0 0 2px rgba(230, 162, 60, 0.35), 0 2px 10px rgba(0, 0, 0, 0.28);

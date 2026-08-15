@@ -419,8 +419,8 @@ function openAlbum(item) {
     menuAlbumId.value = null
     return
   }
-  // 原地打开详情：关闭当前「相册」页签，避免额外新增「相册详情」标题页
-  proxy.$tab.closeOpenPage({ path: '/photos/detail/' + item.albumId })
+  // 原地打开详情：不新增「相册详情」页签，仍留在「相册」页签内
+  proxy.$tab.navigatePage({ path: '/photos/detail/' + item.albumId })
 }
 
 function closeAlbumMenu() {
@@ -474,11 +474,11 @@ function submitEdit() {
 }
 
 function openRecycle() {
-  proxy.$tab.closeOpenPage({ path: '/photos/recycle' })
+  proxy.$tab.navigatePage({ path: '/photos/recycle' })
 }
 
 function openPhotoMap() {
-  proxy.$tab.closeOpenPage({ path: '/photos/map' })
+  proxy.$tab.navigatePage({ path: '/photos/map' })
 }
 
 function handleDelete(item) {

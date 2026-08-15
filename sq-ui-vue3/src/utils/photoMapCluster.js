@@ -231,10 +231,27 @@ export function fromMapLatLng(lat, lng) {
   }
 }
 
-/** 时间插值 / AI 等兜底坐标（待确认上主轨迹） */
+/** 时间插值 / AI / 区域中心等兜底坐标（待确认上主轨迹） */
 export function isEstimatedLocation(point) {
   const s = point?.locationSource
   return s === 'time_interp' || s === 'ai_landmark' || s === 'region_center'
+}
+
+/** 估计来源短标签：区 / AI / 估 */
+export function estimatedSourceLabel(point) {
+  const s = point?.locationSource
+  if (s === 'region_center') return '区'
+  if (s === 'ai_landmark') return 'AI'
+  if (s === 'time_interp') return '估'
+  return '估'
+}
+
+export function estimatedSourceTitle(point) {
+  const s = point?.locationSource
+  if (s === 'region_center') return '区域粗定位，可拖动微调后确认上主轨迹'
+  if (s === 'ai_landmark') return 'AI 地标估计，可拖动微调后确认上主轨迹'
+  if (s === 'time_interp') return '按拍摄时间估计，可拖动微调后确认上主轨迹'
+  return '估计位置，可拖动微调后确认上主轨迹'
 }
 
 /**
@@ -452,7 +469,9 @@ export function createThumbDivIcon(point, count = 1) {
   const thumb = mediaSrc(point, false)
   const badge = count > 1
     ? `<span class="pmc-badge">${formatCount(count)}</span>`
-    : (estimated ? '<span class="pmc-est-badge" title="估计位置，可拖动微调后确认上主轨迹">估</span>' : '')
+    : (estimated
+      ? `<span class="pmc-est-badge pmc-est-badge--${point?.locationSource || 'time_interp'}" title="${escapeHtml(estimatedSourceTitle(point))}">${estimatedSourceLabel(point)}</span>`
+      : '')
   const video = isVideo && count <= 1 ? '<span class="pmc-video">▶</span>' : ''
   const img = thumb
     ? `<img src="${thumb}" loading="lazy" decoding="async" alt="" />`
@@ -529,7 +548,7 @@ export function buildPopupHtml(point) {
   const lng = point.longitude
   const estimated = isEstimatedLocation(point)
   const estTip = estimated
-    ? '<div class="pmc-est-tip">估计位置（未上主轨迹）· 拖动微调后，在右侧面板填写位置名并点保存</div>'
+    ? `<div class="pmc-est-tip">${escapeHtml(estimatedSourceTitle(point))}</div>`
     : ''
   if (waypoint) {
     return `

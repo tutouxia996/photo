@@ -158,13 +158,16 @@ public class BizTrackController extends BaseController {
 
     @PreAuthorize("@ss.hasPermi('album:track:query')")
     @GetMapping("/{trackId}")
-    public AjaxResult getInfo(@PathVariable Long trackId) {
+    public AjaxResult getInfo(@PathVariable Long trackId,
+                              @RequestParam(value = "skipAutoSync", required = false) Boolean skipAutoSync) {
         BizTrack track = trackService.getById(trackId);
         if (track == null || track.getDeleted() != null && track.getDeleted() == 1) {
             return error("轨迹不存在或已删除");
         }
         // 打开详情时：若相册有启用 GPX，先刷新照片轨，去掉已覆盖媒体，避免旧点位继续贴路网
-        if (track.getAlbumId() != null
+        // 刚用「包含估计坐标」生成后可 skipAutoSync，避免旧逻辑误清空
+        if (!Boolean.TRUE.equals(skipAutoSync)
+                && track.getAlbumId() != null
                 && (track.getSourceType() == null
                 || track.getSourceType().isEmpty()
                 || "photo".equals(track.getSourceType()))) {
@@ -226,8 +229,10 @@ public class BizTrackController extends BaseController {
     public AjaxResult generate(@RequestParam Long albumId,
                                @RequestParam(required = false) String trackName,
                                @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date startTime,
-                               @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime) {
-        BizTrack track = trackService.generateTrack(albumId, trackName, startTime, endTime);
+                               @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime,
+                               @RequestParam(required = false, defaultValue = "false") Boolean includeEstimated) {
+        boolean useEstimated = Boolean.TRUE.equals(includeEstimated);
+        BizTrack track = trackService.generateTrack(albumId, trackName, startTime, endTime, useEstimated);
         track.setCreateBy(getUsername());
         trackService.updateById(track);
         return success(track);

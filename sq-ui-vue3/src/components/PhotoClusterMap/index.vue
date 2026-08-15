@@ -210,6 +210,17 @@ function invalidateMapSize() {
   map.invalidateSize({ animate: false })
 }
 
+/** 容器尚未撑开时（弹窗/过渡），延后校准，避免灰屏无瓦片 */
+function ensureMapSized(attempt = 0) {
+  if (!map || !mapEl.value) return
+  const w = mapEl.value.clientWidth
+  const h = mapEl.value.clientHeight
+  invalidateMapSize()
+  if ((w < 32 || h < 32) && attempt < 8) {
+    setTimeout(() => ensureMapSized(attempt + 1), 80 + attempt * 40)
+  }
+}
+
 function applyBaseLayers(styleKey) {
   if (!map) return
   const conf = STYLE_LAYERS[styleKey] || STYLE_LAYERS.normal
@@ -1158,10 +1169,14 @@ function syncBoxSelectMode(active) {
 
 function refresh(options = {}) {
   nextTick(() => {
-    if (!map) initMap()
-    renderPoints(options)
-    invalidateMapSize()
-    setTimeout(() => invalidateMapSize(), 200)
+    try {
+      if (!map) initMap()
+      renderPoints(options)
+    } catch (e) {
+      console.error('[PhotoClusterMap] refresh failed', e)
+    }
+    ensureMapSized(0)
+    setTimeout(() => ensureMapSized(0), 200)
   })
 }
 
@@ -1205,7 +1220,11 @@ watch(() => props.boxSelectActive, (val) => {
   syncBoxSelectMode(!!val)
 }, { immediate: true })
 
-onMounted(() => refresh({ fit: true }))
+onMounted(() => {
+  refresh({ fit: true })
+  // 过渡动画结束后再校准一次尺寸
+  setTimeout(() => ensureMapSized(0), 360)
+})
 
 onBeforeUnmount(() => {
   syncBoxSelectMode(false)

@@ -56,6 +56,12 @@ public class BizTrack implements Serializable {
     @TableField(exist = false)
     private Integer hasGpx;
 
+    /**
+     * 相册是否已有权威 GPS 照片/视频（EXIF/视频/手工确认，非表字段）
+     */
+    @TableField(exist = false)
+    private Integer hasAuthoritativeGps;
+
     private String createBy;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

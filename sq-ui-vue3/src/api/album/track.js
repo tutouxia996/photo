@@ -4,12 +4,26 @@ export function listTrack(query) {
   return request({ url: '/album/track/list', method: 'get', params: query })
 }
 
-export function getTrack(trackId) {
-  return request({ url: '/album/track/' + trackId, method: 'get' })
+export function getTrack(trackId, params = {}) {
+  return request({
+    url: '/album/track/' + trackId,
+    method: 'get',
+    params
+  })
 }
 
 export function generateTrack(params) {
-  return request({ url: '/album/track/generate', method: 'post', params })
+  return request({
+    url: '/album/track/generate',
+    method: 'post',
+    params: {
+      albumId: params.albumId,
+      trackName: params.trackName,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      includeEstimated: params.includeEstimated === true || params.includeEstimated === 'true'
+    }
+  })
 }
 
 export function updateTrack(data) {

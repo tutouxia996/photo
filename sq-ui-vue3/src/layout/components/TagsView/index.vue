@@ -88,7 +88,12 @@ onMounted(() => {
 })
 
 function isActive(r) {
-  return r.path === route.path
+  if (r.path === route.path) return true
+  // 详情等 noTagsView 子页：高亮其 activeMenu 对应的父页签
+  if (route.meta?.noTagsView && route.meta?.activeMenu) {
+    return r.path === route.meta.activeMenu
+  }
+  return false
 }
 
 function activeStyle(tag) {
@@ -154,7 +159,8 @@ function initTags() {
 
 function addTags() {
   const { name } = route
-  if (name) {
+  // noTagsView：页内子路由不新增标题页签，保持原地跳转
+  if (name && !route.meta?.noTagsView) {
     useTagsViewStore().addView(route)
   }
 }

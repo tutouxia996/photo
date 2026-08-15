@@ -29,6 +29,26 @@ export default {
       return router.push(obj);
     }
   },
+  // 原地跳转：不关闭、不新增页签（配合路由 meta.noTagsView）
+  navigatePage(obj) {
+    if (obj === undefined) return
+    return router.push(obj).then(() => {
+      const next = router.currentRoute.value
+      // 从其他模块进入子页时，确保父页签存在以便高亮，避免“无页签”状态
+      if (next.meta?.noTagsView && next.meta?.activeMenu) {
+        const store = useTagsViewStore()
+        const parentPath = next.meta.activeMenu
+        if (!store.visitedViews.some(v => v.path === parentPath)) {
+          store.addVisitedView({
+            path: parentPath,
+            fullPath: parentPath,
+            name: 'PhotosAlbum',
+            meta: { title: '相册' }
+          })
+        }
+      }
+    })
+  },
   // 关闭指定tab页签
   closePage(obj) {
     if (obj === undefined) {

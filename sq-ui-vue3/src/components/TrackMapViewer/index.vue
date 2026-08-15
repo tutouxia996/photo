@@ -1997,7 +1997,11 @@ function replanRoutes() {
   })
 }
 
-defineExpose({ refresh, startEdit })
+defineExpose({
+  refresh,
+  startEdit,
+  invalidateMapSize: () => clusterMapRef.value?.invalidateMapSize?.()
+})
 </script>
 
 <style scoped>

@@ -809,12 +809,12 @@ function onThumbError(item) {
 }
 
 function goBack() {
-  // 返回列表时关闭当前详情页签，原地切回相册列表
-  proxy.$tab.closeOpenPage({ path: '/photos/index' })
+  // 返回列表：原地切回相册，不增删页签
+  proxy.$tab.navigatePage({ path: '/photos/index' })
 }
 
 function openPhotoMap() {
-  proxy.$tab.closeOpenPage({
+  proxy.$tab.navigatePage({
     path: '/photos/map',
     query: { albumId: albumId.value }
   })
@@ -1283,9 +1283,9 @@ function submitCreateAlbum() {
         proxy.$modal.msgSuccess('创建成功')
         createAlbumOpen.value = false
         if (created.albumId != null) {
-          proxy.$tab.closeOpenPage({ path: '/photos/detail/' + created.albumId })
+          proxy.$tab.navigatePage({ path: '/photos/detail/' + created.albumId })
         } else {
-          proxy.$tab.closeOpenPage({ path: '/photos/index' })
+          proxy.$tab.navigatePage({ path: '/photos/index' })
         }
       })
       .finally(() => {
@@ -1663,7 +1663,7 @@ function loadAlbum() {
     })
     .catch(() => {
       proxy.$modal.msgError('相册不存在或已放入回收站')
-      proxy.$tab.closeOpenPage({ path: '/photos/index' })
+      proxy.$tab.navigatePage({ path: '/photos/index' })
     })
 }
 

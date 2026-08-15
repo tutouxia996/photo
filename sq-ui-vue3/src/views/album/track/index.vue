@@ -38,11 +38,19 @@
       </el-col>
       <el-col :span="1.5">
         <el-button
+          type="info"
+          plain
+          icon="MapLocation"
+          @click="openRegionLocate(queryParams.albumId)"
+          v-hasPermi="['album:photo:edit']"
+        >区域定位</el-button>
+      </el-col>
+      <el-col :span="1.5">
+        <el-button
           type="warning"
           plain
           icon="Location"
           :loading="fallbackLoading"
-          :disabled="!queryParams.albumId"
           @click="handleFallbackLocate(queryParams.albumId)"
           v-hasPermi="['album:photo:edit']"
         >估计补点</el-button>
@@ -68,12 +76,13 @@
       <el-table-column label="启用轨迹" width="110" align="center">
         <template #default="scope">
           <el-switch
-            :model-value="scope.row.enabled !== 0"
+            :model-value="isTrackEnabledDisplay(scope.row)"
             :loading="enabledLoadingId === scope.row.trackId"
-            :disabled="!canEditTrack"
+            :disabled="!canToggleTrackEnabled(scope.row)"
             inline-prompt
             active-text="开"
             inactive-text="关"
+            :title="trackEnabledTitle(scope.row)"
             @change="(val) => handleEnabledChange(scope.row, val)"
           />
         </template>
@@ -96,20 +105,64 @@
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
       <el-table-column label="行程说明" prop="remark" min-width="160" :show-overflow-tooltip="true" />
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" min-width="280" width="320" fixed="right">
         <template #default="scope">
-          <el-button link type="primary" @click="handleView(scope.row)">查看</el-button>
-          <el-button link type="primary" @click="handleEdit(scope.row)" v-hasPermi="['album:track:edit']">编辑</el-button>
-          <el-button link type="warning" @click="handleFallbackLocate(scope.row.albumId, scope.row)" v-hasPermi="['album:photo:edit']">估计补点</el-button>
-          <el-button link type="success" @click="openGpxImport(scope.row)" v-hasPermi="['album:track:generate']">导入GPX</el-button>
-          <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:track:remove']">删除</el-button>
+          <el-button
+            v-if="canShowPhotoMap(scope.row)"
+            link
+            type="primary"
+            @click="handleView(scope.row)"
+          >照片地图</el-button>
+          <el-button
+            v-if="canShowTrack(scope.row)"
+            link
+            type="primary"
+            @click="openTrackViewer(scope.row.trackId)"
+            v-hasPermi="['album:track:query']"
+          >轨迹</el-button>
+          <el-button
+            link
+            type="primary"
+            @click="handleEdit(scope.row)"
+            v-hasPermi="['album:track:edit']"
+          >编辑</el-button>
+          <el-button
+            v-if="canShowRegionLocate(scope.row)"
+            link
+            type="info"
+            @click="openRegionLocate(scope.row.albumId)"
+            v-hasPermi="['album:photo:edit']"
+          >区域定位</el-button>
+          <el-button
+            v-if="canShowFallbackLocate(scope.row)"
+            link
+            type="warning"
+            @click="handleFallbackLocate(scope.row.albumId, scope.row)"
+            v-hasPermi="['album:photo:edit']"
+          >估计补点</el-button>
+          <el-button
+            v-if="canShowGpxImport(scope.row)"
+            link
+            type="success"
+            @click="openGpxImport(scope.row)"
+            v-hasPermi="['album:track:generate']"
+          >导入GPX</el-button>
+          <el-button
+            link
+            type="danger"
+            @click="handleDelete(scope.row)"
+            v-hasPermi="['album:track:remove']"
+          >删除</el-button>
         </template>
       </el-table-column>
     </el-table>
     <pagination v-show="total > 0" :total="total" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" @pagination="getList" />
 
-    <el-dialog title="生成轨迹" v-model="genOpen" width="480px" append-to-body>
-      <el-form label-width="90px">
+    <el-dialog title="生成轨迹" v-model="genOpen" width="520px" append-to-body>
+      <p class="region-hint">
+        无 GPS 相册请先「区域定位」，再在照片地图把蓝色「区」点拖准并点「确认上主轨迹」。未确认定位前不能生成正式轨迹。
+      </p>
+      <el-form label-width="110px">
         <el-form-item label="相册" required>
           <el-select v-model="genForm.albumId" placeholder="选择相册" filterable style="width: 100%">
             <el-option
@@ -125,6 +178,19 @@
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button
+          type="info"
+          plain
+          :disabled="!genForm.albumId"
+          v-hasPermi="['album:photo:edit']"
+          @click="openRegionLocateFromGenerate"
+        >先区域定位</el-button>
+        <el-button
+          type="success"
+          plain
+          :disabled="!genForm.albumId"
+          @click="openPhotoMapForAlbum(genForm.albumId)"
+        >打开照片地图</el-button>
         <el-button type="primary" :loading="genLoading" @click="submitGenerate">生成</el-button>
         <el-button @click="genOpen = false">取消</el-button>
       </template>
@@ -196,6 +262,79 @@
       </template>
     </el-dialog>
 
+    <el-dialog title="相册区域粗定位" v-model="regionOpen" width="520px" append-to-body>
+      <p class="region-hint">
+        用于没有 GPS / GPX 的相册：填写国家、省、市、区后，系统会把无坐标媒体放到该区域中心附近（蓝色「区」标记），可在照片地图拖动确认。不会覆盖已有 EXIF/视频/手工坐标。
+      </p>
+      <el-form label-width="88px">
+        <el-form-item label="相册" required>
+          <el-select
+            v-model="regionAlbumId"
+            placeholder="选择相册"
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in albumOptions"
+              :key="item.albumId"
+              :label="albumLabel(item)"
+              :value="item.albumId"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="国家">
+          <el-input v-model="regionForm.country" placeholder="可选，如：中国" clearable maxlength="50" />
+        </el-form-item>
+        <el-form-item label="省份">
+          <el-input v-model="regionForm.province" placeholder="如：北京市 / 浙江省" clearable maxlength="50" />
+        </el-form-item>
+        <el-form-item label="城市">
+          <el-input v-model="regionForm.city" placeholder="如：北京市 / 杭州市" clearable maxlength="50" />
+        </el-form-item>
+        <el-form-item label="地区">
+          <el-input v-model="regionForm.district" placeholder="如：东城区 / 西湖区（越细越好）" clearable maxlength="50" />
+        </el-form-item>
+        <el-form-item label="地点搜索">
+          <el-select
+            v-model="regionPlaceId"
+            filterable
+            remote
+            clearable
+            reserve-keyword
+            :remote-method="searchRegionPlace"
+            :loading="regionPlaceSearching"
+            placeholder="也可搜索地点作为区域中心，如：地坛公园"
+            style="width: 100%"
+            @change="onRegionPlacePicked"
+          >
+            <el-option
+              v-for="item in regionPlaceOptions"
+              :key="regionPlaceKey(item)"
+              :label="item.name"
+              :value="regionPlaceKey(item)"
+            >
+              <div class="place-opt">
+                <div class="place-name">{{ item.name }}</div>
+                <div class="place-addr">{{ item.address }}</div>
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="regionPreviewText" label="预览">
+          <span class="region-preview">{{ regionPreviewText }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button
+          :loading="regionPreviewLoading"
+          :disabled="!canRegionPreview"
+          @click="previewRegionGeocode"
+        >预览坐标</el-button>
+        <el-button type="primary" :loading="regionLoading" :disabled="!canRegionSubmit" @click="submitRegionLocate">应用到相册</el-button>
+        <el-button @click="regionOpen = false">取消</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="detailOpen"
       title="轨迹查看"
@@ -236,14 +375,14 @@ import {
   resolveTrackRoutes,
   importTrackGpx
 } from '@/api/album/track'
-import { fallbackLocateAlbum } from '@/api/album/photo'
+import { fallbackLocateAlbum, regionLocateAlbum, geocodeAddress } from '@/api/album/photo'
+import { searchTrackPlace } from '@/api/album/track'
 import TrackMapViewer from '@/components/TrackMapViewer/index.vue'
 import { hasMissingRoutePaths, hasUnstableAutoRoutes } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 import useAppStore from '@/store/modules/app'
 
 const { proxy } = getCurrentInstance()
-const router = useRouter()
 const appStore = useAppStore()
 const canEditTrack = computed(() => checkPermi(['album:track:edit']))
 const trackList = ref([])
@@ -251,6 +390,22 @@ const albumOptions = ref([])
 const albumNameMap = ref({})
 const loading = ref(true)
 const fallbackLoading = ref(false)
+const regionOpen = ref(false)
+const regionLoading = ref(false)
+const regionPreviewLoading = ref(false)
+const regionAlbumId = ref(undefined)
+const regionForm = ref({
+  country: '中国',
+  province: '',
+  city: '',
+  district: ''
+})
+const regionPlaceOptions = ref([])
+const regionPlaceId = ref('')
+const regionPlaceSearching = ref(false)
+const regionSelectedPlace = ref(null)
+const regionPreview = ref(null)
+let regionPlaceTimer = 0
 const total = ref(0)
 const genOpen = ref(false)
 const genLoading = ref(false)
@@ -310,6 +465,59 @@ function hasGpxFiles(row) {
   return row?.hasGpx === 1
 }
 
+/** 区域粗定位草稿（尚未在照片地图确认正式定位） */
+function isRegionDraft(row) {
+  return String(row?.remark || '').includes('区域粗定位草稿')
+}
+
+/** 区域粗定位草稿：展示为关且置灰；普通照片轨（含 0 点）仍可开关，便于启用后自动同步 */
+function isTrackEnabledDisplay(row) {
+  if (isRegionDraft(row)) return false
+  return row?.enabled !== 0
+}
+
+function canToggleTrackEnabled(row) {
+  return canEditTrack.value && !isRegionDraft(row)
+}
+
+function trackEnabledTitle(row) {
+  if (isRegionDraft(row)) {
+    return '区域粗定位草稿，请先在照片地图确认定位并生成正式轨迹后再启用'
+  }
+  return ''
+}
+
+function canShowPhotoMap(row) {
+  return Number(row?.pointCount) > 0 || hasGpxFiles(row)
+}
+
+function canShowTrack(row) {
+  return Number(row?.pointCount) > 0 && !isRegionDraft(row)
+}
+
+function canShowRegionLocate(row) {
+  // 已有 GPX 或已有权威 GPS 照片时，不再需要区域粗定位
+  if (!row?.albumId) return false
+  if (hasGpxFiles(row)) return false
+  if (Number(row.hasAuthoritativeGps) === 1) return false
+  return true
+}
+
+function canShowFallbackLocate(row) {
+  // 估计补点：需要已有权威 GPS 作锚点，且不是纯 GPX
+  if (!row?.albumId) return false
+  if (hasGpxFiles(row)) return false
+  if (row.sourceType === 'gpx') return false
+  if (isRegionDraft(row)) return false
+  // 没有权威 GPS 时估计补点无效
+  if (Number(row.hasAuthoritativeGps) !== 1) return false
+  return true
+}
+
+function canShowGpxImport(row) {
+  return row?.albumId != null
+}
+
 function isGpxEnabled(row) {
   if (!hasGpxFiles(row)) return false
   return row.gpxEnabled == null || row.gpxEnabled === 1
@@ -362,26 +570,250 @@ function resetQuery() {
 }
 
 function handleFallbackLocate(albumId, row) {
-  const id = albumId != null ? albumId : row?.albumId
+  let id = albumId != null && albumId !== '' ? albumId : row?.albumId
   if (id == null || id === '') {
-    proxy.$modal.msgWarning('请先选择相册，或在行内点击「估计补点」')
+    // 未预选相册时，引导用户先选相册再估计
+    if (!albumOptions.value.length) {
+      proxy.$modal.msgWarning('暂无相册')
+      return
+    }
+    // 复用区域定位的相册选择体验：提示到顶部筛选或直接打开区域定位
+    proxy.$modal.msgWarning('请先在上方筛选栏选择相册，或在行内点击「估计补点」')
     return
   }
   const name = albumNameMap.value[id] || id
   proxy.$modal.confirm(
-    `将根据相册「${name}」内已有 GPS 照片/视频，按拍摄时间为无坐标媒体估计位置。估计点会显示在照片地图上（橙色「估」），确认后才加入主轨迹。是否继续？`
+    `将根据相册「${name}」内已有 GPS 照片/视频，按拍摄时间为无坐标媒体估计位置。估计点会显示在照片地图上（橙色「估」），确认后才加入主轨迹。是否继续？\n\n若相册完全没有 GPS，请改用「区域定位」。`
   ).then(() => {
     fallbackLoading.value = true
     return fallbackLocateAlbum(id)
   }).then(res => {
     const n = res?.data ?? 0
-    proxy.$modal.msgSuccess(`已更新 ${n} 条估计坐标`)
-    return proxy.$modal.confirm('是否打开该相册的照片地图，查看并微调估计点？').then(() => {
-      router.push({ path: '/photos/map', query: { albumId: id } })
-    }).catch(() => {})
+    if (n === 0) {
+      return proxy.$modal.confirm(
+        `相册「${name}」没有可用于推算的 GPS 锚点（更新 0 条）。是否改为「区域定位」？`
+      ).then(() => {
+        openRegionLocate(id)
+      }).catch(() => {})
+    }
+    if (n > 0) {
+      proxy.$modal.msgSuccess(`已更新 ${n} 条估计坐标`)
+      return proxy.$modal.confirm('是否打开该相册的照片地图，查看并微调估计点？').then(() => {
+        proxy.$tab.navigatePage({ path: '/photos/map', query: { albumId: id } })
+      }).catch(() => {})
+    }
   }).catch(() => {}).finally(() => {
     fallbackLoading.value = false
   })
+}
+
+const canRegionPreview = computed(() => {
+  const f = regionForm.value
+  return !!(f.country || f.province || f.city || f.district || regionSelectedPlace.value)
+})
+
+const canRegionSubmit = computed(() => {
+  if (regionAlbumId.value == null || regionAlbumId.value === '') {
+    return false
+  }
+  if (regionSelectedPlace.value?.wgsLat != null && regionSelectedPlace.value?.wgsLng != null) {
+    return true
+  }
+  const f = regionForm.value
+  return !!(f.province || f.city || f.district || f.country)
+})
+
+const regionPreviewText = computed(() => {
+  const p = regionPreview.value
+  if (!p) return ''
+  const parts = [p.formattedAddress || p.address, p.wgsLat, p.wgsLng].filter(v => v != null && v !== '')
+  return parts.join(' · ')
+})
+
+function openRegionLocate(albumId) {
+  regionAlbumId.value = albumId != null && albumId !== '' ? albumId : (queryParams.value.albumId || undefined)
+  regionForm.value = {
+    country: '中国',
+    province: '',
+    city: '',
+    district: ''
+  }
+  regionPlaceOptions.value = []
+  regionPlaceId.value = ''
+  regionSelectedPlace.value = null
+  regionPreview.value = null
+  regionOpen.value = true
+}
+
+function openRegionLocateFromGenerate() {
+  const id = genForm.value.albumId
+  if (id == null || id === '') {
+    proxy.$modal.msgWarning('请先选择相册')
+    return
+  }
+  genOpen.value = false
+  openRegionLocate(id)
+}
+
+function regionPlaceKey(item) {
+  return `${item?.id || item?.name || ''}|${item?.wgsLng}|${item?.wgsLat}`
+}
+
+function searchRegionPlace(query) {
+  const q = (query || '').trim()
+  clearTimeout(regionPlaceTimer)
+  if (!q) {
+    regionPlaceOptions.value = []
+    return
+  }
+  regionPlaceTimer = setTimeout(() => {
+    regionPlaceSearching.value = true
+    const city = (regionForm.value.city || regionForm.value.province || '').trim() || undefined
+    searchTrackPlace({ keywords: q, city, offset: 12 }).then(res => {
+      regionPlaceOptions.value = res?.data || []
+    }).catch(() => {
+      regionPlaceOptions.value = []
+    }).finally(() => {
+      regionPlaceSearching.value = false
+    })
+  }, 300)
+}
+
+function onRegionPlacePicked(val) {
+  if (!val) {
+    regionSelectedPlace.value = null
+    regionPreview.value = null
+    return
+  }
+  const item = regionPlaceOptions.value.find(p => regionPlaceKey(p) === val)
+  regionSelectedPlace.value = item || null
+  if (item) {
+    regionPreview.value = {
+      formattedAddress: item.address || item.name,
+      address: item.address || item.name,
+      wgsLat: item.wgsLat,
+      wgsLng: item.wgsLng
+    }
+    if (item.cityname && !regionForm.value.city) {
+      regionForm.value.city = item.cityname
+    }
+    if (item.adname && !regionForm.value.district) {
+      regionForm.value.district = item.adname
+    }
+  }
+}
+
+function buildRegionKeyword() {
+  const f = regionForm.value
+  return [f.country, f.province, f.city, f.district].map(s => (s || '').trim()).filter(Boolean).join(' ')
+}
+
+function previewRegionGeocode() {
+  if (regionSelectedPlace.value?.wgsLat != null) {
+    regionPreview.value = {
+      formattedAddress: regionSelectedPlace.value.address || regionSelectedPlace.value.name,
+      wgsLat: regionSelectedPlace.value.wgsLat,
+      wgsLng: regionSelectedPlace.value.wgsLng
+    }
+    return
+  }
+  const address = buildRegionKeyword()
+  if (!address) {
+    proxy.$modal.msgWarning('请先填写行政区，或搜索地点')
+    return
+  }
+  regionPreviewLoading.value = true
+  geocodeAddress(address).then(res => {
+    regionPreview.value = res?.data || null
+    if (!regionPreview.value) {
+      proxy.$modal.msgWarning('未解析到坐标')
+    }
+  }).catch(() => {}).finally(() => {
+    regionPreviewLoading.value = false
+  })
+}
+
+function submitRegionLocate() {
+  const id = regionAlbumId.value
+  if (id == null || id === '') {
+    proxy.$modal.msgWarning('请选择相册')
+    return
+  }
+  const f = regionForm.value
+  const place = regionSelectedPlace.value
+  const payload = {
+    country: (f.country || '').trim() || undefined,
+    province: (f.province || '').trim() || undefined,
+    city: (f.city || '').trim() || undefined,
+    district: (f.district || '').trim() || undefined,
+    overwriteRegionCenter: true
+  }
+  if (place?.wgsLat != null && place?.wgsLng != null) {
+    payload.latitude = place.wgsLat
+    payload.longitude = place.wgsLng
+    payload.address = place.address || place.name
+  } else if (regionPreview.value?.wgsLat != null && regionPreview.value?.wgsLng != null) {
+    payload.latitude = regionPreview.value.wgsLat
+    payload.longitude = regionPreview.value.wgsLng
+    payload.address = regionPreview.value.formattedAddress || regionPreview.value.address
+  }
+
+  const runApply = () => {
+    if (!payload.province && !payload.city && !payload.district && !payload.country
+        && payload.latitude == null) {
+      proxy.$modal.msgWarning('请填写行政区，或在地点搜索中选中一项（仅输入不选中无效）')
+      return
+    }
+    const name = albumNameMap.value[id] || id
+    proxy.$modal.confirm(
+      `将为相册「${name}」中无 GPS 的媒体写入区域中心粗定位（蓝色「区」）。已有设备 GPS / 手工 / 时间估计点不会被覆盖。是否继续？`
+    ).then(() => {
+      regionLoading.value = true
+      return regionLocateAlbum(id, payload)
+    }).then(res => {
+      const data = res?.data || {}
+      const n = typeof data === 'number' ? data : (data.updated ?? 0)
+      const addr = data.address || payload.address || buildRegionKeyword() || '所选区域'
+      regionOpen.value = false
+      proxy.$modal.msgSuccess(`已写入 ${n} 条区域粗定位（${addr}）`)
+      if (n <= 0) return
+      getList()
+      // 直接打开照片地图，便于确认蓝色「区」点；列表已有轨迹草稿可再次进入
+      proxy.$tab.navigatePage({ path: '/photos/map', query: { albumId: id } })
+    }).catch(() => {}).finally(() => {
+      regionLoading.value = false
+    })
+  }
+
+  // 只填了文字、还没有坐标时：先地理编码再提交，避免“填了地坛却没点”
+  if (payload.latitude == null || payload.longitude == null) {
+    const address = buildRegionKeyword() || payload.address
+    if (!address) {
+      proxy.$modal.msgWarning('请填写行政区，或搜索并选中地点')
+      return
+    }
+    regionLoading.value = true
+    geocodeAddress(address).then(res => {
+      const geo = res?.data
+      if (!geo?.wgsLat || !geo?.wgsLng) {
+        proxy.$modal.msgError('未解析到坐标，请换更具体的地点（如搜索并选中「地坛公园」）')
+        return
+      }
+      payload.latitude = geo.wgsLat
+      payload.longitude = geo.wgsLng
+      payload.address = geo.formattedAddress || address
+      if (!payload.province && geo.province) payload.province = geo.province
+      if (!payload.city && geo.city) payload.city = geo.city
+      if (!payload.district && geo.district) payload.district = geo.district
+      regionPreview.value = geo
+      regionLoading.value = false
+      runApply()
+    }).catch(() => {
+      regionLoading.value = false
+    })
+    return
+  }
+  runApply()
 }
 
 function openGenerate() {
@@ -390,6 +822,15 @@ function openGenerate() {
     trackName: ''
   }
   genOpen.value = true
+}
+
+function openPhotoMapForAlbum(albumId) {
+  if (albumId == null || albumId === '') {
+    proxy.$modal.msgWarning('请先选择相册')
+    return
+  }
+  genOpen.value = false
+  proxy.$tab.navigatePage({ path: '/photos/map', query: { albumId } })
 }
 
 function syncViewerRect() {
@@ -458,7 +899,7 @@ async function loadTrackWithRoutes(trackId, force = false) {
   return { track, points, gpxOverlays }
 }
 
-function openTrackViewer(trackId) {
+function openTrackViewer(trackId, options = {}) {
   if (!trackId) return
   detailLoading.value = true
   detailOpen.value = true
@@ -469,11 +910,16 @@ function openTrackViewer(trackId) {
     startViewerRectSync()
   })
   // 直接读库展示已保存折线，不自动重算（重算仅手动「贴合路网」）
-  getTrack(trackId).then(res => {
+  // skipAutoSync：刚用估计坐标生成时，避免同步逻辑误清空点位
+  const params = options.skipAutoSync ? { skipAutoSync: true } : {}
+  getTrack(trackId, params).then(res => {
     const data = res.data || {}
     detailTrack.value = data.track || null
     detailPoints.value = data.points || []
     detailGpxOverlays.value = data.gpxOverlays || []
+    if (!detailPoints.value.length) {
+      proxy.$modal.msgWarning('轨迹暂无点位。若刚做区域定位，请确认生成时勾选了「包含估计坐标」')
+    }
     nextTick(() => mapViewerRef.value?.refresh?.({ fit: true }))
   }).catch(() => {
     detailOpen.value = false
@@ -484,11 +930,15 @@ function openTrackViewer(trackId) {
 
 function onViewerOpened() {
   syncViewerRect()
-  mapViewerRef.value?.refresh?.()
+  nextTick(() => {
+    mapViewerRef.value?.refresh?.({ fit: true })
+    mapViewerRef.value?.invalidateMapSize?.()
+  })
   // 侧栏动画结束后再对齐一次，确保贴合白色内容区
   setTimeout(() => {
     syncViewerRect()
-    mapViewerRef.value?.refresh?.()
+    mapViewerRef.value?.refresh?.({ fit: true })
+    mapViewerRef.value?.invalidateMapSize?.()
   }, 320)
 }
 
@@ -511,7 +961,12 @@ function submitGenerate() {
     return
   }
   genLoading.value = true
-  generateTrack(genForm.value).then(res => {
+  const params = {
+    albumId: genForm.value.albumId,
+    trackName: genForm.value.trackName || undefined,
+    includeEstimated: false
+  }
+  generateTrack(params).then(res => {
     proxy.$modal.msgSuccess('生成成功')
     genOpen.value = false
     getList()
@@ -519,12 +974,28 @@ function submitGenerate() {
     if (track?.trackId) {
       openTrackViewer(track.trackId)
     }
+  }).catch(err => {
+    const msg = String(err?.message || err?.msg || '')
+    const albumId = genForm.value.albumId
+    if (msg.includes('确认') || msg.includes('区域') || msg.includes('没有可生成') || msg.includes('没有带坐标')) {
+      proxy.$modal.confirm(
+        `${msg}\n\n是否打开该相册的照片地图进行确认定位？`
+      ).then(() => {
+        genOpen.value = false
+        openPhotoMapForAlbum(albumId)
+      }).catch(() => {})
+    }
   }).finally(() => {
     genLoading.value = false
   })
 }
 
 function handleView(row) {
+  // 再次打开：进入照片地图（与区域定位后同一界面，蓝色「区」点仍在）
+  if (row?.albumId != null) {
+    openPhotoMapForAlbum(row.albumId)
+    return
+  }
   openTrackViewer(row.trackId)
 }
 
@@ -562,6 +1033,7 @@ function submitEdit() {
 
 async function handleEnabledChange(row, val) {
   if (!row?.trackId) return
+  if (!canToggleTrackEnabled(row)) return
   const enabled = val ? 1 : 0
   const prev = row.enabled == null ? 1 : row.enabled
   if (prev === enabled) return
@@ -728,6 +1200,32 @@ loadAlbums().finally(() => getList())
   color: #909399;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.region-hint {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f4f4f5;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.region-preview {
+  color: #409eff;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.place-opt .place-name {
+  font-size: 13px;
+  color: #303133;
+}
+
+.place-opt .place-addr {
+  font-size: 12px;
+  color: #909399;
 }
 
 /* 遮罩与弹窗都对齐主内容区（侧栏右侧、顶栏下方的白色区域） */

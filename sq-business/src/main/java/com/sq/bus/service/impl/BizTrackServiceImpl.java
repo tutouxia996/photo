@@ -71,17 +71,91 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public BizTrack generateTrack(Long albumId, String trackName, Date startTime, Date endTime) {
+    public BizTrack generateTrack(Long albumId, String trackName, Date startTime, Date endTime, boolean includeEstimated) {
         if (albumId == null) {
             throw new ServiceException("相册ID不能为空");
         }
-        List<BizPhoto> photos = listGpsPhotos(albumId, startTime, endTime);
+        // 正式生成只认权威坐标；未在照片地图确认前，禁止用区域估计冒充正式轨迹
+        List<BizPhoto> photos = listGpsPhotos(albumId, startTime, endTime, false);
         photos = excludeGpxMatchedPhotos(albumId, photos);
         if (photos.isEmpty()) {
-            throw new ServiceException("所选范围内没有可生成照片轨的地理位置媒体（已匹配 GPX 的已排除）");
+            long fallback = countFallbackGpsPhotos(albumId);
+            if (fallback > 0 || includeEstimated) {
+                throw new ServiceException("请先在照片地图将估计点「确认上主轨迹」后再生成正式轨迹（仅区域粗定位不能生成）");
+            }
+            throw new ServiceException("所选范围内没有可生成照片轨的地理位置媒体（已匹配 GPX 的已排除）。无 GPS 相册请先「区域定位」并在照片地图确认定位");
+        }
+        // 已有照片轨则刷新，避免同相册重复多条
+        BizTrack existing = findAlbumPhotoTrack(albumId);
+        if (existing != null) {
+            BizTrack rebuilt = rebuildExistingTrack(existing, photos);
+            clearRegionDraftRemark(rebuilt);
+            return rebuilt;
         }
         TrackBuildResult built = buildTrackPoints(photos);
-        return createTrack(albumId, trackName, built);
+        BizTrack track = createTrack(albumId, trackName, built);
+        clearRegionDraftRemark(track);
+        return track;
+    }
+
+    private void clearRegionDraftRemark(BizTrack track) {
+        if (track == null) {
+            return;
+        }
+        String remark = track.getRemark();
+        if (remark != null && remark.contains("区域粗定位草稿")) {
+            track.setRemark(null);
+            // 正式生成后默认启用，可在列表再手动关闭
+            track.setEnabled(1);
+            track.setUpdateTime(new Date());
+            updateById(track);
+        }
+    }
+
+    private void markAsRegionDraft(BizTrack track) {
+        if (track == null) {
+            return;
+        }
+        track.setRemark("区域粗定位草稿：请在照片地图确认定位后再生成正式轨迹");
+        track.setEnabled(0);
+        track.setUpdateTime(new Date());
+        updateById(track);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public BizTrack ensureDraftTrackFromEstimated(Long albumId) {
+        if (albumId == null) {
+            return null;
+        }
+        List<BizPhoto> photos = listGpsPhotos(albumId, null, null, true);
+        photos = excludeGpxMatchedPhotos(albumId, photos);
+        if (photos.isEmpty()) {
+            return null;
+        }
+        BizTrack existing = findAlbumPhotoTrack(albumId);
+        if (existing != null) {
+            // 关闭启用仍更新点位，方便下次打开照片地图/列表一致
+            BizTrack rebuilt = rebuildExistingTrack(existing, photos);
+            markAsRegionDraft(rebuilt);
+            return rebuilt;
+        }
+        TrackBuildResult built = buildTrackPoints(photos);
+        BizTrack track = createTrack(albumId, null, built);
+        markAsRegionDraft(track);
+        log.info("区域定位后写入轨迹草稿 albumId={} trackId={} points={}", albumId, track.getTrackId(), built.points.size());
+        return track;
+    }
+
+    private BizTrack findAlbumPhotoTrack(Long albumId) {
+        return getOne(new LambdaQueryWrapper<BizTrack>()
+                .eq(BizTrack::getAlbumId, albumId)
+                .eq(BizTrack::getDeleted, 0)
+                .and(w -> w.isNull(BizTrack::getSourceType)
+                        .or().eq(BizTrack::getSourceType, "")
+                        .or().eq(BizTrack::getSourceType, "photo"))
+                .orderByAsc(BizTrack::getTrackId)
+                .last("LIMIT 1"), false);
     }
 
     @Override
@@ -143,17 +217,10 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
      * 已与启用 GPX 时间匹配的媒体不写入照片轨，避免贴合路网重复画线。
      */
     private BizTrack doAutoSyncAlbumTrack(Long albumId) {
-        List<BizPhoto> photos = listGpsPhotos(albumId, null, null);
+        List<BizPhoto> photos = listGpsPhotos(albumId, null, null, false);
         photos = excludeGpxMatchedPhotos(albumId, photos);
 
-        BizTrack existing = getOne(new LambdaQueryWrapper<BizTrack>()
-                .eq(BizTrack::getAlbumId, albumId)
-                .eq(BizTrack::getDeleted, 0)
-                .and(w -> w.isNull(BizTrack::getSourceType)
-                        .or().eq(BizTrack::getSourceType, "")
-                        .or().eq(BizTrack::getSourceType, "photo"))
-                .orderByAsc(BizTrack::getTrackId)
-                .last("LIMIT 1"), false);
+        BizTrack existing = findAlbumPhotoTrack(albumId);
 
         if (photos.isEmpty()) {
             if (existing == null) {
@@ -163,7 +230,13 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
             if (existing.getEnabled() != null && existing.getEnabled() == 0) {
                 return existing;
             }
-            // 全部 GPS 媒体都已挂在 GPX 上：清空照片点，保留手工途经点
+            // 相册仅有区域/时间等估计坐标（无权威 GPS）时：保留用户用「包含估计坐标」生成的轨迹，切勿清空
+            if (countFallbackGpsPhotos(albumId) > 0) {
+                log.debug("相册仅有估计坐标，跳过自动同步清空 albumId={} trackId={}",
+                        albumId, existing.getTrackId());
+                return existing;
+            }
+            // 全部权威 GPS 媒体都已挂在 GPX 上：清空照片点，保留手工途经点
             return rebuildExistingTrack(existing, new ArrayList<BizPhoto>());
         }
 
@@ -180,6 +253,25 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
 
         return rebuildExistingTrack(existing, photos);
+    }
+
+    /** 统计相册内带坐标且为兜底来源的媒体数（region_center / time_interp / ai_landmark） */
+    private long countFallbackGpsPhotos(Long albumId) {
+        List<BizPhoto> list = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                .eq(BizPhoto::getAlbumId, albumId)
+                .eq(BizPhoto::getDeleted, com.sq.bus.constants.AlbumDeleted.NORMAL)
+                .isNotNull(BizPhoto::getLatitude)
+                .isNotNull(BizPhoto::getLongitude));
+        if (list == null || list.isEmpty()) {
+            return 0L;
+        }
+        long n = 0L;
+        for (BizPhoto photo : list) {
+            if (PhotoLocationSource.isFallback(photo.getLocationSource())) {
+                n++;
+            }
+        }
+        return n;
     }
 
     private BizTrack rebuildExistingTrack(BizTrack existing, List<BizPhoto> photos) {
@@ -461,7 +553,7 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
     }
 
-    private List<BizPhoto> listGpsPhotos(Long albumId, Date startTime, Date endTime) {
+    private List<BizPhoto> listGpsPhotos(Long albumId, Date startTime, Date endTime, boolean includeEstimated) {
         LambdaQueryWrapper<BizPhoto> query = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getAlbumId, albumId)
                 .eq(BizPhoto::getDeleted, com.sq.bus.constants.AlbumDeleted.NORMAL)
@@ -478,6 +570,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         List<BizPhoto> photos = photoService.list(query);
         if (photos == null || photos.isEmpty()) {
             return new ArrayList<BizPhoto>();
+        }
+        if (includeEstimated) {
+            return photos;
         }
         AlbumProperties.FallbackLocationConfig cfg = albumProperties.getFallbackLocation();
         if (cfg != null && cfg.isIncludeInTrack()) {

@@ -417,6 +417,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         if (albumIds.isEmpty()) {
             for (BizTrack t : tracks) {
                 t.setHasGpx(0);
+                t.setHasAuthoritativeGps(0);
                 applyDisplayStats(t, null);
             }
             return;
@@ -438,12 +439,44 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                 bucket.add(f);
             }
         }
+        Set<Long> albumsWithAuthGps = loadAlbumsWithAuthoritativeGps(albumIds);
         for (BizTrack track : tracks) {
             List<BizTrackGpxFile> files = byAlbum.get(track.getAlbumId());
             boolean hasGpx = files != null && !files.isEmpty();
             track.setHasGpx(hasGpx ? 1 : 0);
+            track.setHasAuthoritativeGps(
+                    track.getAlbumId() != null && albumsWithAuthGps.contains(track.getAlbumId()) ? 1 : 0);
             applyDisplayStats(track, hasGpx ? files : null);
         }
+    }
+
+    /** 批量判断相册是否已有 EXIF/视频/手工等权威坐标 */
+    private Set<Long> loadAlbumsWithAuthoritativeGps(Set<Long> albumIds) {
+        Set<Long> result = new HashSet<Long>();
+        if (albumIds == null || albumIds.isEmpty()) {
+            return result;
+        }
+        List<BizPhoto> photos = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds)
+                .eq(BizPhoto::getDeleted, com.sq.bus.constants.AlbumDeleted.NORMAL)
+                .isNotNull(BizPhoto::getLatitude)
+                .isNotNull(BizPhoto::getLongitude)
+                .select(BizPhoto::getAlbumId, BizPhoto::getLocationSource, BizPhoto::getLatitude, BizPhoto::getLongitude));
+        if (photos == null) {
+            return result;
+        }
+        for (BizPhoto photo : photos) {
+            if (photo.getAlbumId() == null) {
+                continue;
+            }
+            if (result.contains(photo.getAlbumId())) {
+                continue;
+            }
+            if (PhotoLocationSource.isAuthoritativeGps(photo)) {
+                result.add(photo.getAlbumId());
+            }
+        }
+        return result;
     }
 
     /**

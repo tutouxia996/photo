@@ -35,6 +35,71 @@ public class AmapPlaceSearchService {
     private AlbumProperties albumProperties;
 
     /**
+     * 地理编码：地址/行政区 → WGS84 坐标与省市区。
+     *
+     * @param address 如「中国 浙江省 杭州市 西湖区」
+     */
+    public Map<String, Object> geocode(String address) {
+        if (StringUtils.isEmpty(address)) {
+            throw new ServiceException("地址不能为空");
+        }
+        String key = webKey();
+        if (StringUtils.isEmpty(key)) {
+            throw new ServiceException("未配置 album.map.webKey（高德 Web Key）");
+        }
+        try {
+            String url = "https://restapi.amap.com/v3/geocode/geo?address="
+                    + urlEncode(address.trim())
+                    + "&key=" + urlEncode(key);
+            JSONObject json = getJson(url);
+            if (!"1".equals(String.valueOf(json.get("status")))) {
+                String info = json.getString("info");
+                throw new ServiceException(info == null ? "高德地理编码失败" : info);
+            }
+            JSONArray geocodes = json.getJSONArray("geocodes");
+            if (geocodes == null || geocodes.isEmpty()) {
+                throw new ServiceException("未解析到该行政区坐标，请换更具体的省/市/区或直接搜索地点");
+            }
+            JSONObject geo = geocodes.getJSONObject(0);
+            String location = geo.getString("location");
+            if (StringUtils.isEmpty(location) || !location.contains(",")) {
+                throw new ServiceException("地理编码结果无有效坐标");
+            }
+            String[] parts = location.split(",");
+            double gcjLng = Double.parseDouble(parts[0]);
+            double gcjLat = Double.parseDouble(parts[1]);
+            double[] wgs = CoordTransformUtils.gcj02ToWgs84(gcjLng, gcjLat);
+            Map<String, Object> row = new LinkedHashMap<String, Object>();
+            row.put("formattedAddress", asPlain(geo.get("formatted_address")));
+            row.put("country", asPlain(geo.get("country")));
+            row.put("province", asPlain(geo.get("province")));
+            row.put("city", firstNonEmpty(asPlain(geo.get("city")), asPlain(geo.get("province"))));
+            row.put("district", asPlain(geo.get("district")));
+            row.put("level", asPlain(geo.get("level")));
+            row.put("lng", round6(gcjLng));
+            row.put("lat", round6(gcjLat));
+            row.put("wgsLng", round6(wgs[0]));
+            row.put("wgsLat", round6(wgs[1]));
+            return row;
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("Amap geocode failed: {}", e.getMessage());
+            throw new ServiceException("地理编码失败：" + e.getMessage());
+        }
+    }
+
+    private String firstNonEmpty(String a, String b) {
+        if (StringUtils.isNotEmpty(a) && !"[]".equals(a)) {
+            return a;
+        }
+        if (StringUtils.isNotEmpty(b) && !"[]".equals(b)) {
+            return b;
+        }
+        return null;
+    }
+
+    /**
      * @param keywords 关键词
      * @param city     城市（可选，如 北京 / 010）
      * @param offset   返回条数，默认 10，最大 25

@@ -6,10 +6,12 @@ import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
+import com.sq.bus.domain.RegionLocateRequest;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.service.IPhotoFallbackLocationService;
+import com.sq.bus.service.route.AmapPlaceSearchService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
@@ -65,6 +67,9 @@ public class BizPhotoController extends BaseController {
 
     @Autowired
     private IPhotoFallbackLocationService fallbackLocationService;
+
+    @Autowired
+    private AmapPlaceSearchService amapPlaceSearchService;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -170,6 +175,38 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
+     * 按国家/省/市/区为无 GPS 媒体写入区域中心粗定位（region_center，可拖动确认）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "相册区域粗定位", businessType = BusinessType.UPDATE)
+    @PostMapping("/regionLocate/{albumId}")
+    public AjaxResult regionLocate(@PathVariable Long albumId, @RequestBody RegionLocateRequest body) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在");
+        }
+        java.util.Map<String, Object> result = fallbackLocationService.fillMissingByRegionCenter(albumId, body);
+        try {
+            com.sq.bus.domain.BizTrack draft = trackService.ensureDraftTrackFromEstimated(albumId);
+            if (draft != null) {
+                result.put("trackId", draft.getTrackId());
+            }
+        } catch (Exception e) {
+            // 草稿写入失败不影响区域坐标已落库
+        }
+        return success(result);
+    }
+
+    /**
+     * 行政区/地址地理编码（区域粗定位预览）
+     */
+    @PreAuthorize("@ss.hasAnyPermi('album:photo:edit,album:track:edit')")
+    @GetMapping("/geocode")
+    public AjaxResult geocode(@RequestParam String address) {
+        return success(amapPlaceSearchService.geocode(address));
+    }
+
+    /**
      * 微调估计坐标（仍为兜底来源，不上主轨迹）
      */
     @PreAuthorize("@ss.hasPermi('album:photo:edit')")
@@ -194,7 +231,16 @@ public class BizPhotoController extends BaseController {
         if (body.getAddress() != null) {
             existing.setAddress(body.getAddress());
         }
-        existing.setLocationSource(PhotoLocationSource.TIME_INTERP);
+        if (body.getProvince() != null) {
+            existing.setProvince(body.getProvince());
+        }
+        if (body.getCity() != null) {
+            existing.setCity(body.getCity());
+        }
+        if (body.getDistrict() != null) {
+            existing.setDistrict(body.getDistrict());
+        }
+        // 保留原兜底来源（region_center / ai_landmark / time_interp），不强制改成时间插值
         if (existing.getLocationConfidence() == null) {
             existing.setLocationConfidence(java.math.BigDecimal.valueOf(0.6).setScale(3, java.math.BigDecimal.ROUND_HALF_UP));
         }
@@ -235,6 +281,15 @@ public class BizPhotoController extends BaseController {
         }
         if (body.getAddress() != null) {
             existing.setAddress(body.getAddress());
+        }
+        if (body.getProvince() != null) {
+            existing.setProvince(body.getProvince());
+        }
+        if (body.getCity() != null) {
+            existing.setCity(body.getCity());
+        }
+        if (body.getDistrict() != null) {
+            existing.setDistrict(body.getDistrict());
         }
         existing.setLocationSource(PhotoLocationSource.MANUAL);
         existing.setLocationConfidence(java.math.BigDecimal.ONE);
