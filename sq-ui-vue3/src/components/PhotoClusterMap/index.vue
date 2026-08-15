@@ -78,7 +78,11 @@ const props = defineProps({
   /** 增补路段时：照片/途经点可点击选用为锚点 */
   pointPickable: { type: Boolean, default: false },
   /** 估计坐标点可拖动微调（单独图层，不参与聚合） */
-  estimatedDraggable: { type: Boolean, default: false }
+  estimatedDraggable: { type: Boolean, default: false },
+  /** 框选模式：拖拽拉矩形选中路段 */
+  boxSelectActive: { type: Boolean, default: false },
+  /** 框选高亮的路段下标 */
+  selectedSegmentIndexes: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits([
@@ -91,6 +95,7 @@ const emit = defineEmits([
   'estimated-drag-end',
   'estimated-select',
   'confirm-estimated',
+  'box-select',
   'ready'
 ])
 
@@ -117,6 +122,16 @@ let didFit = false
 /** @type {{ line: any, hit: any, latlngs: any[] }[]} */
 let segmentRefs = []
 let pathEditMarkers = []
+/** 框选矩形 */
+let boxSelectRect = null
+let boxSelectStart = null
+let boxSelectDragging = false
+let boxSelectHandlersBound = false
+
+const selectedSegmentSet = computed(() => {
+  const arr = Array.isArray(props.selectedSegmentIndexes) ? props.selectedSegmentIndexes : []
+  return new Set(arr.map(n => Number(n)).filter(n => Number.isFinite(n)))
+})
 
 const validPoints = computed(() => filterValidPoints(props.points))
 const overlayList = computed(() => {
@@ -436,11 +451,12 @@ function drawDirectionDecorations(fullPath, list) {
     L.marker(fullPath[fullPath.length - 1], { icon: endIcon, interactive: false, zIndexOffset: 600 }).addTo(lineLayer)
   }
 
-  // 每段叠加流动方向；编辑拐点时不画（外层已判断 pathEditIndex）
+  // 每段叠加流动方向；仅已贴合路网的实线段，避免未贴合虚线被流动层「永远像虚线」
   if (list && list.length > 1) {
     const defaultColor = props.polylineColor || '#3B82F6'
     for (let i = 0; i < list.length - 1; i++) {
       const from = list[i]
+      if (!from?.routePath) continue
       if (!isSegmentModeVisible(from.travelMode)) continue
       const latlngs = resolveSegmentLatLngs(from, list[i + 1])
       if (!latlngs || latlngs.length < 2) continue
@@ -470,8 +486,9 @@ function shouldBindSegmentLabel(i, from, list) {
   return false
 }
 
-function drawSegments(list) {
+function drawSegments(list, matchedIds = null) {
   if (!lineLayer || list.length < 2) return []
+  const matched = matchedIds instanceof Set ? matchedIds : null
   const defaultColor = props.polylineColor || '#3B82F6'
   const fullPath = []
   const filtering = !!modeFilterSet.value
@@ -479,6 +496,13 @@ function drawSegments(list) {
   for (let i = 0; i < list.length - 1; i++) {
     const from = list[i]
     const to = list[i + 1]
+    // 任一端已挂 GPX：不画照片轨路段，避免与 GPX 重复；索引仍保留供其余路段编辑
+    const fromMatched = matched && from?.photoId != null && matched.has(String(from.photoId))
+    const toMatched = matched && to?.photoId != null && matched.has(String(to.photoId))
+    if (fromMatched || toMatched) {
+      segmentRefs[i] = null
+      continue
+    }
     const latlngs = resolveSegmentLatLngs(from, to)
     if (!latlngs || latlngs.length < 2) {
       segmentRefs[i] = null
@@ -500,17 +524,18 @@ function drawSegments(list) {
       ? travelModeColor(from.travelMode, defaultColor)
       : defaultColor
     const active = props.activeSegmentIndex === i || props.pathEditIndex === i
+      || selectedSegmentSet.value.has(i)
     const dashed = !from.routePath
     const line = L.polyline(latlngs, {
       renderer: svgRenderer || undefined,
-      color,
+      color: selectedSegmentSet.value.has(i) ? '#F59E0B' : color,
       weight: active ? 7 : 5,
       opacity: active ? 1 : 0.9,
       lineJoin: 'round',
       lineCap: 'round',
       smoothFactor: 1.2,
       dashArray: dashed ? '8 8' : null,
-      interactive: !!props.editable,
+      interactive: !!props.editable && !props.boxSelectActive,
       className: dashed ? 'pmc-seg-line is-dashed' : 'pmc-seg-line'
     }).addTo(lineLayer)
 
@@ -810,7 +835,7 @@ function drawGpxMatchedPhotos() {
     const point = {
       ...p,
       description: p.description || (p.matchDeltaSec != null
-        ? `GPX对齐（Δ${p.matchDeltaSec}s）`
+        ? `GPX对齐（Δ${p.matchDeltaSec}s${p.interpolated ? '·插值' : ''}）`
         : 'GPX对齐')
     }
     const marker = createPhotoMarker(point)
@@ -892,7 +917,8 @@ function renderPoints({ fit = props.autoFit } = {}) {
 
   let fullPath = []
   if (props.showPolyline && list.length > 1) {
-    fullPath = drawSegments(list)
+    // 保留原始点序索引，便于编辑出行方式/贴合路网；仅跳过已挂 GPX 的媒体相关路段
+    fullPath = drawSegments(list, matchedIds)
     // 编辑拐点时隐藏方向装饰，避免遮挡拖拽
     if (props.showDirection && props.pathEditIndex < 0 && fullPath.length >= 2) {
       // 筛选时只画可见段的流动箭头，起终点仅在未筛选时显示
@@ -1019,8 +1045,115 @@ function initMap() {
   map.on('zoomend', onZoomEnd)
   map.getContainer().classList.toggle('pmc-edit-cursor', !!props.editable)
   map.getContainer().classList.toggle('pmc-gpx-pick', !!props.gpxEndpointPickable)
+  map.getContainer().classList.toggle('pmc-box-select', !!props.boxSelectActive)
   bindResizeObserver()
+  syncBoxSelectMode(!!props.boxSelectActive)
   emit('ready')
+}
+
+function clearBoxSelectRect() {
+  if (boxSelectRect && map) {
+    map.removeLayer(boxSelectRect)
+  }
+  boxSelectRect = null
+  boxSelectStart = null
+  boxSelectDragging = false
+}
+
+function onBoxSelectMouseDown(e) {
+  if (!props.boxSelectActive || !map || !e.latlng) return
+  // 仅左键
+  if (e.originalEvent && e.originalEvent.button !== 0) return
+  // 点在地图控件/侧栏上时不开始框选
+  const t = e.originalEvent && e.originalEvent.target
+  if (t && t.closest && (
+    t.closest('.seg-panel')
+    || t.closest('.map-style-switch')
+    || t.closest('.leaflet-control')
+    || t.closest('.track-meta')
+  )) {
+    return
+  }
+  L.DomEvent.stopPropagation(e)
+  clearBoxSelectRect()
+  boxSelectStart = e.latlng
+  boxSelectDragging = true
+  boxSelectRect = L.rectangle(L.latLngBounds(e.latlng, e.latlng), {
+    color: '#F59E0B',
+    weight: 2,
+    dashArray: '4 4',
+    fillOpacity: 0.12,
+    interactive: false
+  }).addTo(map)
+}
+
+function onBoxSelectMouseMove(e) {
+  if (!boxSelectDragging || !boxSelectStart || !boxSelectRect || !e.latlng) return
+  boxSelectRect.setBounds(L.latLngBounds(boxSelectStart, e.latlng))
+}
+
+function onBoxSelectMouseUp(e) {
+  if (!boxSelectDragging || !boxSelectStart) return
+  boxSelectDragging = false
+  const native = e && (e.originalEvent || e)
+  // 若在侧栏松开，取消本次框选，避免抢走面板点击
+  if (native && native.target && native.target.closest
+      && native.target.closest('.seg-panel')) {
+    clearBoxSelectRect()
+    return
+  }
+  let end = e && e.latlng ? e.latlng : null
+  if (!end && native && map) {
+    try {
+      end = map.mouseEventToLatLng(native)
+    } catch (err) {
+      end = boxSelectStart
+    }
+  }
+  if (!end) end = boxSelectStart
+  const bounds = L.latLngBounds(boxSelectStart, end)
+  clearBoxSelectRect()
+  // 太小的框忽略（误点击）
+  const sw = bounds.getSouthWest()
+  const ne = bounds.getNorthEast()
+  if (Math.abs(ne.lat - sw.lat) < 1e-5 && Math.abs(ne.lng - sw.lng) < 1e-5) {
+    return
+  }
+  emit('box-select', {
+    south: bounds.getSouth(),
+    north: bounds.getNorth(),
+    west: bounds.getWest(),
+    east: bounds.getEast()
+  })
+}
+
+function syncBoxSelectMode(active) {
+  if (!map) return
+  const container = map.getContainer()
+  container.classList.toggle('pmc-box-select', !!active)
+  if (active) {
+    map.dragging.disable()
+    map.doubleClickZoom.disable()
+    if (!boxSelectHandlersBound) {
+      map.on('mousedown', onBoxSelectMouseDown)
+      map.on('mousemove', onBoxSelectMouseMove)
+      map.on('mouseup', onBoxSelectMouseUp)
+      // 鼠标拖出地图外松手
+      L.DomEvent.on(document, 'mouseup', onBoxSelectMouseUp)
+      boxSelectHandlersBound = true
+    }
+  } else {
+    map.dragging.enable()
+    map.doubleClickZoom.enable()
+    if (boxSelectHandlersBound) {
+      map.off('mousedown', onBoxSelectMouseDown)
+      map.off('mousemove', onBoxSelectMouseMove)
+      map.off('mouseup', onBoxSelectMouseUp)
+      L.DomEvent.off(document, 'mouseup', onBoxSelectMouseUp)
+      boxSelectHandlersBound = false
+    }
+    clearBoxSelectRect()
+  }
 }
 
 function refresh(options = {}) {
@@ -1047,9 +1180,10 @@ watch(
     props.overlayPaths,
     props.gpxEndpointPickable,
     props.pointPickable,
-    props.estimatedDraggable
+    props.estimatedDraggable,
+    props.selectedSegmentIndexes
   ],
-  () => refresh({ fit: props.autoFit && !props.editable }),
+  () => refresh({ fit: props.autoFit && !props.editable && !props.boxSelectActive }),
   { deep: true }
 )
 
@@ -1067,9 +1201,14 @@ watch(() => props.gpxEndpointPickable, (val) => {
   if (map) map.getContainer().classList.toggle('pmc-gpx-pick', !!val)
 }, { immediate: true })
 
+watch(() => props.boxSelectActive, (val) => {
+  syncBoxSelectMode(!!val)
+}, { immediate: true })
+
 onMounted(() => refresh({ fit: true }))
 
 onBeforeUnmount(() => {
+  syncBoxSelectMode(false)
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -1178,5 +1317,9 @@ defineExpose({
   transform: translate(-50%, -50%);
   color: #909399;
   pointer-events: none;
+}
+
+:deep(.pmc-box-select) {
+  cursor: crosshair !important;
 }
 </style>

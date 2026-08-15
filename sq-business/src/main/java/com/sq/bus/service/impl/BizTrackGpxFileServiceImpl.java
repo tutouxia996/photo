@@ -3,6 +3,7 @@ package com.sq.bus.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sq.bus.config.AlbumProperties;
+import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackGpxFile;
@@ -36,6 +37,7 @@ import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -98,7 +100,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         if (files == null || files.length == 0) {
             throw new ServiceException("请选择 GPX 文件");
         }
-        int offsetHours = albumProperties.getGpx() == null ? 8 : albumProperties.getGpx().getTimeOffsetHours();
+        long offsetMs = resolveGpxTimeOffsetMs();
         List<BizTrackGpxFile> imported = new ArrayList<BizTrackGpxFile>();
         // 同一次上传内同名只保留最后一次，避免重复累加
         Set<String> seenInBatch = new HashSet<String>();
@@ -125,7 +127,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             File dest = saveUpload(albumId, file, original);
             List<GpxSample> samples;
             try (InputStream in = new FileInputStream(dest)) {
-                samples = GpxParseUtils.parse(in, offsetHours);
+                samples = GpxParseUtils.parse(in, offsetMs);
             } catch (ServiceException e) {
                 safeDelete(dest);
                 throw e;
@@ -394,36 +396,13 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         if (track == null || track.getAlbumId() == null) {
             return new ArrayList<Map<String, Object>>();
         }
-        List<Map<String, Object>> overlays = listOverlays(track.getAlbumId());
         boolean showPath = track.getGpxEnabled() == null || track.getGpxEnabled() == 1;
-        if (showPath) {
-            return overlays;
+        if (!showPath) {
+            // 关闭「启用GPX」：不叠 GPX 折线，也不再把媒体挂在 GPX 坐标上；
+            // 匹配媒体应回落到照片轨，使用自身 GPS 生成/编辑轨迹。
+            return new ArrayList<Map<String, Object>>();
         }
-        // 关闭 GPX 线路：去掉折线，仍返回时间匹配到的照片，便于地图继续打点
-        List<Map<String, Object>> photoOnly = new ArrayList<Map<String, Object>>();
-        for (Map<String, Object> item : overlays) {
-            if (item == null) {
-                continue;
-            }
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> matched = (List<Map<String, Object>>) item.get("matchedPhotos");
-            if (matched == null || matched.isEmpty()) {
-                continue;
-            }
-            Map<String, Object> row = new HashMap<String, Object>();
-            row.put("gpxId", item.get("gpxId"));
-            row.put("fileName", item.get("fileName"));
-            row.put("travelMode", item.get("travelMode"));
-            row.put("color", item.get("color"));
-            row.put("path", new ArrayList<Object>());
-            row.put("pathPointCount", 0);
-            row.put("pointCount", item.get("pointCount"));
-            row.put("showPath", Boolean.FALSE);
-            row.put("readOnly", Boolean.TRUE);
-            row.put("matchedPhotos", matched);
-            photoOnly.add(row);
-        }
-        return photoOnly;
+        return listOverlays(track.getAlbumId());
     }
 
     @Override
@@ -571,8 +550,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
     }
 
     private double computeStoredDistance(BizTrackGpxFile f) {
-        int offsetHours = albumProperties.getGpx() == null ? 8 : albumProperties.getGpx().getTimeOffsetHours();
-        List<GpxSample> samples = loadSamples(f, offsetHours);
+        List<GpxSample> samples = loadSamples(f, resolveGpxTimeOffsetMs());
         if (samples.size() < 2) {
             return 0D;
         }
@@ -600,8 +578,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         }
         AlbumProperties.GpxConfig cfg = albumProperties.getGpx() == null
                 ? new AlbumProperties.GpxConfig() : albumProperties.getGpx();
-        int offsetHours = cfg.getTimeOffsetHours();
-        long windowMs = Math.max(1, cfg.getMatchWindowSeconds()) * 1000L;
+        long offsetMs = resolveGpxTimeOffsetMs(cfg);
 
         List<BizTrackGpxFile> files = list(new LambdaQueryWrapper<BizTrackGpxFile>()
                 .eq(BizTrackGpxFile::getAlbumId, albumId)
@@ -618,7 +595,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         List<TimedSample> merged = new ArrayList<TimedSample>();
         Map<Long, Map<String, Object>> overlayByGpxId = new HashMap<Long, Map<String, Object>>();
         for (BizTrackGpxFile f : files) {
-            List<GpxSample> samples = loadSamples(f, offsetHours);
+            List<GpxSample> samples = loadSamples(f, offsetMs);
             if (samples.size() < 2) {
                 continue;
             }
@@ -644,6 +621,10 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             overlays.add(item);
             overlayByGpxId.put(f.getGpxId(), item);
             for (GpxSample s : samples) {
+                // 无真实时间戳的合成点只参与折线，不参与媒体匹配
+                if (!s.hasRealTime) {
+                    continue;
+                }
                 merged.add(new TimedSample(f.getGpxId(), s));
             }
         }
@@ -653,8 +634,149 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         merged.sort(Comparator.comparingLong(t -> t.sample.timeMs));
 
         List<BizPhoto> media = listAlbumMedia(albumId);
-        Set<Long> usedPhotos = new HashSet<Long>();
+        MatchBatch batch = matchMediaToSamples(media, merged, cfg, albumId);
+        if (batch.clockSkewMs != 0L) {
+            log.info("GPX 自动钟差 albumId={} skewMs={} (~{}s)", albumId, batch.clockSkewMs, batch.clockSkewMs / 1000L);
+        }
+
         int matched = 0;
+        int interpolated = 0;
+        for (MatchedMedia mm : batch.hits) {
+            Map<String, Object> overlay = overlayByGpxId.get(mm.hit.gpxId);
+            if (overlay == null) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> matchedPhotos = (List<Map<String, Object>>) overlay.get("matchedPhotos");
+            matchedPhotos.add(toMatchedPhoto(mm.photo, mm.hit));
+            matched++;
+            if (mm.hit.interpolated) {
+                interpolated++;
+            }
+        }
+        log.debug("GPX 叠层匹配相册媒体 albumId={} overlays={} matched={} interpolated={} skewMs={}",
+                albumId, overlays.size(), matched, interpolated, batch.clockSkewMs);
+        return overlays;
+    }
+
+    @Override
+    public Set<Long> listMatchedPhotoIds(Long albumId) {
+        Set<Long> ids = new HashSet<Long>();
+        if (albumId == null) {
+            return ids;
+        }
+        // 轨迹关闭了「启用GPX」时，不排除媒体，让它们回到照片轨用自身 GPS
+        if (!isAlbumGpxActive(albumId)) {
+            return ids;
+        }
+        AlbumProperties.GpxConfig cfg = albumProperties.getGpx() == null
+                ? new AlbumProperties.GpxConfig() : albumProperties.getGpx();
+        long offsetMs = resolveGpxTimeOffsetMs(cfg);
+        List<TimedSample> merged = loadMergedTimedSamples(albumId, offsetMs);
+        if (merged.isEmpty()) {
+            return ids;
+        }
+        // 与 listOverlays 的 matchedPhotos 使用同一套规则，避免「从照片轨剔除却不在 GPX 上显示」
+        MatchBatch batch = matchMediaToSamples(listAlbumMedia(albumId), merged, cfg, albumId);
+        for (MatchedMedia mm : batch.hits) {
+            if (mm.photo != null && mm.photo.getPhotoId() != null) {
+                ids.add(mm.photo.getPhotoId());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 相册是否应把媒体挂到 GPX 上（并从照片轨排除）：
+     * 有启用中的 GPX 文件，且照片主轨迹未关闭 gpxEnabled。
+     */
+    private boolean isAlbumGpxActive(Long albumId) {
+        long enabledGpx = count(new LambdaQueryWrapper<BizTrackGpxFile>()
+                .eq(BizTrackGpxFile::getAlbumId, albumId)
+                .eq(BizTrackGpxFile::getDeleted, 0)
+                .eq(BizTrackGpxFile::getEnabled, 1));
+        if (enabledGpx <= 0) {
+            return false;
+        }
+        BizTrack photoTrack = findPhotoTrack(albumId);
+        if (photoTrack != null && photoTrack.getGpxEnabled() != null && photoTrack.getGpxEnabled() == 0) {
+            return false;
+        }
+        return true;
+    }
+
+    private List<long[]> listEnabledGpxTimeSpans(Long albumId, long padMs) {
+        List<long[]> spans = new ArrayList<long[]>();
+        List<BizTrackGpxFile> files = list(new LambdaQueryWrapper<BizTrackGpxFile>()
+                .eq(BizTrackGpxFile::getAlbumId, albumId)
+                .eq(BizTrackGpxFile::getDeleted, 0)
+                .eq(BizTrackGpxFile::getEnabled, 1));
+        files = dedupeByFileName(files);
+        for (BizTrackGpxFile f : files) {
+            if (f.getStartTime() == null || f.getEndTime() == null) {
+                continue;
+            }
+            long start = f.getStartTime().getTime() - padMs;
+            long end = f.getEndTime().getTime() + padMs;
+            if (end < start) {
+                continue;
+            }
+            spans.add(new long[]{start, end});
+        }
+        return spans;
+    }
+
+    private static boolean inAnySpan(long timeMs, List<long[]> spans) {
+        for (long[] span : spans) {
+            if (timeMs >= span[0] && timeMs <= span[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 仅加载启用 GPX 中带真实时间的采样，供匹配 / 去重 */
+    private List<TimedSample> loadMergedTimedSamples(Long albumId, long offsetMs) {
+        List<TimedSample> merged = new ArrayList<TimedSample>();
+        List<BizTrackGpxFile> files = list(new LambdaQueryWrapper<BizTrackGpxFile>()
+                .eq(BizTrackGpxFile::getAlbumId, albumId)
+                .eq(BizTrackGpxFile::getDeleted, 0)
+                .eq(BizTrackGpxFile::getEnabled, 1)
+                .orderByAsc(BizTrackGpxFile::getStartTime)
+                .orderByAsc(BizTrackGpxFile::getGpxId));
+        files = dedupeByFileName(files);
+        for (BizTrackGpxFile f : files) {
+            List<GpxSample> samples = loadSamples(f, offsetMs);
+            if (samples.size() < 2) {
+                continue;
+            }
+            for (GpxSample s : samples) {
+                if (!s.hasRealTime) {
+                    continue;
+                }
+                merged.add(new TimedSample(f.getGpxId(), s));
+            }
+        }
+        merged.sort(Comparator.comparingLong(t -> t.sample.timeMs));
+        return merged;
+    }
+
+    /**
+     * 精时间匹配 +（有 GPS 时）时段覆盖且靠近轨迹。
+     * 展示与照片轨排除共用，保证挂到 GPX 上的媒体集合一致。
+     */
+    private MatchBatch matchMediaToSamples(List<BizPhoto> media, List<TimedSample> merged,
+                                           AlbumProperties.GpxConfig cfg, Long albumId) {
+        MatchBatch batch = new MatchBatch();
+        if (media == null || media.isEmpty() || merged == null || merged.isEmpty()) {
+            return batch;
+        }
+        long windowMs = Math.max(1, cfg.getMatchWindowSeconds()) * 1000L;
+        long maxInterpGapMs = Math.max(windowMs, Math.max(1, cfg.getMaxInterpGapSeconds()) * 1000L);
+        batch.clockSkewMs = estimateClockSkewMs(media, merged, cfg);
+        Set<Long> usedPhotos = new HashSet<Long>();
+
+        // 1) 精时间匹配（插值优先）
         for (BizPhoto photo : media) {
             if (photo == null || photo.getPhotoId() == null || photo.getShootTime() == null) {
                 continue;
@@ -662,22 +784,130 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             if (usedPhotos.contains(photo.getPhotoId())) {
                 continue;
             }
-            TimedSample hit = nearest(merged, photo.getShootTime().getTime(), windowMs);
+            MatchHit hit = locateOnTrack(merged, photo.getShootTime().getTime() + batch.clockSkewMs,
+                    windowMs, maxInterpGapMs);
+            long hourMs = cfg.getTimeOffsetHours() * 3600L * 1000L;
+            if (hourMs != 0L) {
+                MatchHit altPlus = locateOnTrack(merged,
+                        photo.getShootTime().getTime() + batch.clockSkewMs + hourMs,
+                        windowMs, maxInterpGapMs);
+                MatchHit altMinus = locateOnTrack(merged,
+                        photo.getShootTime().getTime() + batch.clockSkewMs - hourMs,
+                        windowMs, maxInterpGapMs);
+                if (altPlus != null && (hit == null || altPlus.deltaMs < hit.deltaMs)) {
+                    hit = altPlus;
+                }
+                if (altMinus != null && (hit == null || altMinus.deltaMs < hit.deltaMs)) {
+                    hit = altMinus;
+                }
+            }
             if (hit == null) {
                 continue;
             }
-            Map<String, Object> overlay = overlayByGpxId.get(hit.gpxId);
-            if (overlay == null) {
+            usedPhotos.add(photo.getPhotoId());
+            batch.hits.add(new MatchedMedia(photo, hit));
+        }
+
+        // 2) 时段内且 GPS 靠近轨迹：补上精匹配漏掉的，并挂到 GPX 坐标显示
+        long padMs = Math.max(0, cfg.getExcludeCoverPadMinutes()) * 60L * 1000L;
+        double maxKm = Math.max(1.0, cfg.getExcludeNearTrackMeters()) / 1000.0;
+        long exploreWindowMs = Math.max(padMs, 2L * 3600L * 1000L);
+        List<long[]> spans = albumId == null ? java.util.Collections.<long[]>emptyList()
+                : listEnabledGpxTimeSpans(albumId, padMs);
+        if (spans.isEmpty() || maxKm <= 0) {
+            return batch;
+        }
+
+        for (BizPhoto photo : media) {
+            if (photo == null || photo.getPhotoId() == null || photo.getShootTime() == null) {
                 continue;
             }
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> matchedPhotos = (List<Map<String, Object>>) overlay.get("matchedPhotos");
-            matchedPhotos.add(toMatchedPhoto(photo, hit.sample));
+            if (usedPhotos.contains(photo.getPhotoId())) {
+                continue;
+            }
+            if (photo.getLatitude() == null || photo.getLongitude() == null) {
+                continue;
+            }
+
+            long shootMs = photo.getShootTime().getTime();
+            long hourMs = cfg.getTimeOffsetHours() * 3600L * 1000L;
+            long[] candidates = hourMs == 0L
+                    ? new long[]{shootMs + batch.clockSkewMs}
+                    : new long[]{
+                    shootMs + batch.clockSkewMs,
+                    shootMs + batch.clockSkewMs + hourMs,
+                    shootMs + batch.clockSkewMs - hourMs
+            };
+
+            boolean inSpan = false;
+            for (long cand : candidates) {
+                if (inAnySpan(cand, spans)) {
+                    inSpan = true;
+                    break;
+                }
+            }
+            if (!inSpan) {
+                continue;
+            }
+
+            TimedSample near = null;
+            long bestDiff = Long.MAX_VALUE;
+            for (long cand : candidates) {
+                TimedSample n = nearestSample(merged, cand, exploreWindowMs);
+                if (n == null) {
+                    continue;
+                }
+                long d = Math.abs(n.sample.timeMs - cand);
+                if (d < bestDiff) {
+                    bestDiff = d;
+                    near = n;
+                }
+            }
+            if (near == null) {
+                continue;
+            }
+            double distKm = GeoDistanceUtils.haversineKm(
+                    photo.getLatitude().doubleValue(), photo.getLongitude().doubleValue(),
+                    near.sample.latWgs, near.sample.lngWgs);
+            if (distKm > maxKm) {
+                continue;
+            }
+            // 靠近轨迹：挂到最近 GPX 点（或尝试插值）
+            MatchHit hit = locateOnTrack(merged, near.sample.timeMs, windowMs, maxInterpGapMs);
+            if (hit == null) {
+                hit = new MatchHit(near.gpxId, near.sample.latWgs, near.sample.lngWgs, near.sample.ele,
+                        near.sample.timeMs, bestDiff, false);
+            }
             usedPhotos.add(photo.getPhotoId());
-            matched++;
+            batch.hits.add(new MatchedMedia(photo, hit));
         }
-        log.debug("GPX 叠层匹配相册媒体 albumId={} overlays={} matched={}", albumId, overlays.size(), matched);
-        return overlays;
+        return batch;
+    }
+
+    private static final class MatchBatch {
+        private long clockSkewMs;
+        private final List<MatchedMedia> hits = new ArrayList<MatchedMedia>();
+    }
+
+    private static final class MatchedMedia {
+        private final BizPhoto photo;
+        private final MatchHit hit;
+
+        private MatchedMedia(BizPhoto photo, MatchHit hit) {
+            this.photo = photo;
+            this.hit = hit;
+        }
+    }
+
+    private long resolveGpxTimeOffsetMs() {
+        return resolveGpxTimeOffsetMs(albumProperties.getGpx());
+    }
+
+    private static long resolveGpxTimeOffsetMs(AlbumProperties.GpxConfig cfg) {
+        if (cfg == null) {
+            return 8L * 3600L * 1000L;
+        }
+        return cfg.getTimeOffsetHours() * 3600L * 1000L + cfg.getTimeOffsetSeconds() * 1000L;
     }
 
     private List<BizPhoto> listAlbumMedia(Long albumId) {
@@ -690,18 +920,20 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         return list == null ? new ArrayList<BizPhoto>() : list;
     }
 
-    private Map<String, Object> toMatchedPhoto(BizPhoto photo, GpxSample sample) {
+    private Map<String, Object> toMatchedPhoto(BizPhoto photo, MatchHit hit) {
         Map<String, Object> m = new HashMap<String, Object>();
         m.put("photoId", photo.getPhotoId());
         // 使用 GPX 坐标（WGS84），前端 toMapLatLng 再转 GCJ
-        m.put("latitude", sample.latWgs);
-        m.put("longitude", sample.lngWgs);
+        m.put("latitude", hit.latWgs);
+        m.put("longitude", hit.lngWgs);
         m.put("pointTime", photo.getShootTime());
         m.put("shootTime", photo.getShootTime());
-        m.put("gpxTime", GpxParseUtils.toDate(sample.timeMs));
-        m.put("matchDeltaSec", Math.abs(photo.getShootTime().getTime() - sample.timeMs) / 1000L);
-        if (sample.ele != null) {
-            m.put("altitude", sample.ele);
+        m.put("gpxTime", GpxParseUtils.toDate(hit.gpxTimeMs));
+        // 保留一位小数秒，便于前端展示对齐精度
+        m.put("matchDeltaSec", Math.round(hit.deltaMs / 100.0) / 10.0);
+        m.put("interpolated", hit.interpolated);
+        if (hit.ele != null) {
+            m.put("altitude", hit.ele);
         }
         m.put("fileType", photo.getFileType());
         m.put("fileName", photo.getFileName());
@@ -713,20 +945,121 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         return m;
     }
 
-    private static TimedSample nearest(List<TimedSample> samples, long timeMs, long windowMs) {
+    /**
+     * 用带设备 GPS 且空间上靠近 GPX 的媒体估计拍摄时钟相对 GPX 的中位差。
+     * 返回值加到 shootTime 上后再与 GPX 比较。
+     */
+    private long estimateClockSkewMs(List<BizPhoto> media, List<TimedSample> merged,
+                                     AlbumProperties.GpxConfig cfg) {
+        if (!cfg.isAutoClockSkew() || media == null || media.isEmpty() || merged == null || merged.isEmpty()) {
+            return 0L;
+        }
+        long exploreWindowMs = Math.max(60_000L, cfg.getMaxClockSkewSeconds() * 1000L);
+        double maxKm = Math.max(1.0, cfg.getSkewAnchorMaxMeters()) / 1000.0;
+        List<Long> deltas = new ArrayList<Long>();
+        for (BizPhoto photo : media) {
+            if (!PhotoLocationSource.isAuthoritativeGps(photo) || photo.getShootTime() == null) {
+                continue;
+            }
+            long shootMs = photo.getShootTime().getTime();
+            long videoOffsetMs = 0L;
+            TimedSample near = nearestSample(merged, shootMs, exploreWindowMs);
+            if (near == null
+                    && photo.getFileType() != null && photo.getFileType() == 2
+                    && cfg.getTimeOffsetHours() != 0) {
+                videoOffsetMs = cfg.getTimeOffsetHours() * 3600L * 1000L;
+                near = nearestSample(merged, shootMs + videoOffsetMs, exploreWindowMs);
+            }
+            if (near == null) {
+                continue;
+            }
+            double distKm = GeoDistanceUtils.haversineKm(
+                    photo.getLatitude().doubleValue(), photo.getLongitude().doubleValue(),
+                    near.sample.latWgs, near.sample.lngWgs);
+            if (distKm > maxKm) {
+                continue;
+            }
+            // 相对已对齐到 GPX 时间轴的拍摄时间估计钟差
+            deltas.add(near.sample.timeMs - (shootMs + videoOffsetMs));
+        }
+        if (deltas.size() < 2) {
+            return 0L;
+        }
+        Collections.sort(deltas);
+        long median = deltas.get(deltas.size() / 2);
+        long maxSkewMs = Math.max(1, cfg.getMaxClockSkewSeconds()) * 1000L;
+        if (Math.abs(median) > maxSkewMs) {
+            log.debug("GPX 钟差估计超限 medianMs={} maxMs={} anchors={}", median, maxSkewMs, deltas.size());
+            return 0L;
+        }
+        return median;
+    }
+
+    /**
+     * 在轨迹上按时间定位：优先在相邻同文件采样点间插值，否则吸附最近采样点。
+     */
+    private static MatchHit locateOnTrack(List<TimedSample> samples, long timeMs,
+                                          long windowMs, long maxInterpGapMs) {
         if (samples == null || samples.isEmpty()) {
             return null;
         }
-        int lo = 0;
-        int hi = samples.size() - 1;
-        while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (samples.get(mid).sample.timeMs < timeMs) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
+        int lo = lowerBound(samples, timeMs);
+        TimedSample curr = samples.get(lo);
+        TimedSample prev = lo > 0 ? samples.get(lo - 1) : null;
+
+        // 优先：落在同一 GPX 文件相邻点之间 → 时间线性插值
+        if (prev != null
+                && Objects.equals(prev.gpxId, curr.gpxId)
+                && prev.sample.timeMs <= timeMs
+                && timeMs <= curr.sample.timeMs) {
+            long gap = curr.sample.timeMs - prev.sample.timeMs;
+            if (gap > 0 && gap <= maxInterpGapMs) {
+                double ratio = (timeMs - prev.sample.timeMs) / (double) gap;
+                double lat = prev.sample.latWgs + (curr.sample.latWgs - prev.sample.latWgs) * ratio;
+                double lng = prev.sample.lngWgs + (curr.sample.lngWgs - prev.sample.lngWgs) * ratio;
+                Double ele = null;
+                if (prev.sample.ele != null && curr.sample.ele != null) {
+                    ele = prev.sample.ele + (curr.sample.ele - prev.sample.ele) * ratio;
+                } else if (prev.sample.ele != null) {
+                    ele = prev.sample.ele;
+                } else if (curr.sample.ele != null) {
+                    ele = curr.sample.ele;
+                }
+                long delta = Math.min(timeMs - prev.sample.timeMs, curr.sample.timeMs - timeMs);
+                return new MatchHit(prev.gpxId, lat, lng, ele, timeMs, delta, true);
             }
         }
+
+        // 回退：吸附最近采样点（含 lo / lo-1 / lo+1）
+        TimedSample best = curr;
+        long bestDiff = Math.abs(curr.sample.timeMs - timeMs);
+        if (prev != null) {
+            long d = Math.abs(prev.sample.timeMs - timeMs);
+            if (d < bestDiff) {
+                best = prev;
+                bestDiff = d;
+            }
+        }
+        if (lo + 1 < samples.size()) {
+            TimedSample next = samples.get(lo + 1);
+            long d = Math.abs(next.sample.timeMs - timeMs);
+            if (d < bestDiff) {
+                best = next;
+                bestDiff = d;
+            }
+        }
+        if (bestDiff > windowMs) {
+            return null;
+        }
+        return new MatchHit(best.gpxId, best.sample.latWgs, best.sample.lngWgs, best.sample.ele,
+                best.sample.timeMs, bestDiff, false);
+    }
+
+    private static TimedSample nearestSample(List<TimedSample> samples, long timeMs, long windowMs) {
+        if (samples == null || samples.isEmpty()) {
+            return null;
+        }
+        int lo = lowerBound(samples, timeMs);
         TimedSample best = samples.get(lo);
         long bestDiff = Math.abs(best.sample.timeMs - timeMs);
         if (lo > 0) {
@@ -748,6 +1081,21 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         return bestDiff <= windowMs ? best : null;
     }
 
+    /** 第一个 timeMs >= target 的下标；若全部更小则返回 last */
+    private static int lowerBound(List<TimedSample> samples, long timeMs) {
+        int lo = 0;
+        int hi = samples.size() - 1;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (samples.get(mid).sample.timeMs < timeMs) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
     private static final class TimedSample {
         private final Long gpxId;
         private final GpxSample sample;
@@ -758,14 +1106,67 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         }
     }
 
+    private static final class MatchHit {
+        private final Long gpxId;
+        private final double latWgs;
+        private final double lngWgs;
+        private final Double ele;
+        private final long gpxTimeMs;
+        private final long deltaMs;
+        private final boolean interpolated;
+
+        private MatchHit(Long gpxId, double latWgs, double lngWgs, Double ele,
+                         long gpxTimeMs, long deltaMs, boolean interpolated) {
+            this.gpxId = gpxId;
+            this.latWgs = latWgs;
+            this.lngWgs = lngWgs;
+            this.ele = ele;
+            this.gpxTimeMs = gpxTimeMs;
+            this.deltaMs = deltaMs;
+            this.interpolated = interpolated;
+        }
+    }
+
     private BizTrack syncAlbumAfterGpxChange(Long albumId) {
         if (albumId == null) {
             return null;
         }
         reclaimMislabeledTracks(albumId);
         cleanupDedicatedGpxTracks(albumId);
-        ensurePhotoTrack(albumId);
-        return findPhotoTrack(albumId);
+        // GPX 增删/启停后必须刷新照片轨，把已匹配媒体从照片轨剔除（或重新纳入）
+        return refreshPhotoTrack(albumId);
+    }
+
+    private void softDeleteGpxTrack(BizTrack track) {
+        trackPointService.remove(new LambdaQueryWrapper<BizTrackPoint>()
+                .eq(BizTrackPoint::getTrackId, track.getTrackId()));
+        track.setDeleted(1);
+        track.setUpdateTime(new Date());
+        trackService.updateById(track);
+    }
+
+    private BizTrack refreshPhotoTrack(Long albumId) {
+        try {
+            BizTrack restored = trackService.autoSyncAlbumTrack(albumId);
+            if (restored != null) {
+                log.info("已按 GPX 匹配结果刷新照片轨迹 albumId={} trackId={}", albumId, restored.getTrackId());
+            }
+            return restored != null ? restored : findPhotoTrack(albumId);
+        } catch (Exception e) {
+            log.warn("刷新照片轨迹失败 albumId={}", albumId, e);
+            return findPhotoTrack(albumId);
+        }
+    }
+
+    private BizTrack findPhotoTrack(Long albumId) {
+        return trackService.getOne(new LambdaQueryWrapper<BizTrack>()
+                .eq(BizTrack::getAlbumId, albumId)
+                .eq(BizTrack::getDeleted, 0)
+                .and(w -> w.isNull(BizTrack::getSourceType)
+                        .or().eq(BizTrack::getSourceType, "")
+                        .or().eq(BizTrack::getSourceType, "photo"))
+                .orderByAsc(BizTrack::getTrackId)
+                .last("LIMIT 1"), false);
     }
 
     private void reclaimMislabeledTracks(Long albumId) {
@@ -830,40 +1231,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         return true;
     }
 
-    private void softDeleteGpxTrack(BizTrack track) {
-        trackPointService.remove(new LambdaQueryWrapper<BizTrackPoint>()
-                .eq(BizTrackPoint::getTrackId, track.getTrackId()));
-        track.setDeleted(1);
-        track.setUpdateTime(new Date());
-        trackService.updateById(track);
-    }
-
-    private void ensurePhotoTrack(Long albumId) {
-        if (findPhotoTrack(albumId) != null) {
-            return;
-        }
-        try {
-            BizTrack restored = trackService.autoSyncAlbumTrack(albumId);
-            if (restored != null) {
-                log.info("已自动补回照片轨迹 albumId={} trackId={}", albumId, restored.getTrackId());
-            }
-        } catch (Exception e) {
-            log.warn("自动补回照片轨迹失败 albumId={}", albumId, e);
-        }
-    }
-
-    private BizTrack findPhotoTrack(Long albumId) {
-        return trackService.getOne(new LambdaQueryWrapper<BizTrack>()
-                .eq(BizTrack::getAlbumId, albumId)
-                .eq(BizTrack::getDeleted, 0)
-                .and(w -> w.isNull(BizTrack::getSourceType)
-                        .or().eq(BizTrack::getSourceType, "")
-                        .or().eq(BizTrack::getSourceType, "photo"))
-                .orderByAsc(BizTrack::getTrackId)
-                .last("LIMIT 1"), false);
-    }
-
-    private List<GpxSample> loadSamples(BizTrackGpxFile f, int offsetHours) {
+    private List<GpxSample> loadSamples(BizTrackGpxFile f, long offsetMs) {
         if (f == null || StringUtils.isEmpty(f.getStoragePath())) {
             return new ArrayList<GpxSample>();
         }
@@ -873,7 +1241,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             return new ArrayList<GpxSample>();
         }
         try (InputStream in = new FileInputStream(file)) {
-            List<GpxSample> samples = GpxParseUtils.parse(in, offsetHours);
+            List<GpxSample> samples = GpxParseUtils.parse(in, offsetMs);
             samples.sort(Comparator.comparingLong(s -> s.timeMs));
             // 仅去掉连续完全重合点，不做间距抽稀，保证轨迹点一一对应
             return dedupeExact(samples);

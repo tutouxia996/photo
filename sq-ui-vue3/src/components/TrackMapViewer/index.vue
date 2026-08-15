@@ -6,16 +6,18 @@
       :show-polyline="trackLineVisible"
       :polyline-color="track?.trackColor || '#3B82F6'"
       :segment-by-travel-mode="true"
-      :show-direction="trackLineVisible && !customOpen"
-      :editable="editable && editing && !customOpen"
-      :active-segment-index="editing && !customOpen ? activeIndex : -1"
-      :path-edit-index="editing && !customOpen ? activeIndex : -1"
+      :show-direction="trackLineVisible && !editing && !customOpen && !boxSelectMode"
+      :editable="editable && editing && !customOpen && !boxSelectMode"
+      :active-segment-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
+      :path-edit-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
       :segment-labels="editing ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
       :overlay-paths="localGpxOverlays"
       :visible-travel-modes="visibleTravelModes"
       :gpx-endpoint-pickable="editing && customOpen && customTab === 'place'"
       :point-pickable="editing && customOpen && customTab === 'place'"
+      :box-select-active="editing && boxSelectMode"
+      :selected-segment-indexes="selectedSegmentIndexes"
       :auto-fit="!editing"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
@@ -24,6 +26,7 @@
       @point-click="onTrackPointPick"
       @gpx-click="onGpxClick"
       @gpx-endpoint-click="onGpxEndpointClick"
+      @box-select="onBoxSelect"
     >
       <template #meta>
         <div v-if="track && trackLineVisible" class="track-meta" :class="{ 'is-open': metaOpen }">
@@ -37,7 +40,7 @@
                 size="small"
                 :loading="replanning"
                 :disabled="editing"
-                title="仅对照片点之间缺折线的路段贴合；已有手动连接（含自定义）会保留；不影响 GPX"
+                title="仅对照片轨点之间缺折线的路段贴合；已匹配 GPX 的媒体不会进照片轨；已有手动连接会保留；不影响 GPX"
                 @click="replanRoutes"
               >贴合路网</el-button>
               <template v-if="editable">
@@ -49,6 +52,12 @@
                   @click="startEdit"
                 >编辑轨迹</el-button>
                 <template v-else>
+                  <el-button
+                    size="small"
+                    :type="boxSelectMode ? 'warning' : 'default'"
+                    title="拖拽框选多段路，批量改出行方式并贴合路网"
+                    @click="toggleBoxSelect"
+                  >{{ boxSelectMode ? '退出框选' : '框选' }}</el-button>
                   <el-button size="small" :type="customOpen ? 'warning' : 'default'" @click="toggleCustomPanel">增补路段</el-button>
                   <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
                   <el-button size="small" :disabled="saving" @click="cancelEdit">取消</el-button>
@@ -68,7 +77,8 @@
               <span class="dir-flow">→ 行进方向 →</span>
               <span class="dir-end">终</span>
             </div>
-            <p v-if="editing" class="edit-tip">点线路改走向；点橙色途经点可改说明或删除自定义路段。增补时可选用 GPX 起/终或照片点做连接（不改 GPX 折线）。</p>
+            <p v-if="editing && boxSelectMode" class="edit-tip">在地图上按住拖拽拉框，选中橙色高亮路段后可批量改出行方式并贴合路网。蓝虚线表示尚未贴合。</p>
+            <p v-else-if="editing" class="edit-tip">点线路改走向；可用「框选」批量修改。点橙色途经点可改说明或删除自定义路段。增补时可选用 GPX 起/终或照片点做连接（不改 GPX 折线）。</p>
             <p v-else-if="hasGpxPathOverlay" class="edit-tip">彩色 GPX 线路按出行方式着色（与照片轨一致）；点击线路可查看详情并修改出行方式。</p>
           </div>
         </div>
@@ -455,7 +465,7 @@
       </div>
     </aside>
 
-    <aside v-if="editing && !customOpen && waypointIndex >= 0" class="seg-panel">
+    <aside v-if="editing && !customOpen && !boxSelectMode && waypointIndex >= 0" class="seg-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">途经点 #{{ waypointPoint?.sequence ?? (waypointIndex + 1) }}</div>
         <button type="button" class="seg-close" @click="closeWaypointPanel">×</button>
@@ -481,7 +491,42 @@
       </div>
     </aside>
 
-    <aside v-if="editing && !customOpen && waypointIndex < 0 && activeIndex >= 0" class="seg-panel">
+    <aside v-if="editing && boxSelectMode" class="seg-panel" @mousedown.stop @click.stop>
+      <div class="seg-panel-hd">
+        <div class="seg-panel-title">框选批量修改</div>
+        <button type="button" class="seg-close" @click="exitBoxSelect">×</button>
+      </div>
+      <p class="path-tip">已选 <b>{{ selectedSegmentIndexes.length }}</b> 段（橙色虚线=选中且未贴合）。选出行方式 → 贴合路网 → 保存。</p>
+      <div class="seg-label">出行方式</div>
+      <div class="mode-grid">
+        <button
+          v-for="m in travelModes"
+          :key="m.key"
+          type="button"
+          class="mode-btn"
+          :class="{ active: batchMode === m.key }"
+          :style="modeBtnStyle(m, batchMode)"
+          @click.stop="onPickBatchMode(m.key)"
+        >{{ m.label }}</button>
+      </div>
+      <div class="path-actions" style="margin-top: 10px">
+        <el-button
+          type="primary"
+          size="small"
+          :loading="batchPlanning"
+          :disabled="!selectedSegmentIndexes.length"
+          @click="applyBatchSnap"
+        >批量贴合路网</el-button>
+        <el-button size="small" :disabled="!selectedSegmentIndexes.length" @click="clearBoxSelection">清空选中</el-button>
+      </div>
+      <p v-if="batchHint" class="route-hint">{{ batchHint }}</p>
+      <div class="seg-panel-ft">
+        <el-button type="primary" :loading="saving || batchPlanning" @click="saveEdit">保存全部</el-button>
+        <el-button @click="exitBoxSelect">退出框选</el-button>
+      </div>
+    </aside>
+
+    <aside v-if="editing && !customOpen && !boxSelectMode && waypointIndex < 0 && activeIndex >= 0" class="seg-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">路段编辑 #{{ activeIndex + 1 }}</div>
         <button type="button" class="seg-close" @click="activeIndex = -1">×</button>
@@ -515,7 +560,7 @@
           type="button"
           class="mode-btn"
           :class="{ active: draftMode === m.key }"
-          :style="modeBtnStyle(m)"
+          :style="modeBtnStyle(m, draftMode)"
           @click="onPickMode(m.key)"
         >{{ m.label }}</button>
       </div>
@@ -589,6 +634,13 @@ const draftMode = ref('')
 const draftDesc = ref('')
 const routeHint = ref('')
 const travelModes = TRAVEL_MODES
+
+/** 框选批量 */
+const boxSelectMode = ref(false)
+const selectedSegmentIndexes = ref([])
+const batchMode = ref('walk')
+const batchPlanning = ref(false)
+const batchHint = ref('')
 
 const localGpxOverlays = ref([])
 watch(() => props.gpxOverlays, (list) => {
@@ -1050,6 +1102,7 @@ function toggleCustomPanel() {
   if (customOpen.value) {
     closeCustomPanel()
   } else {
+    exitBoxSelect(false)
     customOpen.value = true
     activeIndex.value = -1
     customTab.value = 'place'
@@ -1458,8 +1511,9 @@ async function submitTrainSegment() {
   }
 }
 
-function modeBtnStyle(m) {
-  if (draftMode.value === m.key) {
+function modeBtnStyle(m, current) {
+  const cur = current == null ? draftMode.value : current
+  if (cur === m.key) {
     return { background: m.color, borderColor: m.color, color: '#fff' }
   }
   return { borderColor: m.color, color: m.color }
@@ -1480,9 +1534,10 @@ function startEdit() {
   activeIndex.value = -1
   draftMode.value = ''
   draftDesc.value = ''
-  routeHint.value = '点击地图上的一段线路开始编辑'
+  routeHint.value = '点击地图上的一段线路开始编辑；或点「框选」批量修改'
   customOpen.value = false
   customPreviewPath.value = null
+  exitBoxSelect(false)
 }
 
 function cancelEdit() {
@@ -1494,6 +1549,152 @@ function cancelEdit() {
   routeHint.value = ''
   closeCustomPanel()
   closeWaypointPanel()
+  exitBoxSelect(false)
+}
+
+function toggleBoxSelect() {
+  if (!editing.value) return
+  if (boxSelectMode.value) {
+    exitBoxSelect()
+    return
+  }
+  customOpen.value = false
+  activeIndex.value = -1
+  waypointIndex.value = -1
+  boxSelectMode.value = true
+  selectedSegmentIndexes.value = []
+  batchHint.value = '在地图上拖拽拉框选中路段'
+}
+
+function exitBoxSelect(keepHint = true) {
+  boxSelectMode.value = false
+  selectedSegmentIndexes.value = []
+  batchPlanning.value = false
+  batchMode.value = ''
+  if (!keepHint) batchHint.value = ''
+}
+
+function clearBoxSelection() {
+  selectedSegmentIndexes.value = []
+  batchHint.value = '已清空选中'
+}
+
+function onPickBatchMode(key) {
+  const next = batchMode.value === key ? '' : key
+  batchMode.value = next
+  const indexes = selectedSegmentIndexes.value
+  if (!indexes.length) {
+    batchHint.value = next
+      ? '已选出行方式，请先在地图上框选路段，再点「批量贴合路网」'
+      : '已取消出行方式'
+    return
+  }
+  const label = travelModes.find(m => m.key === next)?.label || next
+  const nextPoints = draftPoints.value.map(p => ({ ...p }))
+  for (const i of indexes) {
+    const p = nextPoints[i]
+    if (!p) continue
+    p.travelMode = next
+    // 改方式后旧折线作废；未贴合前保持虚线，避免以为已生成路网
+    if (next) p.routePath = ''
+  }
+  draftPoints.value = nextPoints
+  batchHint.value = next
+    ? `已将 ${indexes.length} 段设为「${label}」。请点「批量贴合路网」生成实线路线，再保存`
+    : `已清空 ${indexes.length} 段出行方式`
+}
+
+function pointInBox(latlng, box) {
+  if (!latlng || !box) return false
+  const lat = Number(latlng[0])
+  const lng = Number(latlng[1])
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  return lat >= box.south && lat <= box.north && lng >= box.west && lng <= box.east
+}
+
+function onBoxSelect(box) {
+  if (!boxSelectMode.value || !box) return
+  const list = draftPoints.value
+  if (!list.length) return
+  const hit = []
+  for (let i = 0; i < list.length - 1; i++) {
+    const from = list[i]
+    const to = list[i + 1]
+    const a = toMapLatLng(from)
+    const b = toMapLatLng(to)
+    if (pointInBox(a, box) || pointInBox(b, box)) {
+      hit.push(i)
+      continue
+    }
+    if (a && b) {
+      const mid = [(Number(a[0]) + Number(b[0])) / 2, (Number(a[1]) + Number(b[1])) / 2]
+      if (pointInBox(mid, box)) hit.push(i)
+    }
+  }
+  selectedSegmentIndexes.value = hit
+  batchHint.value = hit.length
+    ? `已选中 ${hit.length} 段，可设置出行方式后点「批量贴合路网」`
+    : '框内没有路段，请放大后重试'
+}
+
+async function applyBatchSnap() {
+  const indexes = selectedSegmentIndexes.value.slice()
+  if (!indexes.length) {
+    batchHint.value = '请先框选路段'
+    return
+  }
+  if (batchPlanning.value) return
+  const mode = batchMode.value || 'walk'
+  batchPlanning.value = true
+  batchHint.value = `正在批量贴合（0/${indexes.length}）…`
+  let ok = 0
+  let fail = 0
+  // 在副本上改，避免每段都触发地图 deep watch 重绘闪烁
+  const nextPoints = draftPoints.value.map(p => ({ ...p }))
+  try {
+    for (let n = 0; n < indexes.length; n++) {
+      const i = indexes[n]
+      const p = nextPoints[i]
+      const next = nextPoints[i + 1]
+      if (!p || !next) {
+        fail++
+        continue
+      }
+      p.travelMode = mode
+      try {
+        const res = await previewTrackRoute({
+          fromLat: p.latitude,
+          fromLng: p.longitude,
+          toLat: next.latitude,
+          toLng: next.longitude,
+          travelMode: mode
+        })
+        const data = res.data || {}
+        const path = data.path
+        const realSnap = Array.isArray(path) && path.length > 2
+          && !/未配置|webKey|回退直线|规划失败/i.test(String(data.message || ''))
+        p.routePath = Array.isArray(path) && path.length >= 2 ? JSON.stringify(path) : ''
+        if (realSnap) ok++
+        else fail++
+        if (/未配置|webKey/i.test(String(data.message || ''))) {
+          batchHint.value = String(data.message)
+        }
+      } catch (e) {
+        p.routePath = ''
+        fail++
+      }
+      if (n % 5 === 4 || n === indexes.length - 1) {
+        batchHint.value = `正在批量贴合（${n + 1}/${indexes.length}）…`
+      }
+    }
+    draftPoints.value = nextPoints
+    const keyFail = fail > 0 && fail === indexes.length
+    batchHint.value = `批量完成：成功 ${ok} 段` + (fail ? `，失败/直线 ${fail} 段` : '')
+      + (keyFail ? '。若全是直线，请检查后端 album.map.webKey 是否已加载并重启' : '')
+      + '。记得点「保存全部」'
+  } finally {
+    batchPlanning.value = false
+  }
 }
 
 function ensureDragHandle(index) {
@@ -1686,10 +1887,19 @@ async function snapSegment() {
         ? `${(Number(data.distanceMeters) / 1000).toFixed(2)} km`
         : `${Math.round(Number(data.distanceMeters))} m`)
       : ''
+    const pathPts = Array.isArray(data.path) ? data.path.length : 0
+    const keyHint = /未配置|webKey|Key/i.test(String(data.message || ''))
+      ? '（请确认后端已加载 album.map.webKey，并重启服务）'
+      : ''
+    const straightHint = p.routePath && pathPts <= 2
+      ? '当前仅为直线，高德未返回沿路折线'
+      : ''
     routeHint.value = [
       p.routePath ? '已贴合路网，可再拖动微调' : '未拿到折线，暂用直线',
       dist ? `约 ${dist}` : '',
-      data.message || ''
+      straightHint,
+      data.message || '',
+      keyHint
     ].filter(Boolean).join(' · ')
     draftPoints.value = [...draftPoints.value]
   } catch (e) {
@@ -1729,12 +1939,28 @@ function clearSegment() {
   draftPoints.value = [...draftPoints.value]
 }
 
-function saveEdit() {
+async function saveEdit() {
   if (!draftPoints.value.length) {
     cancelEdit()
     return
   }
   applyDescription()
+
+  // 框选后只点了出行方式、未贴合就保存：先自动贴合，避免落库仍是直线虚线
+  if (boxSelectMode.value && selectedSegmentIndexes.value.length) {
+    const needSnap = selectedSegmentIndexes.value.some((i) => {
+      const p = draftPoints.value[i]
+      return p && p.travelMode && !String(p.routePath || '').trim()
+    })
+    if (needSnap) {
+      if (!batchMode.value) {
+        const first = draftPoints.value[selectedSegmentIndexes.value[0]]
+        batchMode.value = first?.travelMode || 'walk'
+      }
+      await applyBatchSnap()
+    }
+  }
+
   saving.value = true
   const payload = draftPoints.value.map(p => ({
     pointId: p.pointId,
@@ -1743,14 +1969,17 @@ function saveEdit() {
     routePath: p.routePath ?? '',
     sequence: p.sequence
   }))
-  updateTrackPoints(payload).then(() => {
+  try {
+    await updateTrackPoints(payload)
     proxy?.$modal?.msgSuccess?.('轨迹路段已保存')
     editing.value = false
     activeIndex.value = -1
+    // 必须清掉框选高亮，否则保存后仍显示橙色虚线
+    exitBoxSelect(false)
     emit('saved')
-  }).finally(() => {
+  } finally {
     saving.value = false
-  })
+  }
 }
 
 function refresh() {
@@ -1969,7 +2198,8 @@ defineExpose({ refresh, startEdit })
 
 .seg-panel {
   position: absolute;
-  z-index: 600;
+  z-index: 1200;
+  pointer-events: auto;
   top: 72px;
   right: 16px;
   width: min(360px, calc(100% - 32px));

@@ -34,22 +34,34 @@ public final class GpxParseUtils {
         public final Integer sat;
         /** 原始 time 文本（未做时区偏移） */
         public final String rawTime;
+        /** false=无 &lt;time&gt; 时合成的时间，不参与媒体匹配 */
+        public final boolean hasRealTime;
 
         public GpxSample(long timeMs, double latWgs, double lngWgs, Double ele) {
-            this(timeMs, latWgs, lngWgs, ele, null, null);
+            this(timeMs, latWgs, lngWgs, ele, null, null, true);
         }
 
         public GpxSample(long timeMs, double latWgs, double lngWgs, Double ele, Integer sat, String rawTime) {
+            this(timeMs, latWgs, lngWgs, ele, sat, rawTime, true);
+        }
+
+        public GpxSample(long timeMs, double latWgs, double lngWgs, Double ele, Integer sat, String rawTime,
+                         boolean hasRealTime) {
             this.timeMs = timeMs;
             this.latWgs = latWgs;
             this.lngWgs = lngWgs;
             this.ele = ele;
             this.sat = sat;
             this.rawTime = rawTime;
+            this.hasRealTime = hasRealTime;
         }
     }
 
     public static List<GpxSample> parse(InputStream in, int timeOffsetHours) {
+        return parse(in, timeOffsetHours * 3600L * 1000L);
+    }
+
+    public static List<GpxSample> parse(InputStream in, long timeOffsetMs) {
         if (in == null) {
             return Collections.emptyList();
         }
@@ -61,15 +73,15 @@ public final class GpxParseUtils {
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
             Document doc = factory.newDocumentBuilder().parse(in);
             List<GpxSample> list = new ArrayList<GpxSample>();
-            collectPoints(doc.getElementsByTagNameNS("*", "trkpt"), list, timeOffsetHours);
+            collectPoints(doc.getElementsByTagNameNS("*", "trkpt"), list, timeOffsetMs);
             if (list.isEmpty()) {
-                collectPoints(doc.getElementsByTagName("trkpt"), list, timeOffsetHours);
+                collectPoints(doc.getElementsByTagName("trkpt"), list, timeOffsetMs);
             }
             if (list.isEmpty()) {
-                collectPoints(doc.getElementsByTagNameNS("*", "rtept"), list, timeOffsetHours);
+                collectPoints(doc.getElementsByTagNameNS("*", "rtept"), list, timeOffsetMs);
             }
             if (list.isEmpty()) {
-                collectPoints(doc.getElementsByTagName("rtept"), list, timeOffsetHours);
+                collectPoints(doc.getElementsByTagName("rtept"), list, timeOffsetMs);
             }
             list.sort(Comparator.comparingLong(s -> s.timeMs));
             return list;
@@ -80,11 +92,10 @@ public final class GpxParseUtils {
         }
     }
 
-    private static void collectPoints(NodeList nodes, List<GpxSample> out, int timeOffsetHours) {
+    private static void collectPoints(NodeList nodes, List<GpxSample> out, long offsetMs) {
         if (nodes == null) {
             return;
         }
-        long offsetMs = timeOffsetHours * 3600L * 1000L;
         for (int i = 0; i < nodes.getLength(); i++) {
             if (!(nodes.item(i) instanceof Element)) {
                 continue;
@@ -108,14 +119,15 @@ public final class GpxParseUtils {
             if (timeText != null && !timeText.isEmpty()) {
                 timeMs = parseTimeMs(timeText);
             }
-            // 无时间也保留坐标点，按序号回填时间，避免折线丢点
+            boolean hasRealTime = timeMs != null;
+            // 无时间也保留坐标点，按序号回填时间，避免折线丢点（合成时间不参与媒体匹配）
             if (timeMs == null) {
                 timeMs = out.isEmpty() ? 0L : out.get(out.size() - 1).timeMs + 1000L;
                 timeMs = timeMs - offsetMs; // 后面统一加 offset
             }
             Double ele = parseDoubleChild(el, "ele");
             Integer sat = parseIntChild(el, "sat");
-            out.add(new GpxSample(timeMs + offsetMs, lat, lon, ele, sat, timeText));
+            out.add(new GpxSample(timeMs + offsetMs, lat, lon, ele, sat, timeText, hasRealTime));
         }
     }
 

@@ -45,6 +45,12 @@ public interface IBizTrackGpxFileService extends IService<BizTrackGpxFile> {
     List<Map<String, Object>> listOverlays(Long albumId);
 
     /**
+     * 与启用中 GPX 对应上、应从照片轨排除的媒体 ID。
+     * 含：精时间匹配；以及「落在 GPX 时段内且设备 GPS 靠近轨迹」。
+     */
+    java.util.Set<Long> listMatchedPhotoIds(Long albumId);
+
+    /**
      * 按轨迹的 gpxEnabled 决定是否返回 GPX 折线；
      * 关闭时仍返回 matchedPhotos（不返回 path），地图只隐藏线路、保留照片。
      */

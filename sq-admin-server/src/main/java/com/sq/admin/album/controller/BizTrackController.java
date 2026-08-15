@@ -163,6 +163,21 @@ public class BizTrackController extends BaseController {
         if (track == null || track.getDeleted() != null && track.getDeleted() == 1) {
             return error("轨迹不存在或已删除");
         }
+        // 打开详情时：若相册有启用 GPX，先刷新照片轨，去掉已覆盖媒体，避免旧点位继续贴路网
+        if (track.getAlbumId() != null
+                && (track.getSourceType() == null
+                || track.getSourceType().isEmpty()
+                || "photo".equals(track.getSourceType()))) {
+            try {
+                BizTrack refreshed = trackService.autoSyncAlbumTrack(track.getAlbumId());
+                if (refreshed != null) {
+                    track = refreshed;
+                    trackId = refreshed.getTrackId();
+                }
+            } catch (Exception e) {
+                // 刷新失败仍返回原数据，避免详情打不开
+            }
+        }
         List<BizTrackPoint> points = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
                 .eq(BizTrackPoint::getTrackId, trackId)
                 .orderByAsc(BizTrackPoint::getSequence));
@@ -241,8 +256,13 @@ public class BizTrackController extends BaseController {
         if (track.getEnabled() != null) {
             db.setEnabled(track.getEnabled() == 1 ? 1 : 0);
         }
+        boolean gpxToggled = false;
+        Integer prevGpxEnabled = db.getGpxEnabled();
         if (track.getGpxEnabled() != null) {
             db.setGpxEnabled(track.getGpxEnabled() == 1 ? 1 : 0);
+            gpxToggled = !Objects.equals(
+                    prevGpxEnabled == null ? 1 : prevGpxEnabled,
+                    db.getGpxEnabled());
         }
         // 允许清空行程说明
         if (track.getRemark() != null) {
@@ -259,6 +279,14 @@ public class BizTrackController extends BaseController {
                 trackService.autoSyncAlbumTrack(db.getAlbumId());
             } catch (Exception ignored) {
                 // 开关已保存；无 GPS 时不同步即可
+            }
+        }
+        // 切换「启用GPX」后刷新照片轨：开启则排除匹配媒体，关闭则回落到自身 GPS
+        if (ok && gpxToggled && db.getAlbumId() != null) {
+            try {
+                trackService.autoSyncAlbumTrack(db.getAlbumId());
+            } catch (Exception ignored) {
+                // 开关已保存
             }
         }
         return toAjax(ok);
@@ -348,10 +376,11 @@ public class BizTrackController extends BaseController {
             if (modeChanged && !hasClientPath) {
                 // 出行方式变了且未带新折线 → 按新方式重规划（清空方式时会把折线置空）
                 refreshRoutePath(db);
+            } else if (hasClientPath) {
+                db.setRoutePath(item.getRoutePath().trim());
             } else if (item.getRoutePath() != null) {
-                // 前端预览/手动画线带回的折线（空串表示主动清空）
-                String rp = item.getRoutePath().trim();
-                db.setRoutePath(rp.isEmpty() ? null : rp);
+                // 显式空串：主动清空折线（如「改为直线」）
+                db.setRoutePath(null);
             } else if (modeChanged) {
                 refreshRoutePath(db);
             }

@@ -37,7 +37,9 @@ public final class ExifParseUtils {
             }
             ExifSubIFDDirectory subIfd = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
             if (subIfd != null) {
-                Date shootTime = subIfd.getDateOriginal();
+                // 仍用 DateTimeOriginal（本地墙钟），与 GPX timeOffsetHours 模型一致；
+                // 叠加 SubSecTimeOriginal 提升亚秒精度，便于与密集 GPX 采样对齐。
+                Date shootTime = parseDateOriginalWithSubSec(subIfd);
                 if (shootTime != null) {
                     info.setShootTime(shootTime);
                 }
@@ -79,6 +81,44 @@ public final class ExifParseUtils {
             // 解析失败不影响主流程，字段留空
         }
         return info;
+    }
+
+    /**
+     * DateTimeOriginal + SubSecTimeOriginal（若有），保持原有时区解释方式。
+     */
+    private static Date parseDateOriginalWithSubSec(ExifSubIFDDirectory subIfd) {
+        Date base = subIfd.getDateOriginal();
+        if (base == null) {
+            return null;
+        }
+        if (!subIfd.containsTag(ExifSubIFDDirectory.TAG_SUBSECOND_TIME_ORIGINAL)) {
+            return base;
+        }
+        try {
+            String sub = subIfd.getString(ExifSubIFDDirectory.TAG_SUBSECOND_TIME_ORIGINAL);
+            if (sub == null || sub.trim().isEmpty()) {
+                return base;
+            }
+            String digits = sub.trim().replaceAll("\\D", "");
+            if (digits.isEmpty()) {
+                return base;
+            }
+            // 取最多 3 位毫秒；不足右侧补 0
+            if (digits.length() > 3) {
+                digits = digits.substring(0, 3);
+            }
+            while (digits.length() < 3) {
+                digits = digits + "0";
+            }
+            int ms = Integer.parseInt(digits);
+            // getDateOriginal 通常已是整秒；若已有毫秒则不再叠加
+            if (base.getTime() % 1000L != 0L) {
+                return base;
+            }
+            return new Date(base.getTime() + ms);
+        } catch (Exception ignored) {
+            return base;
+        }
     }
 
     private static String normalizeShutter(String raw) {

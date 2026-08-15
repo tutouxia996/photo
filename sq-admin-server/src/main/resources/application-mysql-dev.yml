@@ -1,5 +1,8 @@
 # 数据源配置
 spring:
+    # 无论 IDEA 是否只开 mysql-dev，都尝试加载本地密钥（无文件则跳过）
+    config:
+        import: optional:classpath:application-local.yml
     datasource:
         type: com.alibaba.druid.pool.DruidDataSource
         driverClassName: com.mysql.cj.jdbc.Driver
@@ -96,4 +99,5 @@ knife4j:
 
 # 高德 Key 勿写入本文件（会进 Git）。任选其一：
 # 1) 环境变量 AMAP_WEB_KEY / AMAP_JS_KEY
-# 2) 复制 application-local.yml.example -> application-local.yml（已 gitignore），并设置 spring.profiles.active=mysql-dev,local
+# 2) 复制 application-local.yml.example -> application-local.yml（已 gitignore；mysql-dev 会自动 optional import）
+# 3) 启动参数加 local：-Dspring.profiles.active=mysql-dev,local

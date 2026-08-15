@@ -49,6 +49,21 @@ public class TrackRouteResolveService {
         if (track == null || track.getDeleted() != null && track.getDeleted() == 1) {
             throw new ServiceException("轨迹不存在或已删除");
         }
+        // 贴合前先按 GPX 匹配结果刷新照片轨，去掉已挂在 GPX 上的点，避免重复画路网折线
+        if (track.getAlbumId() != null
+                && (track.getSourceType() == null
+                || track.getSourceType().isEmpty()
+                || "photo".equals(track.getSourceType()))) {
+            try {
+                BizTrack refreshed = trackService.autoSyncAlbumTrack(track.getAlbumId());
+                if (refreshed != null) {
+                    track = refreshed;
+                    trackId = refreshed.getTrackId();
+                }
+            } catch (Exception e) {
+                log.warn("贴合路网前刷新照片轨失败 trackId={} albumId={}", trackId, track.getAlbumId(), e);
+            }
+        }
         List<BizTrackPoint> points = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
                 .eq(BizTrackPoint::getTrackId, trackId)
                 .orderByAsc(BizTrackPoint::getSequence)

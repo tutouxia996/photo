@@ -37,7 +37,8 @@ spring:
     # 国际化资源文件路径
     basename: i18n/messages
   profiles:
-    active: mysql-dev
+    # local：加载 gitignore 的 application-local.yml（高德 webKey 等）；无该文件也不影响启动
+    active: mysql-dev,local
   # 自动加载本地密钥文件（若不存在则忽略）；勿把 application-local.yml 提交到 Git
   config:
     import: optional:classpath:application-local.yml
@@ -157,14 +158,27 @@ album:
       queryUrl: https://apis.juhe.cn/fapigw/train/query
       detailUrl: https://apis.juhe.cn/train/s
   gpx:
-    # 媒体与 GPX 时间匹配窗口（秒）；默认 10 秒内才挂到 GPX 点上
+    # 吸附最近采样点时的最大时间差（秒）；落在相邻点之间时优先时间插值
     matchWindowSeconds: 10
-    # GPSLogger 导出 GPX 为 UTC（界面「本地时区」只影响显示）；中国照片 EXIF 多为本地时间，默认 +8
+    # GPSLogger 导出 GPX 为 UTC；中国照片 EXIF 多为本地时间，默认 +8
     timeOffsetHours: 8
+    # 秒级精细偏移（可负），总偏移 = hours*3600 + seconds
+    timeOffsetSeconds: 0
+    # 用带设备 GPS 且靠近轨迹的媒体自动估计剩余钟差
+    autoClockSkew: true
+    maxClockSkewSeconds: 900
+    skewAnchorMaxMeters: 200
+    # 相邻采样间隔不超过该秒数时，按拍摄时间在两点间插值坐标
+    maxInterpGapSeconds: 120
     # 0 = 不抽稀，地图展示保留 GPX 全部点位以保证轨迹准确
     simplifyMinMeters: 0
     # 0 = 不限制点数
     maxPathPoints: 0
+    # 已匹配 GPX 的媒体不进照片轨，避免贴合路网重复画线
+    excludeMatchedFromPhotoTrack: true
+    # 拍摄时间落在 GPX 时段±该分钟，且 GPS 靠近轨迹时也排除
+    excludeCoverPadMinutes: 60
+    excludeNearTrackMeters: 300
   # 无设备 GPS 时：用同相册权威坐标按拍摄时间插值（默认不进主轨迹/地图）
   fallbackLocation:
     enabled: true

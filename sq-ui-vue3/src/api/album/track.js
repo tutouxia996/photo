@@ -22,7 +22,15 @@ export function updateTrackPoints(points) {
 
 /** 预览按出行方式规划的真实路线 */
 export function previewTrackRoute(data) {
-  return request({ url: '/album/track/route/preview', method: 'post', data })
+  return request({
+    url: '/album/track/route/preview',
+    method: 'post',
+    data,
+    timeout: 60000,
+    // 批量贴合会连续请求同一接口，需关闭防重复提交与全局 loading，避免刷屏/闪烁
+    headers: { repeatSubmit: false },
+    showActionLoading: false
+  })
 }
 
 /** 按照片坐标批量贴合路网；strategy=photo 会修复错误的公交/高铁绕路 */

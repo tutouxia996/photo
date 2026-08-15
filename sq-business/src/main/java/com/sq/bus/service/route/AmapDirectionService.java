@@ -38,6 +38,17 @@ public class AmapDirectionService {
     @Autowired
     private OsmRailwayRouteService osmRailwayRouteService;
 
+    @javax.annotation.PostConstruct
+    public void logKeyStatus() {
+        String key = webKey();
+        if (StringUtils.isEmpty(key)) {
+            log.warn("album.map.webKey 未配置：路径规划只能回退直线。请配置环境变量 AMAP_WEB_KEY，或提供 application-local.yml");
+        } else {
+            String mask = key.length() <= 8 ? "****" : key.substring(0, 4) + "****" + key.substring(key.length() - 4);
+            log.info("album.map.webKey 已加载（{}）", mask);
+        }
+    }
+
     /**
      * @param fromLatWgs 起点纬度（WGS84）
      * @param fromLngWgs 起点经度（WGS84）

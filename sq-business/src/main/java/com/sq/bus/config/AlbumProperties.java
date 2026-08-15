@@ -78,17 +78,51 @@ public class AlbumProperties {
 
     @Data
     public static class GpxConfig {
-        /** 媒体拍摄时间与 GPX 点匹配窗口（秒） */
+        /**
+         * 媒体拍摄时间与最近 GPX 采样点的最大时间差（秒）。
+         * 落在相邻采样点之间时优先按时间插值，不受此窗口限制（见 maxInterpGapSeconds）。
+         */
         private int matchWindowSeconds = 10;
         /**
          * 将 GPX 时间（多为 UTC）平移到与 EXIF 本地时间对齐的小时数。
          * 中国常见为 8；若录制设备与照片时区已一致可设 0。
          */
         private int timeOffsetHours = 8;
+        /**
+         * 在 timeOffsetHours 之外的精细秒级平移（可正可负），用于校准设备钟差。
+         * 总偏移 = hours*3600 + seconds。
+         */
+        private int timeOffsetSeconds = 0;
+        /**
+         * 是否用「带设备 GPS 且靠近 GPX」的媒体自动估计剩余钟差（秒级）。
+         * 可修正手机与 GPS 记录仪之间的漂移。
+         */
+        private boolean autoClockSkew = true;
+        /** 自动钟差绝对值上限（秒），超出则忽略估计值 */
+        private int maxClockSkewSeconds = 900;
+        /** 作为钟差锚点时，媒体 GPS 与最近 GPX 点的最大距离（米） */
+        private double skewAnchorMaxMeters = 200;
+        /**
+         * 相邻 GPX 采样点时间间隔不超过该值（秒）时，按拍摄时间在两点间线性插值坐标。
+         * 比「吸附到最近采样点」更贴近真实位置。
+         */
+        private int maxInterpGapSeconds = 120;
         /** 抽稀：相邻保留点最小间距（米）；0 表示不按距离抽稀，保留全部点 */
         private double simplifyMinMeters = 0;
         /** 单段折线最大点数；0 或负数表示不限制，保留全部点 */
         private int maxPathPoints = 0;
+        /**
+         * 已与启用 GPX 对应上的媒体不再写入照片轨，
+         * 避免「贴合路网」在 GPX 覆盖段再画一条重复折线。
+         */
+        private boolean excludeMatchedFromPhotoTrack = true;
+        /**
+         * 照片轨排除：拍摄时间落在 GPX [start,end] 外扩该分钟数内，
+         * 且设备 GPS 靠近轨迹时也排除（解决时区导致精匹配失败但仍在 GPX 附近的情况）。
+         */
+        private int excludeCoverPadMinutes = 60;
+        /** 判定「靠近 GPX」的最大距离（米） */
+        private double excludeNearTrackMeters = 300;
     }
 
     @Data

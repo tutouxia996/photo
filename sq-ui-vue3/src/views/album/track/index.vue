@@ -693,9 +693,17 @@ async function handleGpxEnabledChange(row, val) {
   try {
     await updateTrack({ trackId: row.trackId, gpxEnabled: enabled })
     proxy.$modal.msgSuccess(enabled === 1
-      ? '已开启：地图展示 GPX 线路；列表计入 GPX 点位/里程/时长'
-      : '已关闭：地图不再展示 GPX 线路；列表点位/里程/时长不再计入 GPX')
+      ? '已开启：媒体挂到 GPX；地图展示 GPX 线路'
+      : '已关闭：匹配媒体回落到照片轨（自身 GPS），可编辑并贴合路网')
     getList()
+    // 正在查看该轨迹时立刻刷新；关闭 GPX 后强制重新贴合照片轨
+    if (detailOpen.value && detailTrack.value?.trackId === row.trackId) {
+      const { track, points, gpxOverlays } = await loadTrackWithRoutes(row.trackId, enabled === 0)
+      detailTrack.value = track || detailTrack.value
+      detailPoints.value = points || []
+      detailGpxOverlays.value = gpxOverlays || []
+      nextTick(() => mapViewerRef.value?.refresh?.({ fit: true }))
+    }
   } catch (e) {
     row.gpxEnabled = prev
     proxy.$modal.msgError('更新失败')
