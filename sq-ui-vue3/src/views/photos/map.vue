@@ -14,7 +14,7 @@
         filterable
         placeholder="全部相册"
         class="album-select"
-        @change="loadPoints"
+        @change="onAlbumChange"
       >
         <el-option
           v-for="item in albumOptions"
@@ -26,7 +26,45 @@
     </header>
     <div v-if="estimatedCount > 0" class="est-banner">
       <span class="dot" />
-      蓝色「区」为区域粗定位，橙色「估」为时间推算。均可拖动，或用高德搜索后「预览」；再「保存调整 / 确认上主轨迹」。
+      <span class="est-banner-text">
+        <template v-if="aiPickMode">
+          点选模式：点击地图上的估计点勾选/取消（已选 {{ aiSelectedIds.length }}/{{ aiMaxBatch }}）。识别时按本相册粗定位地点动态拉取周边 POI，只在该范围内匹配。
+        </template>
+        <template v-else>
+          蓝色「区」区域粗定位，紫色「AI」地标识别，橙色「估」时间推算。均可拖动微调；也可「点选照片 → AI 识别地标」。
+        </template>
+      </span>
+      <template v-if="canShowAiLandmark && canEditEstimated">
+        <el-button
+          v-if="!aiPickMode"
+          type="primary"
+          size="small"
+          plain
+          class="ai-btn"
+          @click="enterAiPickMode"
+        >点选 AI 识别</el-button>
+        <template v-else>
+          <el-button size="small" @click="clearAiSelection" :disabled="!aiSelectedIds.length">清空已选</el-button>
+          <el-button
+            type="primary"
+            size="small"
+            class="ai-btn"
+            :loading="aiLoading"
+            :disabled="!aiSelectedIds.length"
+            @click="runAiLandmark"
+          >识别已选 {{ aiSelectedIds.length }}</el-button>
+          <el-button size="small" @click="exitAiPickMode">退出点选</el-button>
+        </template>
+      </template>
+      <el-button
+        v-if="canConfirmAll && !aiPickMode"
+        type="warning"
+        size="small"
+        class="ai-btn"
+        :loading="confirmAllLoading"
+        :disabled="!canEditEstimated"
+        @click="confirmAllToTrack"
+      >全部上主轨迹 ({{ estimatedCount }})</el-button>
       <span class="est-count">待确认 {{ estimatedCount }}</span>
     </div>
     <div class="map-page-body">
@@ -35,7 +73,9 @@
         :points="points"
         :empty-text="emptyText"
         :auto-fit="false"
-        :estimated-draggable="canEditEstimated"
+        :estimated-draggable="canEditEstimated && !aiPickMode"
+        :ai-pick-mode="aiPickMode"
+        :selected-photo-ids="aiSelectedIds"
         @estimated-drag-end="onEstimatedDragEnd"
         @estimated-select="onEstimatedSelect"
       >
@@ -128,13 +168,15 @@
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { listAlbum } from '@/api/photos/album'
 import {
+  aiLandmarkAlbum,
+  confirmEstimatedBatch,
   confirmEstimatedPhoto,
   listPhotoMapPoints,
   updateEstimatedPosition
 } from '@/api/photos/photo'
 import { searchTrackPlace } from '@/api/album/track'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
-import { isEstimatedLocation, mediaSrc, estimatedSourceTitle } from '@/utils/photoMapCluster'
+import { isEstimatedLocation, isPendingEstimated, mediaSrc, estimatedSourceTitle } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const route = useRoute()
@@ -147,6 +189,12 @@ const albumOptions = ref([])
 const albumId = ref(undefined)
 const mapRef = ref(null)
 const saving = ref(false)
+const aiLoading = ref(false)
+const confirmAllLoading = ref(false)
+const aiPickMode = ref(false)
+const aiSelectedIds = ref([])
+/** 单次上限，与后端 album.aiLandmark.maxSample 对齐；可多次分批 */
+const aiMaxBatch = 40
 const editEst = ref(null)
 const placeOptions = ref([])
 const placePickId = ref('')
@@ -168,7 +216,23 @@ const albumNameMap = computed(() => {
   return map
 })
 
-const estimatedCount = computed(() => points.value.filter(isEstimatedLocation).length)
+const estimatedCount = computed(() => points.value.filter(isPendingEstimated).length)
+
+const regionOrAiCount = computed(() => points.value.filter(p => {
+  const s = p?.locationSource
+  return (s === 'region_center' || s === 'ai_landmark') && isPendingEstimated(p)
+}).length)
+
+/** 已选相册且存在区域/AI 估计点时，可进一步 AI 缩小范围 */
+const canShowAiLandmark = computed(() => {
+  if (albumId.value == null || albumId.value === '') return false
+  return regionOrAiCount.value > 0 || estimatedCount.value > 0
+})
+
+const canConfirmAll = computed(() => {
+  if (albumId.value == null || albumId.value === '') return false
+  return estimatedCount.value > 0
+})
 
 const editThumb = computed(() => {
   if (!editEst.value) return ''
@@ -231,6 +295,12 @@ function loadPoints() {
   }).finally(() => {
     loading.value = false
   })
+}
+
+function onAlbumChange() {
+  exitAiPickMode()
+  editEst.value = null
+  loadPoints()
 }
 
 function patchLocalPoint(photoId, patch) {
@@ -347,7 +417,105 @@ function openEstimatedEditor(payload, { dirty = false, syncMap = false } = {}) {
 }
 
 function onEstimatedSelect(payload) {
+  if (aiPickMode.value) {
+    toggleAiSelection(payload)
+    return
+  }
   openEstimatedEditor(payload, { dirty: false })
+}
+
+function enterAiPickMode() {
+  if (!canEditEstimated.value || albumId.value == null || albumId.value === '') {
+    proxy?.$modal?.msgWarning?.('请先选择一个相册')
+    return
+  }
+  editEst.value = null
+  resetPlaceSearch()
+  aiPickMode.value = true
+  aiSelectedIds.value = []
+  proxy?.$modal?.msgSuccess?.('已进入点选：点击地图上的估计点勾选，再点「识别已选」')
+}
+
+function exitAiPickMode() {
+  aiPickMode.value = false
+  aiSelectedIds.value = []
+}
+
+function clearAiSelection() {
+  aiSelectedIds.value = []
+}
+
+function toggleAiSelection(payload) {
+  const id = payload?.photoId
+  if (id == null) return
+  const point = points.value.find(p => String(p.photoId) === String(id))
+  if (!point || !isEstimatedLocation(point)) {
+    proxy?.$modal?.msgWarning?.('只能点选估计位置的照片（区 / AI / 估）')
+    return
+  }
+  const key = String(id)
+  const exists = aiSelectedIds.value.some(x => String(x) === key)
+  if (exists) {
+    aiSelectedIds.value = aiSelectedIds.value.filter(x => String(x) !== key)
+    return
+  }
+  if (aiSelectedIds.value.length >= aiMaxBatch) {
+    proxy?.$modal?.msgWarning?.(`单次最多选 ${aiMaxBatch} 张，请先识别这批，或取消部分后再选`)
+    return
+  }
+  aiSelectedIds.value = [...aiSelectedIds.value, id]
+}
+
+async function runAiLandmark() {
+  if (!canEditEstimated.value || albumId.value == null || albumId.value === '') {
+    proxy?.$modal?.msgWarning?.('请先选择一个相册')
+    return
+  }
+  if (!aiSelectedIds.value.length) {
+    proxy?.$modal?.msgWarning?.('请先在地图上点选要识别的照片')
+    return
+  }
+  try {
+    await proxy?.$modal?.confirm?.(
+      `将对已选的 ${aiSelectedIds.value.length} 张照片做 AI 地标识别：按本相册粗定位地点拉取周边 POI 白名单，只在该范围内匹配；同批多图会投票吸附。是否继续？`
+    )
+  } catch (e) {
+    return
+  }
+  aiLoading.value = true
+  try {
+    const res = await aiLandmarkAlbum(albumId.value, {
+      photoIds: aiSelectedIds.value,
+      interpolateOthers: true
+    })
+    const data = res.data || {}
+    const updated = Number(data.updated) || 0
+    const recognized = Number(data.recognized) || 0
+    const interp = Number(data.interpUpdated) || 0
+    const poiN = Number(data.poiWhitelistSize) || 0
+    const voted = Number(data.votedApplied) || 0
+    const names = (data.landmarks || [])
+      .map(x => x.landmark || x.place)
+      .filter(Boolean)
+      .slice(0, 5)
+    const nameHint = names.length ? `：${names.join('、')}` : ''
+    const extra = [
+      poiN > 0 ? `周边POI ${poiN}` : null,
+      voted > 0 ? `投票吸附 ${voted}` : null,
+      interp > 0 ? `时间推算补 ${interp}` : null
+    ].filter(Boolean).join('，')
+    proxy?.$modal?.msgSuccess?.(
+      `AI 已更新 ${updated} 个点（识别 ${recognized}${extra ? '，' + extra : ''}）${nameHint}`
+    )
+    aiSelectedIds.value = []
+    editEst.value = null
+    resetPlaceSearch()
+    loadPoints()
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    aiLoading.value = false
+  }
 }
 
 function onEstimatedDragEnd(payload) {
@@ -423,11 +591,11 @@ function confirmToTrack() {
       latitude: data.latitude ?? cur.latitude,
       longitude: data.longitude ?? cur.longitude,
       address: data.address ?? cur.address,
-      locationSource: data.locationSource || 'manual',
+      locationSource: data.locationSource || cur.locationSource || 'manual',
       locationConfidence: data.locationConfidence ?? 1
     })
     editEst.value = null
-    proxy?.$modal?.msgSuccess?.('已确认并同步主轨迹')
+    proxy?.$modal?.msgSuccess?.('已确认上主轨迹（仍保留来源标记）')
     resetPlaceSearch()
     nextTick(() => mapRef.value?.refresh?.({ fit: false }))
   }).catch(() => {
@@ -435,6 +603,60 @@ function confirmToTrack() {
   }).finally(() => {
     saving.value = false
   })
+}
+
+async function confirmAllToTrack() {
+  if (!canEditEstimated.value || albumId.value == null || albumId.value === '') {
+    proxy?.$modal?.msgWarning?.('请先选择一个相册')
+    return
+  }
+  if (!estimatedCount.value) {
+    proxy?.$modal?.msgWarning?.('当前没有待确认的估计点')
+    return
+  }
+  // 当前面板若有未保存拖动，先写入
+  const cur = editEst.value
+  if (cur?.dirty && cur.photoId) {
+    try {
+      await updateEstimatedPosition({
+        photoId: cur.photoId,
+        latitude: cur.latitude,
+        longitude: cur.longitude,
+        address: cur.address || ''
+      })
+      cur.dirty = false
+    } catch (e) {
+      proxy?.$modal?.msgWarning?.('请先保存当前点的位置调整')
+      return
+    }
+  }
+  try {
+    await proxy?.$modal?.confirm?.(
+      `将把本相册全部 ${estimatedCount.value} 个待确认估计点（区/AI/估）一次性确认上主轨迹，仍保留来源角标。\n若刚拖过其它点，请确认已点「保存调整」。是否继续？`
+    )
+  } catch (e) {
+    return
+  }
+  confirmAllLoading.value = true
+  try {
+    const res = await confirmEstimatedBatch(albumId.value)
+    const data = res.data || {}
+    const n = Number(data.confirmed) || 0
+    const promoted = data.promoted !== false && data.trackId != null
+    proxy?.$modal?.msgSuccess?.(
+      promoted
+        ? `已全部确认上主轨迹 ${n} 个点，列表中草稿已转正并可查看「轨迹」`
+        : `已全部确认上主轨迹 ${n} 个点`
+    )
+    editEst.value = null
+    resetPlaceSearch()
+    exitAiPickMode()
+    loadPoints()
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    confirmAllLoading.value = false
+  }
 }
 
 onMounted(() => {
@@ -451,6 +673,7 @@ watch(() => route.query.albumId, (val) => {
     if (albumId.value != null) {
       albumId.value = undefined
       editEst.value = null
+      exitAiPickMode()
       loadPoints()
     }
     return
@@ -459,6 +682,7 @@ watch(() => route.query.albumId, (val) => {
   if (!Number.isNaN(n) && albumId.value !== n) {
     albumId.value = n
     editEst.value = null
+    exitAiPickMode()
     loadPoints()
   }
 })
@@ -536,6 +760,16 @@ watch(() => route.query.albumId, (val) => {
   border-bottom: 1px solid #f5dab1;
 }
 
+.est-banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.est-banner .ai-btn {
+  flex-shrink: 0;
+}
+
 .est-banner .dot {
   width: 10px;
   height: 10px;
@@ -546,9 +780,10 @@ watch(() => route.query.albumId, (val) => {
 }
 
 .est-banner .est-count {
-  margin-left: auto;
+  margin-left: 0;
   font-weight: 600;
   color: #e6a23c;
+  flex-shrink: 0;
 }
 
 .map-page-body {

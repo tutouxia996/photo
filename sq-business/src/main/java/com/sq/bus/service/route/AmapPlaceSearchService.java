@@ -100,11 +100,12 @@ public class AmapPlaceSearchService {
     }
 
     /**
-     * @param keywords 关键词
-     * @param city     城市（可选，如 北京 / 010）
-     * @param offset   返回条数，默认 10，最大 25
+     * @param keywords  关键词
+     * @param city      城市（可选，如 北京 / 010）
+     * @param offset    返回条数，默认 10，最大 25
+     * @param cityLimit 是否强制限制在 city 内（区域锚定 AI 地标时建议 true）
      */
-    public List<Map<String, Object>> search(String keywords, String city, Integer offset) {
+    public List<Map<String, Object>> search(String keywords, String city, Integer offset, boolean cityLimit) {
         if (StringUtils.isEmpty(keywords)) {
             throw new ServiceException("搜索关键词不能为空");
         }
@@ -120,7 +121,7 @@ public class AmapPlaceSearchService {
                     .append("&page=1&extensions=base&key=").append(urlEncode(key));
             if (StringUtils.isNotEmpty(city)) {
                 url.append("&city=").append(urlEncode(city.trim()));
-                url.append("&citylimit=false");
+                url.append("&citylimit=").append(cityLimit ? "true" : "false");
             }
             JSONObject json = getJson(url.toString());
             if (!"1".equals(String.valueOf(json.get("status")))) {
@@ -128,39 +129,93 @@ public class AmapPlaceSearchService {
                 throw new ServiceException(info == null ? "高德地点搜索失败" : info);
             }
             JSONArray pois = json.getJSONArray("pois");
-            List<Map<String, Object>> list = new ArrayList<Map<String, Object>>();
-            if (pois == null) {
-                return list;
-            }
-            for (int i = 0; i < pois.size(); i++) {
-                JSONObject poi = pois.getJSONObject(i);
-                String location = poi.getString("location");
-                if (StringUtils.isEmpty(location) || !location.contains(",")) {
-                    continue;
-                }
-                String[] parts = location.split(",");
-                double gcjLng = Double.parseDouble(parts[0]);
-                double gcjLat = Double.parseDouble(parts[1]);
-                double[] wgs = CoordTransformUtils.gcj02ToWgs84(gcjLng, gcjLat);
-                Map<String, Object> row = new LinkedHashMap<String, Object>();
-                row.put("id", poi.getString("id"));
-                row.put("name", poi.getString("name"));
-                row.put("address", buildAddress(poi));
-                row.put("cityname", asPlain(poi.get("cityname")));
-                row.put("adname", asPlain(poi.get("adname")));
-                row.put("lng", round6(gcjLng));
-                row.put("lat", round6(gcjLat));
-                row.put("wgsLng", round6(wgs[0]));
-                row.put("wgsLat", round6(wgs[1]));
-                list.add(row);
-            }
-            return list;
+            return parsePois(pois);
         } catch (ServiceException e) {
             throw e;
         } catch (Exception e) {
             log.warn("Amap place search failed: {}", e.getMessage());
             throw new ServiceException("地点搜索失败：" + e.getMessage());
         }
+    }
+
+    public List<Map<String, Object>> search(String keywords, String city, Integer offset) {
+        return search(keywords, city, offset, false);
+    }
+
+    /**
+     * 周边搜索（输入 WGS84，内部转 GCJ 调高德）。
+     *
+     * @param wgsLng   WGS84 经度
+     * @param wgsLat   WGS84 纬度
+     * @param keywords 可选关键词（如景区名）；空则按类型拉周边
+     * @param radiusM  半径米，默认 1000，最大 50000
+     * @param types    高德类型码，如 110000（风景名胜）；可空
+     * @param offset   条数 1~25
+     */
+    public List<Map<String, Object>> searchAround(double wgsLng, double wgsLat, String keywords,
+                                                    Integer radiusM, String types, Integer offset) {
+        String key = webKey();
+        if (StringUtils.isEmpty(key)) {
+            throw new ServiceException("未配置 album.map.webKey（高德 Web Key）");
+        }
+        int pageSize = offset == null ? 20 : Math.max(1, Math.min(25, offset));
+        int radius = radiusM == null ? 1000 : Math.max(100, Math.min(50000, radiusM));
+        double[] gcj = CoordTransformUtils.wgs84ToGcj02(wgsLng, wgsLat);
+        try {
+            StringBuilder url = new StringBuilder("https://restapi.amap.com/v3/place/around?location=")
+                    .append(urlEncode(round6(gcj[0]) + "," + round6(gcj[1])))
+                    .append("&radius=").append(radius)
+                    .append("&offset=").append(pageSize)
+                    .append("&page=1&extensions=base&key=").append(urlEncode(key));
+            if (StringUtils.isNotEmpty(keywords)) {
+                url.append("&keywords=").append(urlEncode(keywords.trim()));
+            }
+            if (StringUtils.isNotEmpty(types)) {
+                url.append("&types=").append(urlEncode(types.trim()));
+            }
+            JSONObject json = getJson(url.toString());
+            if (!"1".equals(String.valueOf(json.get("status")))) {
+                String info = json.getString("info");
+                throw new ServiceException(info == null ? "高德周边搜索失败" : info);
+            }
+            return parsePois(json.getJSONArray("pois"));
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("Amap around search failed: {}", e.getMessage());
+            throw new ServiceException("周边地点搜索失败：" + e.getMessage());
+        }
+    }
+
+    private List<Map<String, Object>> parsePois(JSONArray pois) {
+        List<Map<String, Object>> list = new ArrayList<Map<String, Object>>();
+        if (pois == null) {
+            return list;
+        }
+        for (int i = 0; i < pois.size(); i++) {
+            JSONObject poi = pois.getJSONObject(i);
+            String location = poi.getString("location");
+            if (StringUtils.isEmpty(location) || !location.contains(",")) {
+                continue;
+            }
+            String[] parts = location.split(",");
+            double gcjLng = Double.parseDouble(parts[0]);
+            double gcjLat = Double.parseDouble(parts[1]);
+            double[] wgs = CoordTransformUtils.gcj02ToWgs84(gcjLng, gcjLat);
+            Map<String, Object> row = new LinkedHashMap<String, Object>();
+            row.put("id", poi.getString("id"));
+            row.put("name", poi.getString("name"));
+            row.put("type", asPlain(poi.get("type")));
+            row.put("address", buildAddress(poi));
+            row.put("cityname", asPlain(poi.get("cityname")));
+            row.put("adname", asPlain(poi.get("adname")));
+            row.put("lng", round6(gcjLng));
+            row.put("lat", round6(gcjLat));
+            row.put("wgsLng", round6(wgs[0]));
+            row.put("wgsLat", round6(wgs[1]));
+            list.add(row);
+        }
+        return list;
     }
 
     private String buildAddress(JSONObject poi) {

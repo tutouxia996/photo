@@ -43,7 +43,7 @@ public class BizTrack implements Serializable {
     /** 是否前台展示：0否 1是 */
     private Integer isPublic;
 
-    /** 是否启用轨迹：0关闭（不自动生成、地图不显示）1开启 */
+    /** 是否启用轨迹：0关闭（不自动同步、前台地图不画照片轨折线）1开启；不影响照片点与后台入口 */
     private Integer enabled;
 
     /** 是否在地图启用 GPX 线路：0否 1是 */
@@ -51,6 +51,13 @@ public class BizTrack implements Serializable {
 
     /** 来源：photo / gpx / mixed */
     private String sourceType;
+
+    /**
+     * 库内真实照片轨点位数（非表字段）。列表 pointCount 可能因关闭「启用轨迹」而展示为 0，
+     * 入口显隐请用本字段，避免「照片地图/轨迹」被误藏。
+     */
+    @TableField(exist = false)
+    private Integer photoPointCount;
 
     /** 相册是否已导入 GPX（非表字段，接口回填） */
     @TableField(exist = false)

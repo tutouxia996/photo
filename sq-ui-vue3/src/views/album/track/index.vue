@@ -34,7 +34,13 @@
 
     <el-row :gutter="10" class="mb8">
       <el-col :span="1.5">
-        <el-button type="primary" plain icon="Plus" @click="openGenerate" v-hasPermi="['album:track:generate']">生成轨迹</el-button>
+        <el-button
+          type="primary"
+          plain
+          icon="Plus"
+          @click="openGenerate"
+          v-hasPermi="['album:track:generate']"
+        >生成轨迹</el-button>
       </el-col>
       <el-col :span="1.5">
         <el-button
@@ -43,6 +49,7 @@
           icon="MapLocation"
           @click="openRegionLocate(queryParams.albumId)"
           v-hasPermi="['album:photo:edit']"
+          title="无 GPS 相册：先定区域中心，再到照片地图确认"
         >区域定位</el-button>
       </el-col>
       <el-col :span="1.5">
@@ -53,6 +60,7 @@
           :loading="fallbackLoading"
           @click="handleFallbackLocate(queryParams.albumId)"
           v-hasPermi="['album:photo:edit']"
+          title="已有 GPS 锚点时，为无坐标照片按时间估计位置"
         >估计补点</el-button>
       </el-col>
     </el-row>
@@ -73,7 +81,7 @@
       <el-table-column label="时长(不包含增补路段)" min-width="180">
         <template #default="scope">{{ formatDuration(scope.row.totalDuration) }}</template>
       </el-table-column>
-      <el-table-column label="启用轨迹" width="110" align="center">
+      <el-table-column label="显示轨迹线" width="120" align="center">
         <template #default="scope">
           <el-switch
             :model-value="isTrackEnabledDisplay(scope.row)"
@@ -160,7 +168,8 @@
 
     <el-dialog title="生成轨迹" v-model="genOpen" width="520px" append-to-body>
       <p class="region-hint">
-        无 GPS 相册请先「区域定位」，再在照片地图把蓝色「区」点拖准并点「确认上主轨迹」。未确认定位前不能生成正式轨迹。
+        <strong>本对话框主操作是「生成」</strong>：用相册里已确认的坐标创建正式轨迹。<br />
+        无 GPS 相册请先走：区域定位 → 照片地图确认 → 再回来生成。下方两个按钮是辅助跳转，不是互相替代。
       </p>
       <el-form label-width="110px">
         <el-form-item label="相册" required>
@@ -178,21 +187,27 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button
-          type="info"
-          plain
-          :disabled="!genForm.albumId"
-          v-hasPermi="['album:photo:edit']"
-          @click="openRegionLocateFromGenerate"
-        >先区域定位</el-button>
-        <el-button
-          type="success"
-          plain
-          :disabled="!genForm.albumId"
-          @click="openPhotoMapForAlbum(genForm.albumId)"
-        >打开照片地图</el-button>
-        <el-button type="primary" :loading="genLoading" @click="submitGenerate">生成</el-button>
-        <el-button @click="genOpen = false">取消</el-button>
+        <div class="gen-dialog-footer">
+          <div class="gen-dialog-aux">
+            <el-button
+              link
+              type="info"
+              :disabled="!genForm.albumId"
+              v-hasPermi="['album:photo:edit']"
+              @click="openRegionLocateFromGenerate"
+            >去区域定位</el-button>
+            <el-button
+              link
+              type="success"
+              :disabled="!genForm.albumId"
+              @click="openPhotoMapForAlbum(genForm.albumId)"
+            >去照片地图</el-button>
+          </div>
+          <div>
+            <el-button @click="genOpen = false">取消</el-button>
+            <el-button type="primary" :loading="genLoading" @click="submitGenerate">生成</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -264,7 +279,7 @@
 
     <el-dialog title="相册区域粗定位" v-model="regionOpen" width="520px" append-to-body>
       <p class="region-hint">
-        用于没有 GPS / GPX 的相册：填写国家、省、市、区后，系统会把无坐标媒体放到该区域中心附近（蓝色「区」标记），可在照片地图拖动确认。不会覆盖已有 EXIF/视频/手工坐标。
+        用于没有 GPS / GPX 的相册：填写国家、省、市、区或搜索地点后，系统会把媒体放到该区域中心附近（蓝色「区」）。可覆盖已有的区域/AI/时间估计点；不会覆盖设备 GPS 与手工确认点。
       </p>
       <el-form label-width="88px">
         <el-form-item label="相册" required>
@@ -482,17 +497,26 @@ function canToggleTrackEnabled(row) {
 
 function trackEnabledTitle(row) {
   if (isRegionDraft(row)) {
-    return '区域粗定位草稿，请先在照片地图确认定位并生成正式轨迹后再启用'
+    return '区域粗定位草稿，请先在照片地图确认定位并生成正式轨迹后再显示轨迹线'
   }
-  return ''
+  return '控制前台/轨迹查看器是否绘制照片轨折线；关闭后仍可打开照片地图看点位'
+}
+
+/** 库内真实照片轨点数（关闭「显示轨迹线」时列表 pointCount 可能为 0） */
+function realPhotoPointCount(row) {
+  const raw = Number(row?.photoPointCount)
+  if (!Number.isNaN(raw) && raw > 0) return raw
+  return Number(row?.pointCount) || 0
 }
 
 function canShowPhotoMap(row) {
-  return Number(row?.pointCount) > 0 || hasGpxFiles(row)
+  // 与「显示轨迹线」开关无关：有照片点 / GPX / 草稿即可进照片地图
+  return realPhotoPointCount(row) > 0 || hasGpxFiles(row) || isRegionDraft(row)
 }
 
 function canShowTrack(row) {
-  return Number(row?.pointCount) > 0 && !isRegionDraft(row)
+  // 关闭显示轨迹线时仍可进入查看器（查看器内可只看点）；草稿未转正前不开放
+  return realPhotoPointCount(row) > 0 && !isRegionDraft(row)
 }
 
 function canShowRegionLocate(row) {
@@ -689,8 +713,9 @@ function onRegionPlacePicked(val) {
   regionSelectedPlace.value = item || null
   if (item) {
     regionPreview.value = {
-      formattedAddress: item.address || item.name,
-      address: item.address || item.name,
+      formattedAddress: item.name || item.address,
+      address: item.name || item.address,
+      name: item.name,
       wgsLat: item.wgsLat,
       wgsLng: item.wgsLng
     }
@@ -711,7 +736,9 @@ function buildRegionKeyword() {
 function previewRegionGeocode() {
   if (regionSelectedPlace.value?.wgsLat != null) {
     regionPreview.value = {
-      formattedAddress: regionSelectedPlace.value.address || regionSelectedPlace.value.name,
+      formattedAddress: regionSelectedPlace.value.name || regionSelectedPlace.value.address,
+      address: regionSelectedPlace.value.name || regionSelectedPlace.value.address,
+      name: regionSelectedPlace.value.name,
       wgsLat: regionSelectedPlace.value.wgsLat,
       wgsLng: regionSelectedPlace.value.wgsLng
     }
@@ -751,11 +778,14 @@ function submitRegionLocate() {
   if (place?.wgsLat != null && place?.wgsLng != null) {
     payload.latitude = place.wgsLat
     payload.longitude = place.wgsLng
-    payload.address = place.address || place.name
+    // 优先用地名（地坛公园），不要只用街道地址，否则后续 AI 锚定会丢景点名
+    payload.address = place.name || place.address
   } else if (regionPreview.value?.wgsLat != null && regionPreview.value?.wgsLng != null) {
     payload.latitude = regionPreview.value.wgsLat
     payload.longitude = regionPreview.value.wgsLng
-    payload.address = regionPreview.value.formattedAddress || regionPreview.value.address
+    payload.address = regionPreview.value.name
+      || regionPreview.value.formattedAddress
+      || regionPreview.value.address
   }
 
   const runApply = () => {
@@ -766,7 +796,7 @@ function submitRegionLocate() {
     }
     const name = albumNameMap.value[id] || id
     proxy.$modal.confirm(
-      `将为相册「${name}」中无 GPS 的媒体写入区域中心粗定位（蓝色「区」）。已有设备 GPS / 手工 / 时间估计点不会被覆盖。是否继续？`
+      `将为相册「${name}」写入区域中心粗定位（蓝色「区」）。会覆盖已有的区域/AI/时间估计点，不会覆盖设备 GPS 与手工确认点。是否继续？`
     ).then(() => {
       regionLoading.value = true
       return regionLocateAlbum(id, payload)
@@ -1042,9 +1072,9 @@ async function handleEnabledChange(row, val) {
   try {
     await updateTrack({ trackId: row.trackId, enabled })
     if (enabled === 1) {
-      proxy.$modal.msgSuccess('已开启：将自动同步生成，并在地图展示；列表计入照片轨点位/里程/时长')
+      proxy.$modal.msgSuccess('已开启显示轨迹线：地图会画照片轨，列表计入里程/时长')
     } else {
-      proxy.$modal.msgSuccess('已关闭：地图不再展示照片轨；列表点位/里程/时长不再计入照片轨')
+      proxy.$modal.msgSuccess('已关闭显示轨迹线：地图只保留照片点、不画折线；「照片地图 / 轨迹」入口仍可用')
     }
     getList()
   } catch (e) {
@@ -1210,6 +1240,20 @@ loadAlbums().finally(() => getList())
   color: #606266;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.gen-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.gen-dialog-aux {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .region-preview {

@@ -23,9 +23,9 @@ public final class PhotoLocationSource {
     public static final String MANUAL = "manual";
     /** 同相册权威点按时间插值（兜底） */
     public static final String TIME_INTERP = "time_interp";
-    /** AI 地标识别（兜底，后续） */
+    /** AI 地标识别（兜底） */
     public static final String AI_LANDMARK = "ai_landmark";
-    /** 仅范围中心占位（兜底，后续） */
+    /** 仅范围中心占位（兜底） */
     public static final String REGION_CENTER = "region_center";
 
     private static final Set<String> AUTHORITATIVE = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
@@ -49,12 +49,26 @@ public final class PhotoLocationSource {
         return source != null && FALLBACK.contains(source.trim());
     }
 
-    /** 是否可作为主轨迹/默认地图锚点 */
+    /**
+     * 用户已「确认上主轨迹」的兜底点：保留原来源标记（AI/估/区），置信度置 1。
+     */
+    public static boolean isConfirmedFallback(BizPhoto photo) {
+        if (photo == null || !isFallback(photo.getLocationSource())) {
+            return false;
+        }
+        BigDecimal c = photo.getLocationConfidence();
+        return c != null && c.compareTo(new BigDecimal("0.999")) >= 0;
+    }
+
+    /** 是否可作为主轨迹/默认地图锚点（含已确认的 AI/估/区） */
     public static boolean isAuthoritativeGps(BizPhoto photo) {
         if (photo == null || photo.getLatitude() == null || photo.getLongitude() == null) {
             return false;
         }
-        return isAuthoritative(photo.getLocationSource());
+        if (isAuthoritative(photo.getLocationSource())) {
+            return true;
+        }
+        return isConfirmedFallback(photo);
     }
 
     public static void applyDeviceGps(BizPhoto photo, BigDecimal latitude, BigDecimal longitude, int fileType) {

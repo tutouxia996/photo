@@ -198,6 +198,30 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
+     * AI 识别用户点选的照片地标，写入更细的 ai_landmark 估计坐标（可覆盖 region_center；可多次）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "AI地标识别", businessType = BusinessType.UPDATE)
+    @PostMapping("/aiLandmark/{albumId}")
+    public AjaxResult aiLandmark(@PathVariable Long albumId,
+                                 @RequestBody(required = false) com.sq.bus.domain.AiLandmarkRequest body) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在");
+        }
+        java.util.Map<String, Object> result = fallbackLocationService.fillMissingByAiLandmark(albumId, body);
+        try {
+            com.sq.bus.domain.BizTrack draft = trackService.ensureDraftTrackFromEstimated(albumId);
+            if (draft != null) {
+                result.put("trackId", draft.getTrackId());
+            }
+        } catch (Exception e) {
+            // 草稿刷新失败不影响 AI 坐标已落库
+        }
+        return success(result);
+    }
+
+    /**
      * 行政区/地址地理编码（区域粗定位预览）
      */
     @PreAuthorize("@ss.hasAnyPermi('album:photo:edit,album:track:edit')")
@@ -251,7 +275,7 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 确认估计坐标：转为手工权威点并同步主轨迹
+     * 确认估计坐标：保留 AI/估/区 来源标记，置信度置 1 后进入主轨迹
      */
     @PreAuthorize("@ss.hasPermi('album:photo:edit')")
     @Log(title = "确认估计坐标上主轨迹", businessType = BusinessType.UPDATE)
@@ -291,7 +315,10 @@ public class BizPhotoController extends BaseController {
         if (body.getDistrict() != null) {
             existing.setDistrict(body.getDistrict());
         }
-        existing.setLocationSource(PhotoLocationSource.MANUAL);
+        // 保留原估计来源（ai_landmark / time_interp / region_center），地图继续显示 AI/估/区
+        if (!PhotoLocationSource.isFallback(existing.getLocationSource())) {
+            existing.setLocationSource(PhotoLocationSource.MANUAL);
+        }
         existing.setLocationConfidence(java.math.BigDecimal.ONE);
         existing.setUpdateBy(getUsername());
         existing.setUpdateTime(new Date());
@@ -300,12 +327,40 @@ public class BizPhotoController extends BaseController {
         if (ok && existing.getAlbumId() != null) {
             try {
                 fallbackLocationService.fillMissingByTimeInterp(existing.getAlbumId());
-                trackService.autoSyncAlbumTrack(existing.getAlbumId());
+                // 含清除「区域粗定位草稿」并启用轨迹（勿只 autoSync，否则草稿 remark 清不掉）
+                trackService.promoteAfterEstimatedConfirmed(existing.getAlbumId());
             } catch (Exception ignored) {
             }
             albumService.refreshAlbumStats(existing.getAlbumId());
         }
         return ok ? success(existing) : error("保存失败");
+    }
+
+    /**
+     * 相册内全部待确认估计点一键上主轨迹（保留 AI/估/区 标记）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "全部估计点确认上主轨迹", businessType = BusinessType.UPDATE)
+    @PostMapping("/confirmEstimatedBatch/{albumId}")
+    public AjaxResult confirmEstimatedBatch(@PathVariable Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在");
+        }
+        java.util.Map<String, Object> result = fallbackLocationService.confirmAllPendingEstimated(albumId);
+        try {
+            com.sq.bus.domain.BizTrack track = trackService.promoteAfterEstimatedConfirmed(albumId);
+            if (track != null) {
+                result.put("trackId", track.getTrackId());
+                result.put("trackEnabled", track.getEnabled());
+                result.put("promoted", track.getRemark() == null
+                        || !String.valueOf(track.getRemark()).contains("区域粗定位草稿"));
+            }
+        } catch (Exception e) {
+            // 坐标已确认；轨迹转正失败不回滚确认结果
+            result.put("promoteError", e.getMessage());
+        }
+        return success(result);
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:query')")

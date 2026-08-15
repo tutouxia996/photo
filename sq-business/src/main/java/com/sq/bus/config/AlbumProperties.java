@@ -36,6 +36,9 @@ public class AlbumProperties {
     /** 无 EXIF/GPX 时的坐标兜底（默认不进主轨迹/地图） */
     private FallbackLocationConfig fallbackLocation = new FallbackLocationConfig();
 
+    /** AI 地标识别（视觉模型 + 高德地理编码） */
+    private AiLandmarkConfig aiLandmark = new AiLandmarkConfig();
+
     @Data
     public static class Thumb {
         private int smallWidth = 300;
@@ -141,5 +144,34 @@ public class AlbumProperties {
         private boolean includeInMap = true;
         /** 主轨迹是否包含兜底坐标（false=确认采纳后才进主轨迹） */
         private boolean includeInTrack = false;
+    }
+
+    @Data
+    public static class AiLandmarkConfig {
+        /** 是否启用 AI 地标识别 */
+        private boolean enabled = true;
+        /** OpenAI 兼容接口 Key（如通义 DashScope） */
+        private String apiKey = "";
+        /** 兼容模式 Base URL，默认通义 */
+        private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        /** 多模态模型名 */
+        private String model = "qwen-vl-plus";
+        /** 单次请求最多识别张数（可多次点选识别；过大易超时/超免费额度） */
+        private int maxSample = 40;
+        /** 送检图最大边（像素） */
+        private int maxImageWidth = 896;
+        /**
+         * AI/时间推算结果相对「区域粗定位中心」的最大偏离（公里）。
+         * 景区级默认 0.45km，避免同城其它景点（地坛↔雍和宫/国子监）。
+         */
+        private double maxOffsetKm = 0.45;
+        /** 按相册粗定位中心拉取周边 POI 白名单的半径（米） */
+        private int poiRadiusMeters = 800;
+        /** 白名单最多保留 POI 数 */
+        private int poiMaxCount = 40;
+        /** 同批识别多图投票：达到该票数则弱识别结果可吸附到该 POI */
+        private int voteMinCount = 2;
+        private int connectTimeoutMs = 15000;
+        private int readTimeoutMs = 90000;
     }
 }

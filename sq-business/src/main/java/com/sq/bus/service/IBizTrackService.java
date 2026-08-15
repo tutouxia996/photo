@@ -26,6 +26,11 @@ public interface IBizTrackService extends IService<BizTrack> {
     BizTrack autoSyncAlbumTrack(Long albumId);
 
     /**
+     * 估计点批量确认上主轨迹后：同步照片轨并清除「区域粗定位草稿」状态（可启用）。
+     */
+    BizTrack promoteAfterEstimatedConfirmed(Long albumId);
+
+    /**
      * 软删轨迹；若某相册下已无未删轨迹，则级联清理该相册 GPX 叠层。
      *
      * @return 实际软删的轨迹条数

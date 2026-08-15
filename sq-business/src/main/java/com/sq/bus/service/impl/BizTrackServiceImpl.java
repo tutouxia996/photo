@@ -99,17 +99,21 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
     }
 
     private void clearRegionDraftRemark(BizTrack track) {
-        if (track == null) {
+        if (track == null || track.getTrackId() == null) {
             return;
         }
         String remark = track.getRemark();
-        if (remark != null && remark.contains("区域粗定位草稿")) {
-            track.setRemark(null);
-            // 正式生成后默认启用，可在列表再手动关闭
-            track.setEnabled(1);
-            track.setUpdateTime(new Date());
-            updateById(track);
+        if (remark == null || !remark.contains("区域粗定位草稿")) {
+            return;
         }
+        // updateById 默认忽略 null 字段，remark 必须用 UpdateWrapper 显式置空，否则列表一直当「草稿」
+        update(new LambdaUpdateWrapper<BizTrack>()
+                .eq(BizTrack::getTrackId, track.getTrackId())
+                .set(BizTrack::getRemark, null)
+                .set(BizTrack::getEnabled, 1)
+                .set(BizTrack::getUpdateTime, new Date()));
+        track.setRemark(null);
+        track.setEnabled(1);
     }
 
     private void markAsRegionDraft(BizTrack track) {
@@ -135,9 +139,14 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         }
         BizTrack existing = findAlbumPhotoTrack(albumId);
         if (existing != null) {
+            boolean wasDraft = existing.getRemark() != null
+                    && existing.getRemark().contains("区域粗定位草稿");
             // 关闭启用仍更新点位，方便下次打开照片地图/列表一致
             BizTrack rebuilt = rebuildExistingTrack(existing, photos);
-            markAsRegionDraft(rebuilt);
+            // 仅草稿继续保持草稿态；已正式生成的轨迹不因估计点刷新而降级
+            if (wasDraft) {
+                markAsRegionDraft(rebuilt);
+            }
             return rebuilt;
         }
         TrackBuildResult built = buildTrackPoints(photos);
@@ -167,6 +176,35 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         synchronized (lock) {
             TransactionTemplate template = new TransactionTemplate(transactionManager);
             return template.execute(status -> doAutoSyncAlbumTrack(albumId));
+        }
+    }
+
+    @Override
+    public BizTrack promoteAfterEstimatedConfirmed(Long albumId) {
+        if (albumId == null) {
+            return null;
+        }
+        BizTrack existing = findAlbumPhotoTrack(albumId);
+        if (existing == null) {
+            return null;
+        }
+        // 先转正并提交（本方法不加 @Transactional）：避免 autoSync 内部事务异常把草稿清除一起回滚
+        clearRegionDraftRemark(existing);
+        if (existing.getEnabled() == null || existing.getEnabled() == 0) {
+            update(new LambdaUpdateWrapper<BizTrack>()
+                    .eq(BizTrack::getTrackId, existing.getTrackId())
+                    .set(BizTrack::getEnabled, 1)
+                    .set(BizTrack::getUpdateTime, new Date()));
+            existing.setEnabled(1);
+        }
+        try {
+            BizTrack synced = autoSyncAlbumTrack(albumId);
+            BizTrack track = synced != null ? synced : findAlbumPhotoTrack(albumId);
+            clearRegionDraftRemark(track);
+            return track;
+        } catch (Exception e) {
+            log.warn("全部确认后同步轨迹失败 albumId={}: {}", albumId, e.getMessage());
+            return findAlbumPhotoTrack(albumId);
         }
     }
 

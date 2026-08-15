@@ -28,6 +28,7 @@ import {
   STYLE_LAYERS,
   cleanRailDisplayPath,
   createClusterGroup,
+  createEstimatedClusterGroup,
   createPhotoMarker,
   filterValidPoints,
   fromMapLatLng,
@@ -79,6 +80,10 @@ const props = defineProps({
   pointPickable: { type: Boolean, default: false },
   /** 估计坐标点可拖动微调（单独图层，不参与聚合） */
   estimatedDraggable: { type: Boolean, default: false },
+  /** AI 点选模式：点击估计点切换选中，不打开编辑、不拖动 */
+  aiPickMode: { type: Boolean, default: false },
+  /** AI 点选已选中的 photoId 列表 */
+  selectedPhotoIds: { type: Array, default: () => [] },
   /** 框选模式：拖拽拉矩形选中路段 */
   boxSelectActive: { type: Boolean, default: false },
   /** 框选高亮的路段下标 */
@@ -131,6 +136,11 @@ let boxSelectHandlersBound = false
 const selectedSegmentSet = computed(() => {
   const arr = Array.isArray(props.selectedSegmentIndexes) ? props.selectedSegmentIndexes : []
   return new Set(arr.map(n => Number(n)).filter(n => Number.isFinite(n)))
+})
+
+const selectedIdSet = computed(() => {
+  const arr = Array.isArray(props.selectedPhotoIds) ? props.selectedPhotoIds : []
+  return new Set(arr.map(id => String(id)).filter(Boolean))
 })
 
 const validPoints = computed(() => filterValidPoints(props.points))
@@ -869,10 +879,12 @@ function bindEstimatedMarker(marker, point, index) {
       point,
       photoId: point.photoId,
       latitude: wgs.latitude,
-      longitude: wgs.longitude
+      longitude: wgs.longitude,
+      aiPickMode: !!props.aiPickMode
     })
   })
-  if (!props.estimatedDraggable) {
+  const allowDrag = props.estimatedDraggable && !props.aiPickMode
+  if (!allowDrag) {
     marker.on('mouseover', () => {
       if (map) map.getContainer().style.cursor = 'pointer'
     })
@@ -957,9 +969,12 @@ function renderPoints({ fit = props.autoFit } = {}) {
       const estimated = isEstimatedLocation(p)
       // 估计点始终置于最高图层，避免被普通点聚合遮挡
       if (estimated && estimatedLayer && !isWaypointPoint(p)) {
+        const selected = selectedIdSet.value.has(String(p.photoId))
         const marker = createPhotoMarker(p, {
-          draggable: props.estimatedDraggable,
-          pane: 'estimatedPane'
+          draggable: props.estimatedDraggable && !props.aiPickMode,
+          pane: 'estimatedPane',
+          selected,
+          aiPickMode: props.aiPickMode
         })
         bindEstimatedMarker(marker, p, index)
         estimatedLayer.addLayer(marker)
@@ -1051,7 +1066,8 @@ function initMap() {
   gpxOverlayLayer = L.layerGroup().addTo(map)
   clusterGroup = createClusterGroup().addTo(map)
   waypointLayer = L.layerGroup().addTo(map)
-  estimatedLayer = L.layerGroup().addTo(map)
+  // 估计点用聚合层：缩小合并、点击展开/蜘蛛腿，避免叠点点不开
+  estimatedLayer = createEstimatedClusterGroup().addTo(map)
   map.on('zoomstart', onZoomStart)
   map.on('zoomend', onZoomEnd)
   map.getContainer().classList.toggle('pmc-edit-cursor', !!props.editable)
@@ -1196,6 +1212,8 @@ watch(
     props.gpxEndpointPickable,
     props.pointPickable,
     props.estimatedDraggable,
+    props.aiPickMode,
+    props.selectedPhotoIds,
     props.selectedSegmentIndexes
   ],
   () => refresh({ fit: props.autoFit && !props.editable && !props.boxSelectActive }),

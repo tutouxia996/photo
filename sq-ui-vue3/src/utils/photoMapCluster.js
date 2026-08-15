@@ -231,10 +231,22 @@ export function fromMapLatLng(lat, lng) {
   }
 }
 
-/** 时间插值 / AI / 区域中心等兜底坐标（待确认上主轨迹） */
+/** 时间插值 / AI / 区域中心等兜底坐标（含已确认上主轨迹的，仍显示来源角标） */
 export function isEstimatedLocation(point) {
   const s = point?.locationSource
   return s === 'time_interp' || s === 'ai_landmark' || s === 'region_center'
+}
+
+/** 已确认上主轨迹（置信度≈1），仍保留 AI/估/区 标记 */
+export function isConfirmedEstimated(point) {
+  if (!isEstimatedLocation(point)) return false
+  const c = Number(point?.locationConfidence)
+  return Number.isFinite(c) && c >= 0.999
+}
+
+/** 尚未确认、仍待处理的估计点 */
+export function isPendingEstimated(point) {
+  return isEstimatedLocation(point) && !isConfirmedEstimated(point)
 }
 
 /** 估计来源短标签：区 / AI / 估 */
@@ -248,10 +260,17 @@ export function estimatedSourceLabel(point) {
 
 export function estimatedSourceTitle(point) {
   const s = point?.locationSource
-  if (s === 'region_center') return '区域粗定位，可拖动微调后确认上主轨迹'
-  if (s === 'ai_landmark') return 'AI 地标估计，可拖动微调后确认上主轨迹'
-  if (s === 'time_interp') return '按拍摄时间估计，可拖动微调后确认上主轨迹'
-  return '估计位置，可拖动微调后确认上主轨迹'
+  const confirmed = isConfirmedEstimated(point)
+  if (s === 'region_center') {
+    return confirmed ? '区域粗定位（已确认上主轨迹）' : '区域粗定位，可拖动微调后确认上主轨迹'
+  }
+  if (s === 'ai_landmark') {
+    return confirmed ? 'AI 地标（已确认上主轨迹）' : 'AI 地标估计，可拖动微调后确认上主轨迹'
+  }
+  if (s === 'time_interp') {
+    return confirmed ? '时间推算（已确认上主轨迹）' : '按拍摄时间估计，可拖动微调后确认上主轨迹'
+  }
+  return confirmed ? '估计位置（已确认上主轨迹）' : '估计位置，可拖动微调后确认上主轨迹'
 }
 
 /**
@@ -463,23 +482,29 @@ function pickCoverPoint(markers) {
 }
 
 /** 缩略图 DivIcon；count>1 时显示数量角标 */
-export function createThumbDivIcon(point, count = 1) {
+export function createThumbDivIcon(point, count = 1, options = {}) {
   const isVideo = point?.fileType === 2
   const estimated = count <= 1 && isEstimatedLocation(point)
+  const selected = !!(options.selected && count <= 1)
   const thumb = mediaSrc(point, false)
   const badge = count > 1
     ? `<span class="pmc-badge">${formatCount(count)}</span>`
     : (estimated
-      ? `<span class="pmc-est-badge pmc-est-badge--${point?.locationSource || 'time_interp'}" title="${escapeHtml(estimatedSourceTitle(point))}">${estimatedSourceLabel(point)}</span>`
+      ? `<span class="pmc-est-badge pmc-est-badge--${point?.locationSource || 'time_interp'}${isConfirmedEstimated(point) ? ' pmc-est-badge--confirmed' : ''}" title="${escapeHtml(estimatedSourceTitle(point))}">${estimatedSourceLabel(point)}</span>`
       : '')
+  const pick = selected ? '<span class="pmc-ai-pick" title="已选入 AI 识别">✓</span>' : ''
   const video = isVideo && count <= 1 ? '<span class="pmc-video">▶</span>' : ''
   const img = thumb
     ? `<img src="${thumb}" loading="lazy" decoding="async" alt="" />`
     : `<span class="pmc-fallback">${isVideo ? '视频' : '图'}</span>`
-  // 角标放在 pin 外，pin 内 overflow:hidden 才能完整包住缩略图
+  const classes = [
+    'pmc-marker',
+    estimated ? 'pmc-marker--estimated' : '',
+    selected ? 'pmc-marker--ai-selected' : ''
+  ].filter(Boolean).join(' ')
   return L.divIcon({
-    className: estimated ? 'pmc-marker pmc-marker--estimated' : 'pmc-marker',
-    html: `<div class="pmc-wrap"><div class="pmc-pin">${img}${video}</div>${badge}</div>`,
+    className: classes,
+    html: `<div class="pmc-wrap"><div class="pmc-pin">${img}${video}</div>${badge}${pick}</div>`,
     iconSize: [52, 52],
     iconAnchor: [26, 52],
     popupAnchor: [0, -48]
@@ -508,6 +533,35 @@ export function createClusterGroup() {
       const markers = cluster.getAllChildMarkers()
       const cover = pickCoverPoint(markers)
       return createThumbDivIcon(cover, cluster.getChildCount())
+    }
+  })
+}
+
+/** 估计点专用聚合：缩小后合并，放大/点开时蜘蛛腿散开，便于点选叠在一起的照片 */
+export function createEstimatedClusterGroup() {
+  return L.markerClusterGroup({
+    showCoverageOnHover: false,
+    zoomToBoundsOnClick: true,
+    spiderfyOnMaxZoom: true,
+    disableClusteringAtZoom: 19,
+    maxClusterRadius: zoom => {
+      if (zoom <= 12) return 55
+      if (zoom <= 15) return 42
+      return 28
+    },
+    animate: true,
+    animateAddingMarkers: false,
+    chunkedLoading: true,
+    clusterPane: 'estimatedPane',
+    spiderLegPolylineOptions: { weight: 2, color: '#9b59b6', opacity: 0.7 },
+    iconCreateFunction(cluster) {
+      const markers = cluster.getAllChildMarkers()
+      const cover = pickCoverPoint(markers)
+      const icon = createThumbDivIcon(cover, cluster.getChildCount())
+      if (icon?.options) {
+        icon.options.className = `${icon.options.className || 'pmc-marker'} pmc-marker--estimated pmc-marker--est-cluster`
+      }
+      return icon
     }
   })
 }
@@ -594,15 +648,18 @@ function createWaypointDivIcon(point) {
 export function createPhotoMarker(point, options = {}) {
   const waypoint = isWaypointPoint(point)
   const estimated = isEstimatedLocation(point)
-  const draggable = !!(options.draggable && estimated && !waypoint)
+  const selected = !!options.selected
+  const draggable = !!(options.draggable && estimated && !waypoint && !options.aiPickMode)
   const markerOpts = {
-    icon: waypoint ? createWaypointDivIcon(point) : createThumbDivIcon(point, 1),
+    icon: waypoint
+      ? createWaypointDivIcon(point)
+      : createThumbDivIcon(point, 1, { selected }),
     keyboard: false,
     riseOnHover: true,
     draggable,
     autoPan: draggable,
     photoPoint: point,
-    zIndexOffset: estimated ? 2000 : 0
+    zIndexOffset: estimated ? (selected ? 2600 : 2000) : 0
   }
   if (options.pane) {
     markerOpts.pane = options.pane

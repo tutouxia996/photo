@@ -481,19 +481,27 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
 
     /**
      * 列表/详情展示用统计（不落库）：
-     * - 关闭「启用轨迹」时不计照片轨点位/里程/时长
+     * - 关闭「启用轨迹」时列表里程/时长不计照片轨（表示前台不画折线），但保留 photoPointCount
+     * - 区域粗定位草稿虽默认关闭启用，仍把照片点计入展示，便于继续确认
      * - 开启「启用GPX」时再叠加 GPX 数据
      */
     private void applyDisplayStats(BizTrack track, List<BizTrackGpxFile> files) {
-        boolean trackOn = track.getEnabled() == null || track.getEnabled() == 1;
+        boolean regionDraft = track.getRemark() != null
+                && track.getRemark().contains("区域粗定位草稿");
+        boolean trackOn = regionDraft
+                || track.getEnabled() == null
+                || track.getEnabled() == 1;
         boolean gpxOn = files != null && !files.isEmpty()
                 && (track.getGpxEnabled() == null || track.getGpxEnabled() == 1);
+
+        int realPhotoPoints = track.getPointCount() == null ? 0 : track.getPointCount();
+        track.setPhotoPointCount(realPhotoPoints);
 
         int photoPoints = 0;
         double photoDist = 0D;
         long photoDuration = 0L;
         if (trackOn) {
-            photoPoints = track.getPointCount() == null ? 0 : track.getPointCount();
+            photoPoints = realPhotoPoints;
             photoDist = track.getTotalDistance() == null ? 0D : track.getTotalDistance().doubleValue();
             photoDuration = track.getTotalDuration() == null ? 0L : track.getTotalDuration();
         }

@@ -44,6 +44,16 @@ export function regionLocateAlbum(albumId, data) {
   return request({ url: '/album/photo/regionLocate/' + albumId, method: 'post', data })
 }
 
+/** AI 识别相册照片地标（耗时较长） */
+export function aiLandmarkAlbum(albumId, data) {
+  return request({
+    url: '/album/photo/aiLandmark/' + albumId,
+    method: 'post',
+    data: data || {},
+    timeout: 300000
+  })
+}
+
 /** 行政区/地址地理编码预览 */
 export function geocodeAddress(address) {
   return request({ url: '/album/photo/geocode', method: 'get', params: { address } })
@@ -55,4 +65,13 @@ export function updateEstimatedPosition(data) {
 
 export function confirmEstimatedPhoto(data) {
   return request({ url: '/album/photo/confirmEstimated', method: 'post', data })
+}
+
+/** 相册内全部待确认估计点一键上主轨迹 */
+export function confirmEstimatedBatch(albumId) {
+  return request({
+    url: '/album/photo/confirmEstimatedBatch/' + albumId,
+    method: 'post',
+    timeout: 120000
+  })
 }

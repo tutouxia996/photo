@@ -30,8 +30,8 @@ public class RegionLocateRequest implements Serializable {
     private BigDecimal longitude;
 
     /**
-     * 是否覆盖已有 region_center 坐标（默认 true）。
-     * 不会覆盖 EXIF/视频/手工/时间插值/AI 等来源。
+     * 是否覆盖已有 region_center / ai_landmark / time_interp 等兜底坐标（默认 true）。
+     * 不会覆盖 EXIF/视频/手工/GPX 等权威来源。
      */
     private Boolean overwriteRegionCenter;
 }
