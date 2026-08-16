@@ -94,6 +94,18 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-dropdown trigger="click" @command="handleShootTimeOrder">
+          <button type="button" class="tool-btn">
+            <el-icon><Sort /></el-icon>
+            <span>{{ shootTimeOrderLabel }}</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="desc">拍摄时间降序</el-dropdown-item>
+              <el-dropdown-item command="asc">拍摄时间升序</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-dropdown trigger="click" @command="handleSizeMode">
           <button type="button" class="tool-btn">
             <el-icon><Menu /></el-icon>
@@ -117,65 +129,67 @@
       <el-empty description="相册暂无内容，点击右上角添加照片" />
     </div>
 
-    <div v-else class="photo-grid" :class="['mode-' + sizeMode, { 'is-selecting': isSelecting }]">
+    <div v-else ref="gridWrapRef" class="photo-grid-wrap">
+      <div class="photo-grid-phantom" :style="{ height: gridTotalHeight + 'px' }" aria-hidden="true" />
       <div
-        v-for="item in photoList"
-        :key="item.photoId"
-        class="photo-cell"
-        :class="{ selected: isSelected(item.photoId) }"
-        @click="onItemClick(item, $event)"
-        @dblclick.prevent="onItemDblClick(item)"
-        @contextmenu.prevent.stop="onItemContextMenu(item, $event)"
+        class="photo-grid"
+        :class="{ 'is-selecting': isSelecting }"
+        :style="gridWindowStyle"
       >
-        <div class="photo-inner">
-          <template v-if="item.fileType === 2">
+        <div
+          v-for="item in visiblePhotos"
+          :key="item.photoId"
+          class="photo-cell"
+          :class="{ selected: isSelected(item.photoId) }"
+          @click="onItemClick(item, $event)"
+          @dblclick.prevent="onItemDblClick(item)"
+          @contextmenu.prevent.stop="onItemContextMenu(item, $event)"
+        >
+          <div class="photo-inner">
+            <template v-if="item.fileType === 2">
+              <img
+                v-if="canShowThumb(item)"
+                :src="thumbSrc(item)"
+                :alt="item.fileName"
+                loading="lazy"
+                decoding="async"
+                @error="onThumbError(item)"
+              />
+              <div v-else class="thumb-placeholder" aria-hidden="true" />
+              <div class="video-mark">
+                <el-icon :size="14"><VideoPlay /></el-icon>
+                <span v-if="formatDuration(item.duration)" class="video-duration">{{ formatDuration(item.duration) }}</span>
+              </div>
+            </template>
             <img
-              v-if="item.thumbUrl"
+              v-else-if="canShowThumb(item)"
               :src="thumbSrc(item)"
               :alt="item.fileName"
               loading="lazy"
+              decoding="async"
               @error="onThumbError(item)"
             />
-            <video
-              v-else
-              class="video-thumb"
-              :src="originalSrc(item)"
-              muted
-              preload="metadata"
-              playsinline
-              @loadedmetadata="onVideoMeta(item, $event)"
-            />
-            <div class="video-mark">
-              <el-icon :size="14"><VideoPlay /></el-icon>
-              <span v-if="formatDuration(item.duration)" class="video-duration">{{ formatDuration(item.duration) }}</span>
+            <div v-else class="thumb-placeholder" aria-hidden="true" />
+            <div class="check-mark" aria-hidden="true">
+              <el-icon :size="14"><Select /></el-icon>
             </div>
-            <!-- 有缩略图但无入库时长时，静默读取原片 metadata -->
-            <video
-              v-if="item.thumbUrl && !item.duration"
-              class="duration-probe"
-              :src="originalSrc(item)"
-              muted
-              preload="metadata"
-              @loadedmetadata="onVideoMeta(item, $event)"
-            />
-          </template>
-          <img
-            v-else
-            :src="thumbSrc(item)"
-            :alt="item.fileName"
-            loading="lazy"
-            @error="onThumbError(item)"
-          />
-          <div class="check-mark" aria-hidden="true">
-            <el-icon :size="14"><Select /></el-icon>
           </div>
         </div>
       </div>
     </div>
 
     <div v-if="photoList.length" class="detail-footer">
-      <div v-if="hasMore" ref="loadMoreSentinel" class="load-more-sentinel">
+      <div
+        v-if="hasMore"
+        ref="loadMoreSentinel"
+        class="load-more-sentinel"
+        role="button"
+        tabindex="0"
+        @click="loadMore(true)"
+        @keydown.enter.prevent="loadMore(true)"
+      >
         <span v-if="loadingMore">加载中…</span>
+        <span v-else>加载更多</span>
       </div>
       <span v-else>没有更多了</span>
     </div>
@@ -601,11 +615,26 @@ const photoList = ref([])
 const total = ref(0)
 const pageNum = ref(1)
 const pageSize = ref(60)
+/** 哨兵持续在视口内时，最多再自动连拉的页数（不含用户滚动重新进入） */
+const MAX_AUTO_CHAIN = 1
+let autoChainBudget = MAX_AUTO_CHAIN
 /** 下滑自动加载哨兵 */
 const loadMoreSentinel = ref(null)
 let loadMoreObserver = null
 const typeFilter = ref('all')
+/** 拍摄时间排序：desc 新→旧，asc 旧→新 */
+const shootTimeOrder = ref('desc')
 const sizeMode = ref('small')
+/** 虚拟网格：只挂载可视区附近的格子 */
+const GRID_MIN = { small: 96, medium: 140, large: 200 }
+const GRID_GAP = { small: 4, medium: 8, large: 12 }
+const GRID_OVERSCAN = 2
+const gridWrapRef = ref(null)
+const gridScrollTop = ref(0)
+const gridViewHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 800)
+const gridWidth = ref(800)
+let gridResizeObserver = null
+let virtualRaf = 0
 /** 顶部按钮开启的持续多选模式（等同常按 Ctrl） */
 const multiMode = ref(false)
 const selectedIds = ref([])
@@ -733,12 +762,72 @@ const typeFilterLabel = computed(() => {
   return map[typeFilter.value] || '全部'
 })
 
+const shootTimeOrderLabel = computed(() =>
+  shootTimeOrder.value === 'asc' ? '时间升序' : '时间降序'
+)
+
 const sizeModeLabel = computed(() => {
   const map = { small: '小图模式', medium: '中图模式', large: '大图模式' }
   return map[sizeMode.value] || '小图模式'
 })
 
 const hasMore = computed(() => photoList.value.length < total.value)
+
+const gridGap = computed(() => GRID_GAP[sizeMode.value] || 4)
+
+const gridCols = computed(() => {
+  const min = GRID_MIN[sizeMode.value] || 96
+  const gap = gridGap.value
+  const w = Math.max(gridWidth.value, min)
+  return Math.max(1, Math.floor((w + gap) / (min + gap)))
+})
+
+const cellSize = computed(() => {
+  const cols = gridCols.value
+  const gap = gridGap.value
+  return Math.max(1, (gridWidth.value - gap * (cols - 1)) / cols)
+})
+
+const rowStride = computed(() => cellSize.value + gridGap.value)
+
+const totalRows = computed(() => {
+  const cols = gridCols.value
+  if (!cols) return 0
+  return Math.ceil(photoList.value.length / cols)
+})
+
+const gridTotalHeight = computed(() => {
+  const rows = totalRows.value
+  if (!rows) return 0
+  return rows * cellSize.value + Math.max(0, rows - 1) * gridGap.value
+})
+
+const visibleSlice = computed(() => {
+  const cols = gridCols.value
+  const stride = rowStride.value
+  const len = photoList.value.length
+  if (!len || stride <= 0 || !cols) return { start: 0, end: 0, offsetY: 0 }
+  const startRow = Math.max(0, Math.floor(gridScrollTop.value / stride) - GRID_OVERSCAN)
+  const endRow = Math.min(
+    totalRows.value,
+    Math.ceil((gridScrollTop.value + gridViewHeight.value) / stride) + GRID_OVERSCAN
+  )
+  return {
+    start: startRow * cols,
+    end: Math.min(len, endRow * cols),
+    offsetY: startRow * stride
+  }
+})
+
+const visiblePhotos = computed(() =>
+  photoList.value.slice(visibleSlice.value.start, visibleSlice.value.end)
+)
+
+const gridWindowStyle = computed(() => ({
+  transform: `translateY(${visibleSlice.value.offsetY}px)`,
+  gridTemplateColumns: `repeat(${gridCols.value}, minmax(0, 1fr))`,
+  gap: `${gridGap.value}px`
+}))
 
 const currentMedia = computed(() => photoList.value[mediaIndex.value] || null)
 
@@ -764,12 +853,16 @@ function resolveUrl(url) {
   return import.meta.env.VITE_APP_BASE_API + url
 }
 
+function canShowThumb(item) {
+  if (!item || brokenThumbs.value.has(item.photoId)) return false
+  // 网格只吃静态缩略图；无 thumbUrl 不占请求
+  if (!item.thumbUrl) return false
+  return true
+}
+
 function thumbSrc(item) {
-  if (!item) return ''
-  if (brokenThumbs.value.has(item.photoId)) {
-    return originalSrc(item)
-  }
-  return resolveUrl('/album/photo/media/' + item.photoId)
+  if (!canShowThumb(item)) return ''
+  return resolveUrl(item.thumbUrl)
 }
 
 function originalSrc(item) {
@@ -789,23 +882,44 @@ function formatDuration(seconds) {
   return `${m}:${ss}`
 }
 
-function onVideoMeta(item, event) {
-  const el = event?.target
-  if (!el || !item) return
-  const d = el.duration
-  if (!d || !Number.isFinite(d)) return
-  item.duration = Math.round(d)
-}
-
 function onThumbError(item) {
-  if (!item || item.fileType === 2) {
-    // 视频缩略图失败时改用 video 标签
-    if (item) item.thumbUrl = ''
-    return
-  }
+  if (!item?.photoId || brokenThumbs.value.has(item.photoId)) return
+  // 失败只占位，绝不回退原图
   const next = new Set(brokenThumbs.value)
   next.add(item.photoId)
   brokenThumbs.value = next
+}
+
+function updateVirtualMetrics() {
+  const el = gridWrapRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  gridWidth.value = el.clientWidth || rect.width || gridWidth.value
+  gridViewHeight.value = window.innerHeight
+  gridScrollTop.value = Math.max(0, -rect.top)
+}
+
+function scheduleVirtualUpdate() {
+  if (virtualRaf) return
+  virtualRaf = requestAnimationFrame(() => {
+    virtualRaf = 0
+    updateVirtualMetrics()
+  })
+}
+
+function setupGridResizeObserver() {
+  teardownGridResizeObserver()
+  const el = gridWrapRef.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  gridResizeObserver = new ResizeObserver(() => scheduleVirtualUpdate())
+  gridResizeObserver.observe(el)
+}
+
+function teardownGridResizeObserver() {
+  if (gridResizeObserver) {
+    gridResizeObserver.disconnect()
+    gridResizeObserver = null
+  }
 }
 
 function goBack() {
@@ -825,8 +939,15 @@ function handleFilterType(cmd) {
   reload()
 }
 
+function handleShootTimeOrder(cmd) {
+  if (cmd !== 'asc' && cmd !== 'desc') return
+  shootTimeOrder.value = cmd
+  reload()
+}
+
 function handleSizeMode(cmd) {
   sizeMode.value = cmd
+  nextTick(() => scheduleVirtualUpdate())
 }
 
 function isSelected(id) {
@@ -1193,8 +1314,8 @@ function onItemCtxSetCover() {
   const item = ctxTargetPhoto.value
   closeCtxMenu()
   if (!item) return
-  // 封面统一走媒体接口，避免 /album/files/** 无静态映射导致列表不显示
-  const coverUrl = `/album/photo/media/${item.photoId}`
+  // 优先静态缩略图路径，列表封面不再经 media 接口
+  const coverUrl = item.thumbUrl || `/album/photo/media/${item.photoId}`
   updateAlbum({
     albumId: album.value.albumId,
     albumName: album.value.albumName,
@@ -1667,17 +1788,24 @@ function loadAlbum() {
     })
 }
 
+function refillAutoChainBudget() {
+  autoChainBudget = MAX_AUTO_CHAIN
+}
+
 function loadPhotos(reset = false) {
   if (reset) {
     pageNum.value = 1
     loading.value = true
+    refillAutoChainBudget()
+    brokenThumbs.value = new Set()
   } else {
     loadingMore.value = true
   }
   const query = {
     pageNum: pageNum.value,
     pageSize: pageSize.value,
-    albumId: albumId.value
+    albumId: albumId.value,
+    shootTimeOrder: shootTimeOrder.value
   }
   if (typeFilter.value !== 'all') {
     query.fileType = Number(typeFilter.value)
@@ -1691,25 +1819,22 @@ function loadPhotos(reset = false) {
     .finally(() => {
       loading.value = false
       loadingMore.value = false
+      nextTick(() => {
+        scheduleVirtualUpdate()
+        setupGridResizeObserver()
+      })
     })
 }
 
-function isSentinelInView() {
-  const el = loadMoreSentinel.value
-  if (!el) return false
-  const rect = el.getBoundingClientRect()
-  return rect.top < window.innerHeight + 240
-}
-
-function loadMore() {
+/** @param {boolean} force 手动点击「加载更多」时绕过连拉额度 */
+function loadMore(force = false) {
   if (!hasMore.value || loadingMore.value || loading.value) return
+  if (!force) {
+    if (autoChainBudget <= 0) return
+    autoChainBudget -= 1
+  }
   pageNum.value += 1
-  loadPhotos(false).then(() => {
-    // 首屏未撑满视口时继续拉下一页，避免停在半屏不触发滚动
-    nextTick(() => {
-      if (hasMore.value && isSentinelInView()) loadMore()
-    })
-  })
+  loadPhotos(false)
 }
 
 function teardownLoadMoreObserver() {
@@ -1725,7 +1850,13 @@ function setupLoadMoreObserver() {
   if (!el) return
   loadMoreObserver = new IntersectionObserver(
     entries => {
-      if (entries.some(e => e.isIntersecting)) loadMore()
+      const visible = entries.some(e => e.isIntersecting)
+      if (!visible) {
+        // 滚出视口后恢复额度，允许再次下滑加载
+        refillAutoChainBudget()
+        return
+      }
+      loadMore(false)
     },
     { root: null, rootMargin: '240px 0px', threshold: 0 }
   )
@@ -1759,6 +1890,7 @@ function onKeydown(e) {
 
 function onWindowBlurOrScroll() {
   closeCtxMenu()
+  scheduleVirtualUpdate()
 }
 
 watch(() => route.params.albumId, (id) => {
@@ -1793,6 +1925,10 @@ onMounted(() => {
   window.addEventListener('scroll', onWindowBlurOrScroll, true)
   window.addEventListener('resize', onWindowBlurOrScroll)
   window.addEventListener('blur', onWindowBlurOrScroll)
+  nextTick(() => {
+    scheduleVirtualUpdate()
+    setupGridResizeObserver()
+  })
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -1800,6 +1936,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowBlurOrScroll)
   window.removeEventListener('blur', onWindowBlurOrScroll)
   teardownLoadMoreObserver()
+  teardownGridResizeObserver()
+  if (virtualRaf) cancelAnimationFrame(virtualRaf)
   if (clickTimer.value) clearTimeout(clickTimer.value)
   if (imagePaintRaf) cancelAnimationFrame(imagePaintRaf)
   if (wheelZoomRaf) cancelAnimationFrame(wheelZoomRaf)
@@ -1972,23 +2110,23 @@ init()
   }
 }
 
+.photo-grid-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.photo-grid-phantom {
+  width: 100%;
+  pointer-events: none;
+}
+
 .photo-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   display: grid;
-  gap: 4px;
-
-  &.mode-small {
-    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  }
-
-  &.mode-medium {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 8px;
-  }
-
-  &.mode-large {
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 12px;
-  }
+  will-change: transform;
 }
 
 .photo-cell {
@@ -2000,7 +2138,6 @@ init()
   user-select: none;
   -webkit-user-drag: none;
   box-sizing: border-box;
-  transition: background 0.18s ease, box-shadow 0.18s ease;
 
   .photo-inner {
     position: absolute;
@@ -2008,18 +2145,21 @@ init()
     border-radius: 2px;
     overflow: hidden;
     background: #f2f2f2;
-    transition: inset 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-      border-radius 0.18s ease;
   }
 
   img,
-  .video-thumb {
+  .video-thumb,
+  .thumb-placeholder {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
     background: #1a1a1a;
     pointer-events: none;
+  }
+
+  .thumb-placeholder {
+    background: #e8e8e8;
   }
 
   &:hover:not(.selected) .photo-inner {
@@ -2079,16 +2219,6 @@ init()
   transform: translateY(0.5px);
 }
 
-.duration-probe {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-  left: 0;
-  top: 0;
-}
-
 .check-mark {
   position: absolute;
   top: 6px;
@@ -2131,6 +2261,13 @@ init()
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.load-more-sentinel:hover {
+  color: var(--el-color-primary);
 }
 
 .selection-bar {

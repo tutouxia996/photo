@@ -222,9 +222,11 @@ function resolveUrl(url) {
   return import.meta.env.VITE_APP_BASE_API + url
 }
 
-/** 统一走媒体接口，避免 /album/files/** 无静态映射导致预览失败 */
+/** 优先静态 thumbUrl，避免列表打满 media 接口 */
 function thumbSrc(item) {
-  if (!item?.photoId) return ''
+  if (!item) return ''
+  if (item.thumbUrl) return resolveUrl(item.thumbUrl)
+  if (!item.photoId) return ''
   return resolveUrl('/album/photo/media/' + item.photoId)
 }
 

@@ -319,14 +319,18 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     boolean albumAlive = owner != null
                             && (owner.getDeleted() == null || owner.getDeleted() == AlbumDeleted.NORMAL);
                     if (sameAlbum || albumAlive) {
-                        // 全量扫描：同相册已入库视频补齐 GPS / 缩略图
-                        if (fullScan && sameAlbum && fileType == 2) {
+                        // 全量扫描：同相册已入库媒体补齐缩略图（视频另补 GPS/时长）
+                        if (fullScan && sameAlbum) {
                             try {
-                                if (enrichExistingVideo(exists, file, scanPath)) {
-                                    counter.gpsUpdated++;
+                                if (fileType == 2) {
+                                    if (enrichExistingVideo(exists, file, scanPath)) {
+                                        counter.gpsUpdated++;
+                                    }
+                                } else if (fileType == 1) {
+                                    enrichExistingImageThumb(exists, file, scanPath);
                                 }
                             } catch (Exception enrichEx) {
-                                log.warn("补齐视频元数据失败 file={}", file.getAbsolutePath(), enrichEx);
+                                log.warn("补齐媒体元数据/缩略图失败 file={}", file.getAbsolutePath(), enrichEx);
                             }
                         }
                         // 已在当前/其他有效相册中：按内容去重跳过
@@ -402,8 +406,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             }
-        } catch (Exception ignored) {
-            // 缩略图失败不阻断入库
+        } catch (Exception ex) {
+            // 缩略图失败不阻断入库，但必须打日志便于排查灰块
+            log.warn("生成缩略图失败 file={} err={}", file.getAbsolutePath(), ex.toString());
         }
 
         BizPhoto photo = new BizPhoto();
@@ -447,7 +452,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.warn("回收时生成缩略图失败 file={} err={}", file.getAbsolutePath(), ex.toString());
         }
 
         Long oldAlbumId = photo.getAlbumId();
@@ -505,6 +511,32 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         photo.setShutterSpeed(meta.shutterSpeed);
         photo.setIso(meta.iso);
         photo.setFocalLength(meta.focalLength);
+    }
+
+    /**
+     * 全量扫描时为已入库图片补齐缺失/失效的缩略图。
+     */
+    private void enrichExistingImageThumb(BizPhoto photo, File file, BizScanPath scanPath) {
+        if (hasUsableThumb(photo)) {
+            return;
+        }
+        String relativeName = file.getName();
+        File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
+        String thumbName = "s_" + relativeName;
+        File thumbFile = new File(thumbDir, thumbName);
+        try {
+            ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
+            if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
+                photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+                photo.setUpdateTime(new Date());
+                PhotoFieldUtils.clamp(photo);
+                photoService.updateById(photo);
+            } else {
+                log.warn("图片缩略图未生成 file={}", file.getAbsolutePath());
+            }
+        } catch (Exception ex) {
+            log.warn("补齐图片缩略图失败 file={} err={}", file.getAbsolutePath(), ex.toString());
+        }
     }
 
     /**

@@ -28,7 +28,10 @@ export function uploadPhoto(data) {
   return request({
     url: '/album/photo/upload',
     method: 'post',
-    headers: { 'Content-Type': 'multipart/form-data' },
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      repeatSubmit: false
+    },
     data,
     timeout: 600000
   })

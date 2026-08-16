@@ -60,7 +60,11 @@ export function uploadPhoto(data, options = {}) {
   return request({
     url: '/album/photo/upload',
     method: 'post',
-    headers: { 'Content-Type': 'multipart/form-data' },
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      // 并发多文件上传时 FormData 会被序列化成同一签名，需关闭防重复提交
+      repeatSubmit: false
+    },
     data,
     // 大视频上传可能远超默认 10s
     timeout: 600000,

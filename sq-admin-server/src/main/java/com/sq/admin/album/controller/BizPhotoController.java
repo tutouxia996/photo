@@ -106,16 +106,21 @@ public class BizPhotoController extends BaseController {
 
     @PreAuthorize("@ss.hasPermi('album:photo:list')")
     @GetMapping("/list")
-    public TableDataInfo list(BizPhoto query) {
+    public TableDataInfo list(BizPhoto query,
+                              @RequestParam(value = "shootTimeOrder", defaultValue = "desc") String shootTimeOrder) {
         startPage();
         int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(query.getAlbumId() != null, BizPhoto::getAlbumId, query.getAlbumId())
                 .eq(query.getFileType() != null, BizPhoto::getFileType, query.getFileType())
                 .like(StringUtils.isNotEmpty(query.getFileName()), BizPhoto::getFileName, query.getFileName())
-                .eq(BizPhoto::getDeleted, deleted)
-                .orderByDesc(BizPhoto::getShootTime)
-                .orderByDesc(BizPhoto::getPhotoId);
+                .eq(BizPhoto::getDeleted, deleted);
+        boolean asc = "asc".equalsIgnoreCase(shootTimeOrder);
+        if (asc) {
+            wrapper.orderByAsc(BizPhoto::getShootTime).orderByAsc(BizPhoto::getPhotoId);
+        } else {
+            wrapper.orderByDesc(BizPhoto::getShootTime).orderByDesc(BizPhoto::getPhotoId);
+        }
         return getDataTable(photoService.list(wrapper));
     }
 
@@ -654,17 +659,16 @@ public class BizPhotoController extends BaseController {
     }
 
     private File resolveMediaFile(BizPhoto photo, boolean original) {
-        if (!original
-                && StringUtils.isNotEmpty(photo.getThumbUrl())
-                && photo.getThumbUrl().startsWith("/album/files/thumb/")) {
-            String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
-            File thumb = new File(albumProperties.getThumbPath(), rel);
-            if (thumb.exists() && thumb.isFile()) {
-                return thumb;
+        if (!original) {
+            if (StringUtils.isNotEmpty(photo.getThumbUrl())
+                    && photo.getThumbUrl().startsWith("/album/files/thumb/")) {
+                String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
+                File thumb = new File(albumProperties.getThumbPath(), rel);
+                if (thumb.exists() && thumb.isFile()) {
+                    return thumb;
+                }
             }
-        }
-        // 视频无缩略图时：非原图请求也不回退到视频本体，避免 <img> 无法渲染
-        if (!original && photo.getFileType() != null && photo.getFileType() == 2) {
+            // 缩略图缺失时不回退原图/原视频，避免相册网格下大文件卡顿
             return null;
         }
         if (StringUtils.isNotEmpty(photo.getFilePath())) {

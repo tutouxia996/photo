@@ -43,7 +43,7 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
         album.setPhotoCount(photos.size());
         Date start = null;
         Date end = null;
-        Long coverPhotoId = null;
+        String coverUrl = null;
         Set<String> locations = new LinkedHashSet<String>();
         for (BizPhoto photo : photos) {
             if (photo.getShootTime() != null) {
@@ -59,9 +59,11 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
             } else if (photo.getProvince() != null && photo.getProvince().length() > 0) {
                 locations.add(photo.getProvince());
             }
-            // 优先用首张图片作为封面（视频不作为封面）
-            if (coverPhotoId == null && photo.getFileType() != null && photo.getFileType() == 1) {
-                coverPhotoId = photo.getPhotoId();
+            // 封面优先：有缩略图的图片（静态 thumbUrl），避免 media 无缩略图时列表裂图
+            if (coverUrl == null
+                    && photo.getFileType() != null && photo.getFileType() == 1
+                    && photo.getThumbUrl() != null && photo.getThumbUrl().length() > 0) {
+                coverUrl = photo.getThumbUrl();
             }
         }
         album.setStartTime(start);
@@ -70,8 +72,8 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
             album.setLocationSummary(PhotoFieldUtils.trim(
                     locations.stream().limit(5).collect(Collectors.joining("、")), 200));
         }
-        if (coverPhotoId != null) {
-            album.setCoverUrl("/album/photo/media/" + coverPhotoId);
+        if (coverUrl != null) {
+            album.setCoverUrl(coverUrl);
         } else if (photos.isEmpty()) {
             album.setCoverUrl(null);
         }

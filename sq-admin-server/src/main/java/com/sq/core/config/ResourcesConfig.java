@@ -1,17 +1,21 @@
 package com.sq.core.config;
 
+import com.sq.bus.config.AlbumProperties;
 import com.sq.common.config.ProjectConfig;
 import com.sq.common.constant.Constants;
 import com.sq.framework.interceptor.RepeatSubmitInterceptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.CacheControl;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * 通用配置
@@ -23,12 +27,31 @@ public class ResourcesConfig implements WebMvcConfigurer {
     @Autowired
     private RepeatSubmitInterceptor repeatSubmitInterceptor;
 
+    @Autowired
+    private AlbumProperties albumProperties;
+
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
         /** 本地文件上传路径 */
         registry.addResourceHandler(Constants.RESOURCE_PREFIX + "/**")
                 .addResourceLocations("file:" + ProjectConfig.getProfile() + "/");
 
+        // 相册缩略图/原文件静态直出（网格用 thumb，避免每张图走 Java media 接口）
+        CacheControl albumCache = CacheControl.maxAge(7, TimeUnit.DAYS).cachePublic();
+        registry.addResourceHandler("/album/files/thumb/**")
+                .addResourceLocations(toFileLocation(albumProperties.getThumbPath()))
+                .setCacheControl(albumCache);
+        registry.addResourceHandler("/album/files/upload/**")
+                .addResourceLocations(toFileLocation(albumProperties.getUploadPath()))
+                .setCacheControl(albumCache);
+    }
+
+    private static String toFileLocation(String dir) {
+        String path = dir == null ? "" : dir.replace('\\', '/');
+        if (!path.endsWith("/")) {
+            path = path + "/";
+        }
+        return "file:" + path;
     }
 
     /**

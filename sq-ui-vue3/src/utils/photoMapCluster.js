@@ -452,10 +452,11 @@ export function mediaSrc(point, original = false) {
   if (Number(point?.fileType) === 2 && !point?.thumbUrl) {
     return ''
   }
+  // 网格/地图标记优先静态缩略图
+  if (point?.thumbUrl) return resolveUrl(point.thumbUrl)
   if (point?.photoId) {
     return resolveUrl('/album/photo/media/' + point.photoId)
   }
-  if (point?.thumbUrl) return resolveUrl(point.thumbUrl)
   return ''
 }
 

@@ -369,19 +369,17 @@ function resolveUrl(url) {
 
 function coverSrc(item) {
   if (item.coverUrl) {
-    // 历史数据可能写成 /album/files/**，该路径无静态映射，改从 URL 中尽量解析 photoId
-    const mediaMatch = String(item.coverUrl).match(/\/album\/photo\/media\/(\d+)/)
+    const cover = String(item.coverUrl)
+    // 静态缩略图/上传文件直出
+    if (cover.startsWith('/album/files/')) {
+      return resolveUrl(cover)
+    }
+    const mediaMatch = cover.match(/\/album\/photo\/media\/(\d+)/)
     if (mediaMatch) {
+      // 历史封面仍是 media 链接时保留兼容
       return resolveUrl('/album/photo/media/' + mediaMatch[1])
     }
-    if (String(item.coverUrl).startsWith('/album/files/')) {
-      // 无法可靠还原时回退 coverPhotoId / 占位
-      if (item.coverPhotoId) {
-        return resolveUrl('/album/photo/media/' + item.coverPhotoId)
-      }
-      return ''
-    }
-    return resolveUrl(item.coverUrl)
+    return resolveUrl(cover)
   }
   // 兼容旧数据：有照片但未写封面时，用媒体预览接口
   if (item.photoCount > 0 && item.coverPhotoId) {
