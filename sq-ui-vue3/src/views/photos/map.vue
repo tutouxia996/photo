@@ -24,17 +24,20 @@
         />
       </el-select>
     </header>
-    <div v-if="estimatedCount > 0" class="est-banner">
+    <div v-if="estimatedCount > 0 || correctMode" class="est-banner">
       <span class="dot" />
       <span class="est-banner-text">
         <template v-if="aiPickMode">
-          点选模式：点击地图上的估计点勾选/取消（已选 {{ aiSelectedIds.length }}/{{ aiMaxBatch }}）。识别时按本相册粗定位地点动态拉取周边 POI，只在该范围内匹配。
+          点选模式：可在右侧列表勾选（不依赖地图叠点），或点地图估计点；已选 {{ aiSelectedIds.length }}/{{ aiMaxBatch }}。识别时按本相册粗定位地点动态拉取周边 POI。
+        </template>
+        <template v-else-if="correctMode">
+          纠正模式：拖动飘到水面/偏航的照片或视频到岸边，右侧点「保存纠正」写成手工坐标并同步轨迹。
         </template>
         <template v-else>
-          蓝色「区」区域粗定位，紫色「AI」地标识别，橙色「估」时间推算。均可拖动微调；也可「点选照片 → AI 识别地标」。
+          蓝色「区」区域粗定位，紫色「AI」地标识别，橙色「估」时间推算。均可拖动微调；设备 GPS 可点「纠正定位」。也可「点选照片 → AI 识别地标」。
         </template>
       </span>
-      <template v-if="canShowAiLandmark && canEditEstimated">
+      <template v-if="canShowAiLandmark && canEditEstimated && !correctMode">
         <el-button
           v-if="!aiPickMode"
           type="primary"
@@ -44,6 +47,7 @@
           @click="enterAiPickMode"
         >点选 AI 识别</el-button>
         <template v-else>
+          <el-button size="small" @click="selectAiBatch" :disabled="!pendingEstimated.length">选满本批</el-button>
           <el-button size="small" @click="clearAiSelection" :disabled="!aiSelectedIds.length">清空已选</el-button>
           <el-button
             type="primary"
@@ -57,7 +61,14 @@
         </template>
       </template>
       <el-button
-        v-if="canConfirmAll && !aiPickMode"
+        v-if="canEditEstimated && !aiPickMode"
+        size="small"
+        :type="correctMode ? 'warning' : 'default'"
+        class="ai-btn"
+        @click="toggleCorrectMode"
+      >{{ correctMode ? '退出纠正' : '纠正定位' }}</el-button>
+      <el-button
+        v-if="canConfirmAll && !aiPickMode && !correctMode"
         type="warning"
         size="small"
         class="ai-btn"
@@ -65,7 +76,26 @@
         :disabled="!canEditEstimated"
         @click="confirmAllToTrack"
       >全部上主轨迹 ({{ estimatedCount }})</el-button>
-      <span class="est-count">待确认 {{ estimatedCount }}</span>
+      <el-button
+        v-if="canConfirmAll && !aiPickMode && !correctMode"
+        size="small"
+        class="ai-btn"
+        :loading="respreadLoading"
+        :disabled="!canEditEstimated"
+        title="按拍摄时间重新推算并分散估计点，避免叠成一团"
+        @click="respreadEstimated"
+      >重新分散</el-button>
+      <span v-if="estimatedCount && !correctMode" class="est-count">待确认 {{ estimatedCount }}</span>
+    </div>
+    <div v-else-if="canEditEstimated" class="est-banner est-banner--slim">
+      <span class="est-banner-text">设备 GPS 若飘到水面，可进入纠正模式拖回岸边。</span>
+      <el-button
+        size="small"
+        :type="correctMode ? 'warning' : 'primary'"
+        plain
+        class="ai-btn"
+        @click="toggleCorrectMode"
+      >{{ correctMode ? '退出纠正' : '纠正定位' }}</el-button>
     </div>
     <div class="map-page-body">
       <PhotoClusterMap
@@ -73,11 +103,14 @@
         :points="points"
         :empty-text="emptyText"
         :auto-fit="false"
-        :estimated-draggable="canEditEstimated && !aiPickMode"
+        :estimated-draggable="canEditEstimated && !aiPickMode && !correctMode"
+        :location-correctable="canEditEstimated && correctMode && !aiPickMode"
         :ai-pick-mode="aiPickMode"
         :selected-photo-ids="aiSelectedIds"
         @estimated-drag-end="onEstimatedDragEnd"
         @estimated-select="onEstimatedSelect"
+        @location-drag-end="onLocationDragEnd"
+        @location-select="onLocationSelect"
       >
         <template #meta>
           <div class="map-meta">
@@ -88,9 +121,40 @@
         </template>
       </PhotoClusterMap>
 
-      <aside v-if="editEst" class="est-edit-panel">
+      <aside v-if="aiPickMode" class="est-edit-panel ai-pick-panel">
         <div class="panel-head">
-          <span>微调估计位置</span>
+          <span>AI 点选列表（{{ pendingEstimated.length }}）</span>
+          <button type="button" class="panel-close" @click="exitAiPickMode">×</button>
+        </div>
+        <p class="panel-tip">叠在一起时请在此勾选；单次最多 {{ aiMaxBatch }} 张。点缩略图可定位到地图。</p>
+        <div class="ai-pick-actions">
+          <el-button size="small" type="primary" plain @click="selectAiBatch" :disabled="!pendingEstimated.length">选满本批</el-button>
+          <el-button size="small" @click="clearAiSelection" :disabled="!aiSelectedIds.length">清空</el-button>
+        </div>
+        <div class="ai-pick-list">
+          <button
+            v-for="p in pendingEstimated"
+            :key="p.photoId"
+            type="button"
+            class="ai-pick-item"
+            :class="{ selected: isAiSelected(p.photoId) }"
+            @click="onAiListItemClick(p)"
+          >
+            <span class="ai-pick-check" @click.stop="toggleAiSelection({ photoId: p.photoId })">
+              <input type="checkbox" :checked="isAiSelected(p.photoId)" tabindex="-1" readonly />
+            </span>
+            <img class="ai-pick-thumb" :src="mediaSrc(p, false)" alt="" loading="lazy" />
+            <span class="ai-pick-meta">
+              <span class="ai-pick-name" :title="p.fileName">{{ p.fileName || ('#' + p.photoId) }}</span>
+              <span class="ai-pick-badge">{{ estimatedSourceLabel(p) }}</span>
+            </span>
+          </button>
+        </div>
+      </aside>
+
+      <aside v-else-if="editEst" class="est-edit-panel">
+        <div class="panel-head">
+          <span>{{ editIsEstimated ? '微调估计位置' : '纠正定位' }}</span>
           <button type="button" class="panel-close" @click="cancelEstimatedEdit">×</button>
         </div>
         <div class="panel-media" v-if="editThumb">
@@ -144,14 +208,16 @@
           @click="previewPlaceOnMap"
         >预览定位</el-button>
         <p v-if="editEst.dirty" class="panel-tip">位置已变更（拖动或预览），点击下方按钮才会保存</p>
+        <p v-else-if="!editIsEstimated" class="panel-tip">设备 GPS 若飘到水面/偏航，可拖到岸边后保存为手工坐标</p>
         <div class="panel-actions">
           <el-button
             type="primary"
             :loading="saving"
             :disabled="!canEditEstimated"
-            @click="saveEstimatedAdjust"
-          >保存调整</el-button>
+            @click="saveLocationAdjust"
+          >{{ editIsEstimated ? '保存调整' : '保存纠正' }}</el-button>
           <el-button
+            v-if="editIsEstimated"
             type="warning"
             :loading="saving"
             :disabled="!canEditEstimated"
@@ -171,12 +237,20 @@ import {
   aiLandmarkAlbum,
   confirmEstimatedBatch,
   confirmEstimatedPhoto,
+  correctPhotoPosition,
+  fallbackLocateAlbum,
   listPhotoMapPoints,
   updateEstimatedPosition
 } from '@/api/photos/photo'
 import { searchTrackPlace } from '@/api/album/track'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
-import { isEstimatedLocation, isPendingEstimated, mediaSrc, estimatedSourceTitle } from '@/utils/photoMapCluster'
+import {
+  estimatedSourceLabel,
+  isEstimatedLocation,
+  isPendingEstimated,
+  mediaSrc,
+  estimatedSourceTitle
+} from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const route = useRoute()
@@ -192,6 +266,7 @@ const saving = ref(false)
 const aiLoading = ref(false)
 const confirmAllLoading = ref(false)
 const aiPickMode = ref(false)
+const correctMode = ref(false)
 const aiSelectedIds = ref([])
 /** 单次上限，与后端 album.aiLandmark.maxSample 对齐；可多次分批 */
 const aiMaxBatch = 40
@@ -218,6 +293,10 @@ const albumNameMap = computed(() => {
 
 const estimatedCount = computed(() => points.value.filter(isPendingEstimated).length)
 
+const pendingEstimated = computed(() => points.value.filter(isPendingEstimated))
+
+const respreadLoading = ref(false)
+
 const regionOrAiCount = computed(() => points.value.filter(p => {
   const s = p?.locationSource
   return (s === 'region_center' || s === 'ai_landmark') && isPendingEstimated(p)
@@ -239,9 +318,20 @@ const editThumb = computed(() => {
   return mediaSrc(editEst.value, false)
 })
 
+const editIsEstimated = computed(() => {
+  if (!editEst.value) return false
+  return isEstimatedLocation(editEst.value)
+})
+
 const editSourceLabel = computed(() => {
   if (!editEst.value) return ''
-  return estimatedSourceTitle(editEst.value)
+  if (editIsEstimated.value) return estimatedSourceTitle(editEst.value)
+  const s = editEst.value.locationSource
+  if (s === 'video') return '视频元数据 GPS（可纠正）'
+  if (s === 'exif') return '照片 EXIF GPS（可纠正）'
+  if (s === 'manual') return '手工坐标'
+  if (s === 'gpx_match') return 'GPX 匹配'
+  return s ? `来源 ${s}` : '设备/历史 GPS（可纠正）'
 })
 
 const metaTitle = computed(() => {
@@ -299,6 +389,7 @@ function loadPoints() {
 
 function onAlbumChange() {
   exitAiPickMode()
+  correctMode.value = false
   editEst.value = null
   loadPoints()
 }
@@ -382,7 +473,7 @@ function resetPlaceSearch() {
 function openEstimatedEditor(payload, { dirty = false, syncMap = false } = {}) {
   if (!payload?.photoId) return
   const point = points.value.find(p => String(p.photoId) === String(payload.photoId))
-  if (!point || !isEstimatedLocation(point)) return
+  if (!point) return
   const lat = payload.latitude != null ? payload.latitude : point.latitude
   const lng = payload.longitude != null ? payload.longitude : point.longitude
   const same =
@@ -397,6 +488,8 @@ function openEstimatedEditor(payload, { dirty = false, syncMap = false } = {}) {
     fileType: point.fileType,
     thumbUrl: point.thumbUrl,
     fileUrl: point.fileUrl,
+    locationSource: point.locationSource,
+    locationConfidence: point.locationConfidence,
     address: same ? editEst.value.address : (point.address || ''),
     latitude: lat,
     longitude: lng,
@@ -406,7 +499,8 @@ function openEstimatedEditor(payload, { dirty = false, syncMap = false } = {}) {
       : {
           latitude: point.latitude,
           longitude: point.longitude,
-          address: point.address || ''
+          address: point.address || '',
+          locationSource: point.locationSource
         }
   }
   // 拖动时标记已在地图上，勿回写 points 触发整图重绘/缩放
@@ -421,7 +515,27 @@ function onEstimatedSelect(payload) {
     toggleAiSelection(payload)
     return
   }
+  // 估计点仍走原逻辑；设备点由 location-select 处理，避免重复打开
+  if (payload?.point && isEstimatedLocation(payload.point)) {
+    openEstimatedEditor(payload, { dirty: false })
+  }
+}
+
+function onLocationSelect(payload) {
+  if (aiPickMode.value) return
   openEstimatedEditor(payload, { dirty: false })
+}
+
+function onEstimatedDragEnd(payload) {
+  if (!canEditEstimated.value || !payload?.photoId) return
+  if (payload?.point && isEstimatedLocation(payload.point)) {
+    openEstimatedEditor(payload, { dirty: true, syncMap: false })
+  }
+}
+
+function onLocationDragEnd(payload) {
+  if (!canEditEstimated.value || !payload?.photoId) return
+  openEstimatedEditor(payload, { dirty: true, syncMap: false })
 }
 
 function enterAiPickMode() {
@@ -429,11 +543,81 @@ function enterAiPickMode() {
     proxy?.$modal?.msgWarning?.('请先选择一个相册')
     return
   }
+  correctMode.value = false
   editEst.value = null
   resetPlaceSearch()
   aiPickMode.value = true
   aiSelectedIds.value = []
-  proxy?.$modal?.msgSuccess?.('已进入点选：点击地图上的估计点勾选，再点「识别已选」')
+  proxy?.$modal?.msgSuccess?.('已进入点选：可在右侧列表勾选，或点地图估计点')
+}
+
+function isAiSelected(photoId) {
+  return aiSelectedIds.value.some(x => String(x) === String(photoId))
+}
+
+function selectAiBatch() {
+  const list = pendingEstimated.value
+  if (!list.length) return
+  const next = []
+  for (const p of list) {
+    if (next.length >= aiMaxBatch) break
+    next.push(p.photoId)
+  }
+  aiSelectedIds.value = next
+  proxy?.$modal?.msgSuccess?.(`已选本批 ${next.length} 张，可点「识别已选」`)
+}
+
+function onAiListItemClick(point) {
+  if (!point?.photoId) return
+  toggleAiSelection({ photoId: point.photoId })
+  if (point.latitude != null && point.longitude != null) {
+    mapRef.value?.focusWgs?.(Number(point.latitude), Number(point.longitude), 16)
+  }
+}
+
+async function respreadEstimated() {
+  if (!canEditEstimated.value || albumId.value == null || albumId.value === '') {
+    proxy?.$modal?.msgWarning?.('请先选择一个相册')
+    return
+  }
+  try {
+    await proxy?.$modal?.confirm?.(
+      '将按拍摄时间重新推算橙色「估」点并分散。蓝色「区」仅当附近（约 3km）有 GPS 锚点时才会被精修，不会被远处景点吸走。是否继续？'
+    )
+  } catch (e) {
+    return
+  }
+  respreadLoading.value = true
+  try {
+    const res = await fallbackLocateAlbum(albumId.value)
+    const data = res?.data
+    const n = typeof data === 'number'
+      ? data
+      : (Number(data?.updated) || 0)
+    proxy?.$modal?.msgSuccess?.(n > 0 ? `已重新分散 ${n} 个估计点` : '没有需要更新的估计点')
+    editEst.value = null
+    loadPoints()
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    respreadLoading.value = false
+  }
+}
+
+function toggleCorrectMode() {
+  if (!canEditEstimated.value) return
+  if (correctMode.value) {
+    correctMode.value = false
+    if (editEst.value && !isEstimatedLocation(editEst.value)) {
+      cancelEstimatedEdit()
+    }
+    nextTick(() => mapRef.value?.refresh?.({ fit: false }))
+    return
+  }
+  exitAiPickMode()
+  correctMode.value = true
+  proxy?.$modal?.msgSuccess?.('已进入纠正：拖动缩略图到正确位置后点「保存纠正」')
+  nextTick(() => mapRef.value?.refresh?.({ fit: false }))
 }
 
 function exitAiPickMode() {
@@ -449,8 +633,8 @@ function toggleAiSelection(payload) {
   const id = payload?.photoId
   if (id == null) return
   const point = points.value.find(p => String(p.photoId) === String(id))
-  if (!point || !isEstimatedLocation(point)) {
-    proxy?.$modal?.msgWarning?.('只能点选估计位置的照片（区 / AI / 估）')
+  if (!point || !isPendingEstimated(point)) {
+    proxy?.$modal?.msgWarning?.('只能点选待确认的估计位置照片（区 / AI / 估）')
     return
   }
   const key = String(id)
@@ -472,7 +656,7 @@ async function runAiLandmark() {
     return
   }
   if (!aiSelectedIds.value.length) {
-    proxy?.$modal?.msgWarning?.('请先在地图上点选要识别的照片')
+    proxy?.$modal?.msgWarning?.('请先在右侧列表或地图上点选要识别的照片')
     return
   }
   try {
@@ -518,12 +702,6 @@ async function runAiLandmark() {
   }
 }
 
-function onEstimatedDragEnd(payload) {
-  if (!canEditEstimated.value || !payload?.photoId) return
-  // 只更新右侧面板坐标，保持当前缩放与中心
-  openEstimatedEditor(payload, { dirty: true, syncMap: false })
-}
-
 function cancelEstimatedEdit() {
   const cur = editEst.value
   if (!cur) return
@@ -542,31 +720,56 @@ function cancelEstimatedEdit() {
   resetPlaceSearch()
 }
 
-function saveEstimatedAdjust() {
+function saveLocationAdjust() {
   const cur = editEst.value
   if (!cur || !canEditEstimated.value) return
+  const estimated = isEstimatedLocation(cur)
   saving.value = true
-  updateEstimatedPosition({
-    photoId: cur.photoId,
-    latitude: cur.latitude,
-    longitude: cur.longitude,
-    address: cur.address || ''
-  }).then(() => {
-    patchLocalPoint(cur.photoId, {
-      latitude: cur.latitude,
-      longitude: cur.longitude,
-      address: cur.address || ''
-    })
-    editEst.value = {
-      ...cur,
-      dirty: false,
-      backup: {
+  const req = estimated
+    ? updateEstimatedPosition({
+        photoId: cur.photoId,
         latitude: cur.latitude,
         longitude: cur.longitude,
         address: cur.address || ''
+      })
+    : correctPhotoPosition({
+        photoId: cur.photoId,
+        latitude: cur.latitude,
+        longitude: cur.longitude,
+        address: cur.address || ''
+      })
+  req.then((res) => {
+    const data = res?.data || {}
+    patchLocalPoint(cur.photoId, {
+      latitude: data.latitude ?? cur.latitude,
+      longitude: data.longitude ?? cur.longitude,
+      address: data.address ?? cur.address ?? '',
+      locationSource: estimated
+        ? (data.locationSource || cur.locationSource)
+        : (data.locationSource || 'manual'),
+      locationConfidence: data.locationConfidence ?? (estimated ? cur.locationConfidence : 1)
+    })
+    editEst.value = {
+      ...cur,
+      latitude: data.latitude ?? cur.latitude,
+      longitude: data.longitude ?? cur.longitude,
+      address: data.address ?? cur.address ?? '',
+      locationSource: estimated
+        ? (data.locationSource || cur.locationSource)
+        : (data.locationSource || 'manual'),
+      dirty: false,
+      backup: {
+        latitude: data.latitude ?? cur.latitude,
+        longitude: data.longitude ?? cur.longitude,
+        address: data.address ?? cur.address ?? '',
+        locationSource: estimated
+          ? (data.locationSource || cur.locationSource)
+          : (data.locationSource || 'manual')
       }
     }
-    proxy?.$modal?.msgSuccess?.('估计位置已保存（仍未上主轨迹）')
+    proxy?.$modal?.msgSuccess?.(
+      estimated ? '估计位置已保存（仍未上主轨迹）' : '定位已纠正为手工坐标，并已同步轨迹'
+    )
     nextTick(() => mapRef.value?.refresh?.({ fit: false }))
   }).finally(() => {
     saving.value = false
@@ -673,6 +876,7 @@ watch(() => route.query.albumId, (val) => {
     if (albumId.value != null) {
       albumId.value = undefined
       editEst.value = null
+      correctMode.value = false
       exitAiPickMode()
       loadPoints()
     }
@@ -682,6 +886,7 @@ watch(() => route.query.albumId, (val) => {
   if (!Number.isNaN(n) && albumId.value !== n) {
     albumId.value = n
     editEst.value = null
+    correctMode.value = false
     exitAiPickMode()
     loadPoints()
   }
@@ -758,6 +963,12 @@ watch(() => route.query.albumId, (val) => {
   color: #8a6116;
   font-size: 13px;
   border-bottom: 1px solid #f5dab1;
+}
+
+.est-banner--slim {
+  background: #f4f8ff;
+  color: #3b6ea5;
+  border-bottom-color: #d6e4f5;
 }
 
 .est-banner-text {
@@ -935,5 +1146,94 @@ watch(() => route.query.albumId, (val) => {
 .panel-actions .el-button {
   margin: 0;
   width: 100%;
+}
+
+.ai-pick-panel {
+  width: 320px;
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 10px;
+}
+
+.ai-pick-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ai-pick-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(70vh, 560px);
+  padding-right: 2px;
+}
+
+.ai-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-pick-item:hover {
+  border-color: #c6e2ff;
+  background: #f5f9ff;
+}
+
+.ai-pick-item.selected {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.ai-pick-check {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ai-pick-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #f2f3f5;
+  flex-shrink: 0;
+}
+
+.ai-pick-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-pick-name {
+  font-size: 12px;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-pick-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  color: #e6a23c;
+  background: #fdf6ec;
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.5;
 }
 </style>

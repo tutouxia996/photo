@@ -134,12 +134,21 @@ public class AlbumProperties {
         private boolean enabled = true;
         /** 两端锚点最大时间跨度（小时），超过则不插值 */
         private int maxInterpGapHours = 24;
+        /**
+         * 两端锚点最大直线距离（公里）。超过则不跨段插值，避免同相册多景点（如天坛↔紫竹院）串线。
+         */
+        private double maxAnchorSpanKm = 8.0;
         /** 单侧外推最大距离（公里） */
         private double maxExtrapolateKm = 5.0;
         /** 仅一个锚点时，时间差在此分钟内可吸附到该点 */
         private int maxSnapGapMinutes = 30;
         /** 插值/外推允许的最大合理速度（km/h），用于抑制异常跳变 */
         private double maxReasonableSpeedKmh = 200.0;
+        /**
+         * 精修蓝色「区」点时：GPS 估计须落在区域中心此距离内（公里）才允许覆盖。
+         * 同景点可细化；跨景点 GPS 不会把「区」吸走。
+         */
+        private double maxRefineRegionKm = 3.0;
         /** 默认地图是否包含兜底坐标（估计点需在地图标记并可微调） */
         private boolean includeInMap = true;
         /** 主轨迹是否包含兜底坐标（false=确认采纳后才进主轨迹） */

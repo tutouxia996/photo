@@ -319,10 +319,9 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
                 .orderByAsc(BizTrackPoint::getPointId));
 
         // 照片点序未变时绝不能重建：否则会清空用户刚保存的 travelMode/routePath
+        // 但仍需把媒体最新经纬度写回轨迹点（纠正漂移/手工标点）
         if (samePhotoSequence(oldPoints, photos)) {
-            log.debug("照片轨点序未变，跳过重建 albumId={} trackId={} points={}",
-                    existing.getAlbumId(), existing.getTrackId(), oldPoints.size());
-            return existing;
+            return refreshPhotoCoordsOnTrack(existing, oldPoints, photos);
         }
 
         TrackBuildResult built = photos.isEmpty()
@@ -379,6 +378,93 @@ public class BizTrackServiceImpl extends ServiceImpl<BizTrackMapper, BizTrack> i
         log.info("自动刷新相册轨迹 albumId={} trackId={} photoPoints={} waypoints={}",
                 existing.getAlbumId(), existing.getTrackId(), built.points.size(), keptWaypoints.size());
         return existing;
+    }
+
+    /**
+     * 点序不变时：同步照片经纬度到轨迹点；坐标变更的相邻路段清空 routePath，便于重新贴合路网。
+     */
+    private BizTrack refreshPhotoCoordsOnTrack(BizTrack existing, List<BizTrackPoint> oldPoints, List<BizPhoto> photos) {
+        Map<Long, BizPhoto> byId = new HashMap<Long, BizPhoto>();
+        if (photos != null) {
+            for (BizPhoto photo : photos) {
+                if (photo != null && photo.getPhotoId() != null) {
+                    byId.put(photo.getPhotoId(), photo);
+                }
+            }
+        }
+        int updated = 0;
+        Set<Long> clearRoutePointIds = new HashSet<Long>();
+        for (int i = 0; i < oldPoints.size(); i++) {
+            BizTrackPoint tp = oldPoints.get(i);
+            if (tp == null || tp.getPhotoId() == null) {
+                continue;
+            }
+            BizPhoto photo = byId.get(tp.getPhotoId());
+            if (photo == null || photo.getLatitude() == null || photo.getLongitude() == null) {
+                continue;
+            }
+            if (sameCoord(tp.getLatitude(), photo.getLatitude())
+                    && sameCoord(tp.getLongitude(), photo.getLongitude())) {
+                continue;
+            }
+            tp.setLatitude(photo.getLatitude());
+            tp.setLongitude(photo.getLongitude());
+            trackPointService.updateById(tp);
+            updated++;
+            // 进入本点的路段（上一点 → 本点）与离开本点的路段（本点 → 下一点）需重算折线
+            if (i > 0) {
+                BizTrackPoint prev = oldPoints.get(i - 1);
+                if (prev != null && prev.getPointId() != null) {
+                    clearRoutePointIds.add(prev.getPointId());
+                }
+            }
+            if (tp.getPointId() != null) {
+                clearRoutePointIds.add(tp.getPointId());
+            }
+        }
+        if (updated == 0) {
+            log.debug("照片轨点序未变且坐标无变化，跳过 albumId={} trackId={} points={}",
+                    existing.getAlbumId(), existing.getTrackId(), oldPoints.size());
+            return existing;
+        }
+        for (Long pointId : clearRoutePointIds) {
+            trackPointService.update(new LambdaUpdateWrapper<BizTrackPoint>()
+                    .eq(BizTrackPoint::getPointId, pointId)
+                    .set(BizTrackPoint::getRoutePath, null));
+        }
+        // 按照片点重算总里程（与 buildTrackPoints 一致）
+        double totalDistance = 0D;
+        BizPhoto prevPhoto = null;
+        for (BizPhoto photo : photos) {
+            if (photo == null || photo.getLatitude() == null || photo.getLongitude() == null) {
+                continue;
+            }
+            if (prevPhoto != null) {
+                double distance = GeoDistanceUtils.haversineKm(
+                        prevPhoto.getLatitude().doubleValue(), prevPhoto.getLongitude().doubleValue(),
+                        photo.getLatitude().doubleValue(), photo.getLongitude().doubleValue());
+                if (distance <= JUMP_THRESHOLD_KM) {
+                    totalDistance += distance;
+                }
+            }
+            prevPhoto = photo;
+        }
+        existing.setTotalDistance(BigDecimal.valueOf(totalDistance).setScale(2, BigDecimal.ROUND_HALF_UP));
+        existing.setUpdateTime(new Date());
+        updateById(existing);
+        log.info("照片轨坐标已同步 albumId={} trackId={} updatedPoints={}",
+                existing.getAlbumId(), existing.getTrackId(), updated);
+        return existing;
+    }
+
+    private static boolean sameCoord(BigDecimal a, BigDecimal b) {
+        if (a == null && b == null) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.compareTo(b) == 0;
     }
 
     /** 照片点 photoId 顺序是否与当前 GPS 媒体列表一致（忽略途经点） */

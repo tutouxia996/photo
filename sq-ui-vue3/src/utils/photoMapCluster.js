@@ -543,12 +543,13 @@ export function createEstimatedClusterGroup() {
     showCoverageOnHover: false,
     zoomToBoundsOnClick: true,
     spiderfyOnMaxZoom: true,
-    disableClusteringAtZoom: 19,
+    disableClusteringAtZoom: 17,
     maxClusterRadius: zoom => {
-      if (zoom <= 12) return 55
-      if (zoom <= 15) return 42
-      return 28
+      if (zoom <= 12) return 48
+      if (zoom <= 15) return 36
+      return 22
     },
+    spiderfyDistanceMultiplier: 2.2,
     animate: true,
     animateAddingMarkers: false,
     chunkedLoading: true,
@@ -649,7 +650,8 @@ export function createPhotoMarker(point, options = {}) {
   const waypoint = isWaypointPoint(point)
   const estimated = isEstimatedLocation(point)
   const selected = !!options.selected
-  const draggable = !!(options.draggable && estimated && !waypoint && !options.aiPickMode)
+  // locationCorrectable / estimated 微调：由调用方传入 draggable
+  const draggable = !!(options.draggable && !waypoint && !options.aiPickMode)
   const markerOpts = {
     icon: waypoint
       ? createWaypointDivIcon(point)
@@ -659,7 +661,9 @@ export function createPhotoMarker(point, options = {}) {
     draggable,
     autoPan: draggable,
     photoPoint: point,
-    zIndexOffset: estimated ? (selected ? 2600 : 2000) : 0
+    zIndexOffset: estimated || options.correcting
+      ? (selected ? 2600 : 2000)
+      : 0
   }
   if (options.pane) {
     markerOpts.pane = options.pane

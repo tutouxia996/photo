@@ -41,12 +41,15 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
 
     private static final Logger log = LoggerFactory.getLogger(PhotoFallbackLocationServiceImpl.class);
 
-    /** 同区域中心附近轻微分散半径（米），便于地图上分别拖动 */
-    private static final double REGION_SPREAD_MIN_M = 25.0;
-    private static final double REGION_SPREAD_MAX_M = 120.0;
-    /** AI 地标附近更小分散（米） */
-    private static final double AI_SPREAD_MIN_M = 15.0;
-    private static final double AI_SPREAD_MAX_M = 80.0;
+    /** 同区域中心附近分散半径（米），随序号扩大，便于地图上分别拖选 */
+    private static final double REGION_SPREAD_MIN_M = 30.0;
+    private static final double REGION_SPREAD_MAX_M = 450.0;
+    /** AI 地标附近分散（米） */
+    private static final double AI_SPREAD_MIN_M = 20.0;
+    private static final double AI_SPREAD_MAX_M = 180.0;
+    /** 时间插值同锚点附近分散（米），避免橙色「估」完全重合 */
+    private static final double TIME_SPREAD_MIN_M = 25.0;
+    private static final double TIME_SPREAD_MAX_M = 380.0;
 
     @Autowired
     private IBizPhotoService photoService;
@@ -210,7 +213,7 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
             } catch (Exception e) {
                 log.debug("refresh album stats after region locate: {}", e.getMessage());
             }
-            // 若相册内已有权威 GPS，顺带用时间插值补其余盲点
+            // 顺带时间插值：仅「同景点附近」的 GPS 可精修「区」点；跨景点锚点会被距离门槛挡住
             try {
                 fillMissingByTimeInterp(albumId);
             } catch (Exception e) {
@@ -1147,17 +1150,7 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
     }
 
     private static double[] spreadAroundAi(double lat, double lng, int index, long photoId) {
-        if (index <= 0) {
-            return new double[]{lat, lng};
-        }
-        double angle = ((photoId * 41L + index * 53L) % 360 + 360) % 360 * Math.PI / 180.0;
-        double t = (index % 8) / 7.0;
-        double radiusM = AI_SPREAD_MIN_M + (AI_SPREAD_MAX_M - AI_SPREAD_MIN_M) * t;
-        double dLat = (radiusM / 111320.0) * Math.cos(angle);
-        double cosLat = Math.cos(Math.toRadians(lat));
-        double metersPerDegLng = 111320.0 * Math.max(0.2, Math.abs(cosLat));
-        double dLng = (radiusM / metersPerDegLng) * Math.sin(angle);
-        return new double[]{lat + dLat, lng + dLng};
+        return spreadAroundBase(lat, lng, index, photoId, AI_SPREAD_MIN_M, AI_SPREAD_MAX_M);
     }
 
     private static final class RegionAnchor {
@@ -1266,15 +1259,31 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
     }
 
     /**
-     * 在中心点附近按序号做确定性轻微分散（约 25~120m），避免估计点完全叠在一起无法拖选。
+     * 在中心点附近按序号做确定性分散（螺旋扩大），避免估计点完全叠在一起无法拖选。
      */
     private static double[] spreadAround(double lat, double lng, int index, long photoId) {
+        return spreadAroundBase(lat, lng, index, photoId, REGION_SPREAD_MIN_M, REGION_SPREAD_MAX_M);
+    }
+
+    private static double[] spreadAroundTime(double lat, double lng, int index, long photoId) {
+        return spreadAroundBase(lat, lng, index, photoId, TIME_SPREAD_MIN_M, TIME_SPREAD_MAX_M);
+    }
+
+    private static double[] spreadAroundBase(double lat, double lng, int index, long photoId,
+                                            double minM, double maxM) {
         if (index <= 0) {
-            return new double[]{lat, lng};
+            double angle0 = ((photoId * 37L) % 360 + 360) % 360 * Math.PI / 180.0;
+            double r0 = Math.min(minM, 18.0);
+            return offsetMeters(lat, lng, angle0, r0);
         }
-        double angle = ((photoId * 37L + index * 47L) % 360 + 360) % 360 * Math.PI / 180.0;
-        double t = (index % 8) / 7.0;
-        double radiusM = REGION_SPREAD_MIN_M + (REGION_SPREAD_MAX_M - REGION_SPREAD_MIN_M) * t;
+        double golden = 2.399963229728653;
+        double angle = ((photoId * 17L) % 360) * Math.PI / 180.0 + index * golden;
+        double t = Math.min(1.0, Math.sqrt(index) / Math.sqrt(64.0));
+        double radiusM = minM + (maxM - minM) * t;
+        return offsetMeters(lat, lng, angle, radiusM);
+    }
+
+    private static double[] offsetMeters(double lat, double lng, double angle, double radiusM) {
         double dLat = (radiusM / 111320.0) * Math.cos(angle);
         double cosLat = Math.cos(Math.toRadians(lat));
         double metersPerDegLng = 111320.0 * Math.max(0.2, Math.abs(cosLat));
@@ -1342,6 +1351,7 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
         }
 
         int updated = 0;
+        int spreadIndex = 0;
         Date now = new Date();
         for (BizPhoto photo : photos) {
             if (photo.getShootTime() == null) {
@@ -1363,8 +1373,21 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
                 continue;
             }
 
-            photo.setLatitude(BigDecimal.valueOf(est.lat).setScale(7, BigDecimal.ROUND_HALF_UP));
-            photo.setLongitude(BigDecimal.valueOf(est.lng).setScale(7, BigDecimal.ROUND_HALF_UP));
+            // 已有蓝色「区」：只允许同景点附近的 GPS 精修，避免跨景点吸走
+            if (PhotoLocationSource.REGION_CENTER.equals(source) && hasCoords) {
+                double refineKm = cfg.getMaxRefineRegionKm() > 0 ? cfg.getMaxRefineRegionKm() : 3.0;
+                double d = GeoDistanceUtils.haversineKm(
+                        photo.getLatitude().doubleValue(), photo.getLongitude().doubleValue(),
+                        est.lat, est.lng);
+                if (d > refineKm) {
+                    continue;
+                }
+            }
+
+            double[] spread = spreadAroundTime(est.lat, est.lng, spreadIndex++,
+                    photo.getPhotoId() == null ? 0L : photo.getPhotoId());
+            photo.setLatitude(BigDecimal.valueOf(spread[0]).setScale(7, BigDecimal.ROUND_HALF_UP));
+            photo.setLongitude(BigDecimal.valueOf(spread[1]).setScale(7, BigDecimal.ROUND_HALF_UP));
             photo.setLocationSource(PhotoLocationSource.TIME_INTERP);
             photo.setLocationConfidence(BigDecimal.valueOf(est.confidence).setScale(3, BigDecimal.ROUND_HALF_UP));
             photo.setUpdateTime(now);
@@ -1434,6 +1457,11 @@ public class PhotoFallbackLocationServiceImpl implements IPhotoFallbackLocationS
         double lat1 = next.getLatitude().doubleValue();
         double lng1 = next.getLongitude().doubleValue();
         double distKm = GeoDistanceUtils.haversineKm(lat0, lng0, lat1, lng1);
+        double maxSpan = cfg.getMaxAnchorSpanKm() > 0 ? cfg.getMaxAnchorSpanKm() : 8.0;
+        if (distKm > maxSpan) {
+            // 同相册多景点：两端相距过远时不串线插值
+            return null;
+        }
         double hours = Math.max(gapHours, 1.0 / 3600.0);
         double speed = distKm / hours;
         if (speed > cfg.getMaxReasonableSpeedKmh()) {

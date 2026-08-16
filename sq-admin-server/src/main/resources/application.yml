@@ -183,8 +183,12 @@ album:
   fallbackLocation:
     enabled: true
     maxInterpGapHours: 24
+    # 两端 GPS 锚点超过该距离不插值，避免同相册多景点串线
+    maxAnchorSpanKm: 8.0
     maxExtrapolateKm: 5.0
     maxSnapGapMinutes: 30
     maxReasonableSpeedKmh: 200.0
+    # GPS 精修「区」点时允许偏离区域中心的最大距离（公里）
+    maxRefineRegionKm: 3.0
     includeInMap: true
     includeInTrack: false

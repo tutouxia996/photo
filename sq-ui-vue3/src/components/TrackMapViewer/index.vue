@@ -6,19 +6,20 @@
       :show-polyline="trackLineVisible"
       :polyline-color="track?.trackColor || '#3B82F6'"
       :segment-by-travel-mode="true"
-      :show-direction="trackLineVisible && !editing && !customOpen && !boxSelectMode"
-      :editable="editable && editing && !customOpen && !boxSelectMode"
+      :show-direction="trackLineVisible && !editing && !customOpen && !boxSelectMode && !correcting"
+      :editable="editable && editing && !customOpen && !boxSelectMode && !correcting"
       :active-segment-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
       :path-edit-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
-      :segment-labels="editing ? 'none' : 'hover'"
+      :segment-labels="editing || correcting ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
       :overlay-paths="localGpxOverlays"
       :visible-travel-modes="visibleTravelModes"
       :gpx-endpoint-pickable="editing && customOpen && customTab === 'place'"
       :point-pickable="editing && customOpen && customTab === 'place'"
+      :location-correctable="correcting"
       :box-select-active="editing && boxSelectMode"
       :selected-segment-indexes="selectedSegmentIndexes"
-      :auto-fit="!editing"
+      :auto-fit="!editing && !correcting"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
       @segment-path-change="onSegmentPathChange"
@@ -27,6 +28,8 @@
       @gpx-click="onGpxClick"
       @gpx-endpoint-click="onGpxEndpointClick"
       @box-select="onBoxSelect"
+      @location-select="onCorrectSelect"
+      @location-drag-end="onCorrectDragEnd"
     >
       <template #meta>
         <div v-if="track && trackLineVisible" class="track-meta" :class="{ 'is-open': metaOpen }">
@@ -39,19 +42,26 @@
               <el-button
                 size="small"
                 :loading="replanning"
-                :disabled="editing"
+                :disabled="editing || correcting"
                 title="仅对照片轨点之间缺折线的路段贴合；已匹配 GPX 的媒体不会进照片轨；已有手动连接会保留；不影响 GPX"
                 @click="replanRoutes"
               >贴合路网</el-button>
+              <el-button
+                v-if="editable && canCorrectPhoto && !editing"
+                size="small"
+                :type="correcting ? 'warning' : 'default'"
+                title="拖动飘到水面/偏航的照片视频点，保存为手工坐标并同步轨迹"
+                @click="toggleCorrectMode"
+              >{{ correcting ? '退出纠正' : '纠正定位' }}</el-button>
               <template v-if="editable">
                 <el-button
-                  v-if="!editing"
+                  v-if="!editing && !correcting"
                   type="primary"
                   size="small"
                   title="编辑照片/自定义轨迹；GPX 出行方式可点击绿色/彩色线路修改"
                   @click="startEdit"
                 >编辑轨迹</el-button>
-                <template v-else>
+                <template v-else-if="editing">
                   <el-button
                     size="small"
                     :type="boxSelectMode ? 'warning' : 'default'"
@@ -77,7 +87,8 @@
               <span class="dir-flow">→ 行进方向 →</span>
               <span class="dir-end">终</span>
             </div>
-            <p v-if="editing && boxSelectMode" class="edit-tip">在地图上按住拖拽拉框，选中橙色高亮路段后可批量改出行方式并贴合路网。蓝虚线表示尚未贴合。</p>
+            <p v-if="correcting" class="edit-tip">纠正模式：拖动照片/视频缩略图到岸边正确位置，右侧保存后会写成手工坐标并同步轨迹；相邻路段需再点「贴合路网」。</p>
+            <p v-else-if="editing && boxSelectMode" class="edit-tip">在地图上按住拖拽拉框，选中橙色高亮路段后可批量改出行方式并贴合路网。蓝虚线表示尚未贴合。</p>
             <p v-else-if="editing" class="edit-tip">点线路改走向；可用「框选」批量修改。点橙色途经点可改说明或删除自定义路段。增补时可选用 GPX 起/终或照片点做连接（不改 GPX 折线）。</p>
             <p v-else-if="hasGpxPathOverlay" class="edit-tip">彩色 GPX 线路按出行方式着色（与照片轨一致）；点击线路可查看详情并修改出行方式。</p>
           </div>
@@ -136,6 +147,23 @@
       <div class="seg-actions" v-if="editable">
         <el-button type="primary" :loading="gpxModeSaving" @click="saveGpxTravelMode">保存</el-button>
         <el-button :disabled="gpxModeSaving" @click="closeGpxPanel">取消</el-button>
+      </div>
+    </aside>
+
+    <aside v-if="correcting && correctEdit" class="seg-panel correct-panel">
+      <div class="seg-panel-hd">
+        <div class="seg-panel-title">纠正定位</div>
+        <button type="button" class="seg-close" @click="cancelCorrectEdit">×</button>
+      </div>
+      <div v-if="correctThumb" class="correct-media">
+        <img :src="correctThumb" alt="" />
+      </div>
+      <p class="path-tip" :title="correctEdit.fileName">{{ correctEdit.fileName || ('媒体 #' + correctEdit.photoId) }}</p>
+      <p class="path-tip">{{ correctEdit.latitude }}, {{ correctEdit.longitude }}</p>
+      <p v-if="correctEdit.dirty" class="path-tip">已拖动到新位置，确认后保存为手工坐标</p>
+      <div class="seg-actions">
+        <el-button type="primary" :loading="correctSaving" :disabled="!correctEdit.dirty" @click="saveCorrectPosition">保存纠正</el-button>
+        <el-button :disabled="correctSaving" @click="cancelCorrectEdit">取消</el-button>
       </div>
     </aside>
 
@@ -608,7 +636,9 @@ import {
   setTrackGpxTravelMode,
   updateTrackPoints
 } from '@/api/album/track'
-  import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, wgs84ToGcj02 } from '@/utils/photoMapCluster'
+import { correctPhotoPosition } from '@/api/album/photo'
+import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
+import { checkPermi } from '@/utils/permission'
 
 const props = defineProps({
   track: { type: Object, default: null },
@@ -619,12 +649,18 @@ const props = defineProps({
   editable: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['saved', 'replan'])
+const emit = defineEmits(['saved', 'replan', 'location-corrected'])
 
 const { proxy } = getCurrentInstance()
 const clusterMapRef = ref(null)
 const metaOpen = ref(false)
 const editing = ref(false)
+const correcting = ref(false)
+const correctEdit = ref(null)
+const correctSaving = ref(false)
+const localCorrectPoints = ref(null)
+const canCorrectPhoto = computed(() => checkPermi(['album:photo:edit']))
+const correctThumb = computed(() => (correctEdit.value ? mediaSrc(correctEdit.value, false) : ''))
 const saving = ref(false)
 const planning = ref(false)
 const replanning = ref(false)
@@ -720,7 +756,9 @@ const trackLineVisible = computed(() => {
 })
 
 const displayPoints = computed(() => {
-  const list = editing.value ? draftPoints.value : props.points
+  const list = editing.value
+    ? draftPoints.value
+    : (correcting.value && localCorrectPoints.value ? localCorrectPoints.value : props.points)
   if (!Array.isArray(list)) return []
   if (trackLineVisible.value) return list
   return list.filter(p => !isWaypointPoint(p))
@@ -1529,6 +1567,7 @@ function clonePoints(list) {
 }
 
 function startEdit() {
+  exitCorrectMode()
   draftPoints.value = clonePoints(props.points)
   editing.value = true
   activeIndex.value = -1
@@ -1538,6 +1577,125 @@ function startEdit() {
   customOpen.value = false
   customPreviewPath.value = null
   exitBoxSelect(false)
+}
+
+function toggleCorrectMode() {
+  if (!props.editable || !canCorrectPhoto.value) {
+    proxy?.$modal?.msgWarning?.('没有照片编辑权限（album:photo:edit）')
+    return
+  }
+  if (correcting.value) {
+    exitCorrectMode()
+    return
+  }
+  if (editing.value) {
+    cancelEdit()
+  }
+  closeGpxPanel()
+  localCorrectPoints.value = clonePoints(props.points)
+  correcting.value = true
+  correctEdit.value = null
+  metaOpen.value = true
+  proxy?.$modal?.msgSuccess?.('已进入纠正：拖动缩略图到正确位置后点「保存纠正」')
+}
+
+function exitCorrectMode() {
+  if (correctEdit.value?.dirty && correctEdit.value.backup) {
+    const cur = correctEdit.value
+    patchLocalDisplayPoint(cur.photoId, {
+      latitude: cur.backup.latitude,
+      longitude: cur.backup.longitude
+    })
+  }
+  correcting.value = false
+  correctEdit.value = null
+  localCorrectPoints.value = null
+  nextTick(() => clusterMapRef.value?.refresh?.({ fit: false }))
+}
+
+function patchLocalDisplayPoint(photoId, patch) {
+  const id = String(photoId)
+  if (!localCorrectPoints.value) {
+    localCorrectPoints.value = clonePoints(props.points)
+  }
+  localCorrectPoints.value = localCorrectPoints.value.map(p => {
+    if (String(p.photoId) !== id) return p
+    return { ...p, ...patch }
+  })
+}
+
+function openCorrectEditor(payload, { dirty = false } = {}) {
+  if (!correcting.value || !payload?.photoId) return
+  const list = displayPoints.value
+  const point = list.find(p => String(p.photoId) === String(payload.photoId))
+  if (!point || isWaypointPoint(point)) {
+    proxy?.$modal?.msgWarning?.('请选择带照片/视频的轨迹点')
+    return
+  }
+  const lat = payload.latitude != null ? payload.latitude : point.latitude
+  const lng = payload.longitude != null ? payload.longitude : point.longitude
+  const same = correctEdit.value && String(correctEdit.value.photoId) === String(point.photoId)
+  correctEdit.value = {
+    photoId: point.photoId,
+    fileName: point.fileName,
+    fileType: point.fileType,
+    thumbUrl: point.thumbUrl,
+    fileUrl: point.fileUrl,
+    latitude: lat,
+    longitude: lng,
+    dirty: dirty || (same && correctEdit.value.dirty),
+    backup: same && correctEdit.value.backup
+      ? correctEdit.value.backup
+      : { latitude: point.latitude, longitude: point.longitude }
+  }
+}
+
+function onCorrectSelect(payload) {
+  if (!correcting.value) return
+  openCorrectEditor(payload, { dirty: false })
+}
+
+function onCorrectDragEnd(payload) {
+  if (!correcting.value || !payload?.photoId) return
+  openCorrectEditor(payload, { dirty: true })
+  patchLocalDisplayPoint(payload.photoId, {
+    latitude: payload.latitude,
+    longitude: payload.longitude
+  })
+  nextTick(() => clusterMapRef.value?.refresh?.({ fit: false }))
+}
+
+function cancelCorrectEdit() {
+  const cur = correctEdit.value
+  if (cur?.dirty && cur.backup) {
+    patchLocalDisplayPoint(cur.photoId, {
+      latitude: cur.backup.latitude,
+      longitude: cur.backup.longitude
+    })
+    nextTick(() => clusterMapRef.value?.refresh?.({ fit: false }))
+  }
+  correctEdit.value = null
+}
+
+async function saveCorrectPosition() {
+  const cur = correctEdit.value
+  if (!cur?.photoId || !cur.dirty) return
+  correctSaving.value = true
+  try {
+    await correctPhotoPosition({
+      photoId: cur.photoId,
+      latitude: cur.latitude,
+      longitude: cur.longitude
+    })
+    proxy?.$modal?.msgSuccess?.('定位已纠正，轨迹坐标已同步；可再点「贴合路网」重算相邻折线')
+    correctEdit.value = null
+    localCorrectPoints.value = null
+    emit('location-corrected', { photoId: cur.photoId, trackId: props.track?.trackId })
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    correctSaving.value = false
+  }
 }
 
 function cancelEdit() {
@@ -2301,6 +2459,20 @@ defineExpose({
   color: #909399;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.correct-media {
+  margin: 0 0 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f2f3f5;
+}
+
+.correct-media img {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
 }
 
 .mode-grid {

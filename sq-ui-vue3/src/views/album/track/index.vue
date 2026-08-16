@@ -66,22 +66,29 @@
     </el-row>
 
     <el-table v-loading="loading" :data="trackList">
-      <el-table-column label="ID" prop="trackId" width="80" />
+      <el-table-column label="ID" prop="trackId" width="70" align="center" />
       <el-table-column label="相册" min-width="140" :show-overflow-tooltip="true">
         <template #default="scope">
           {{ albumNameMap[scope.row.albumId] || scope.row.albumId || '-' }}
         </template>
       </el-table-column>
-      <el-table-column label="名称" prop="trackName" />
-      <el-table-column label="来源" width="80">
+      <el-table-column label="名称" prop="trackName" min-width="200" :show-overflow-tooltip="true" />
+      <el-table-column label="来源" width="70" align="center">
         <template #default="scope">{{ sourceTypeLabel(scope.row.sourceType) }}</template>
       </el-table-column>
-      <el-table-column label="点位数" prop="pointCount" width="90" />
-      <el-table-column label="里程(km)不包含增补路段" prop="totalDistance" min-width="170" />
-      <el-table-column label="时长(不包含增补路段)" min-width="180">
+      <el-table-column label="点位数" prop="pointCount" width="80" align="center" />
+      <el-table-column prop="totalDistance" width="100" align="center">
+        <template #header>
+          <span title="不包含增补路段">里程(km)</span>
+        </template>
+      </el-table-column>
+      <el-table-column width="150" align="center">
+        <template #header>
+          <span title="不包含增补路段">时长</span>
+        </template>
         <template #default="scope">{{ formatDuration(scope.row.totalDuration) }}</template>
       </el-table-column>
-      <el-table-column label="显示轨迹线" width="120" align="center">
+      <el-table-column label="显示轨迹线" width="110" align="center">
         <template #default="scope">
           <el-switch
             :model-value="isTrackEnabledDisplay(scope.row)"
@@ -95,7 +102,7 @@
           />
         </template>
       </el-table-column>
-      <el-table-column label="启用GPX" width="110" align="center">
+      <el-table-column label="启用GPX" width="100" align="center">
         <template #default="scope">
           <el-switch
             :model-value="isGpxEnabled(scope.row)"
@@ -109,11 +116,11 @@
           />
         </template>
       </el-table-column>
-      <el-table-column label="公开" prop="isPublic" width="80">
+      <el-table-column label="公开" prop="isPublic" width="70" align="center">
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
-      <el-table-column label="行程说明" prop="remark" min-width="160" :show-overflow-tooltip="true" />
-      <el-table-column label="操作" min-width="280" width="320" fixed="right">
+      <el-table-column label="行程说明" prop="remark" min-width="240" :show-overflow-tooltip="true" />
+      <el-table-column label="操作" width="400" fixed="right">
         <template #default="scope">
           <el-button
             v-if="canShowPhotoMap(scope.row)"
@@ -373,6 +380,7 @@
           :editable="canEditTrack && isTrackEnabled(detailTrack)"
           @saved="onTrackMapSaved"
           @replan="onTrackReplan"
+          @location-corrected="onLocationCorrected"
         />
       </div>
     </el-dialog>
@@ -796,7 +804,7 @@ function submitRegionLocate() {
     }
     const name = albumNameMap.value[id] || id
     proxy.$modal.confirm(
-      `将为相册「${name}」写入区域中心粗定位（蓝色「区」）。会覆盖已有的区域/AI/时间估计点，不会覆盖设备 GPS 与手工确认点。是否继续？`
+      `将为相册「${name}」写入区域中心粗定位（蓝色「区」）。会覆盖已有的区域/AI/时间估计点，不会覆盖设备 GPS 与手工确认点。\n\n同相册若还有其它景点的 GPS，只会用「附近约 3km 内」的锚点精修，不会把点吸到远处。是否继续？`
     ).then(() => {
       regionLoading.value = true
       return regionLocateAlbum(id, payload)
@@ -1102,6 +1110,10 @@ function onTrackMapSaved() {
   }).catch(() => {
     getList()
   })
+}
+
+function onLocationCorrected() {
+  onTrackMapSaved()
 }
 
 function onTrackReplan({ trackId, done }) {

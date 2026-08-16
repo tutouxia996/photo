@@ -231,6 +231,54 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
+     * 纠正媒体定位（设备 GPS 漂移等到岸边）：写入手工坐标并同步照片轨。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "纠正媒体定位", businessType = BusinessType.UPDATE)
+    @PutMapping("/correctPosition")
+    public AjaxResult correctPosition(@RequestBody BizPhoto body) {
+        if (body == null || body.getPhotoId() == null) {
+            return error("图片ID不能为空");
+        }
+        if (body.getLatitude() == null || body.getLongitude() == null) {
+            return error("经纬度不能为空");
+        }
+        BizPhoto existing = photoService.getById(body.getPhotoId());
+        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("图片不存在或已删除");
+        }
+        existing.setLatitude(body.getLatitude());
+        existing.setLongitude(body.getLongitude());
+        existing.setLocationSource(PhotoLocationSource.MANUAL);
+        existing.setLocationConfidence(java.math.BigDecimal.ONE);
+        if (body.getAddress() != null) {
+            existing.setAddress(body.getAddress());
+        }
+        if (body.getProvince() != null) {
+            existing.setProvince(body.getProvince());
+        }
+        if (body.getCity() != null) {
+            existing.setCity(body.getCity());
+        }
+        if (body.getDistrict() != null) {
+            existing.setDistrict(body.getDistrict());
+        }
+        existing.setUpdateBy(getUsername());
+        existing.setUpdateTime(new Date());
+        PhotoFieldUtils.clamp(existing);
+        boolean ok = photoService.updateById(existing);
+        if (ok && existing.getAlbumId() != null) {
+            try {
+                fallbackLocationService.fillMissingByTimeInterp(existing.getAlbumId());
+                trackService.autoSyncAlbumTrack(existing.getAlbumId());
+            } catch (Exception ignored) {
+            }
+            albumService.refreshAlbumStats(existing.getAlbumId());
+        }
+        return ok ? success(existing) : error("保存失败");
+    }
+
+    /**
      * 微调估计坐标（仍为兜底来源，不上主轨迹）
      */
     @PreAuthorize("@ss.hasPermi('album:photo:edit')")

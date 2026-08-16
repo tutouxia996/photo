@@ -80,6 +80,8 @@ const props = defineProps({
   pointPickable: { type: Boolean, default: false },
   /** 估计坐标点可拖动微调（单独图层，不参与聚合） */
   estimatedDraggable: { type: Boolean, default: false },
+  /** 纠正设备 GPS：普通照片/视频点也可点击、拖动 */
+  locationCorrectable: { type: Boolean, default: false },
   /** AI 点选模式：点击估计点切换选中，不打开编辑、不拖动 */
   aiPickMode: { type: Boolean, default: false },
   /** AI 点选已选中的 photoId 列表 */
@@ -99,6 +101,8 @@ const emit = defineEmits([
   'gpx-endpoint-click',
   'estimated-drag-end',
   'estimated-select',
+  'location-drag-end',
+  'location-select',
   'confirm-estimated',
   'box-select',
   'ready'
@@ -874,16 +878,18 @@ function bindEstimatedMarker(marker, point, index) {
     L.DomEvent.stopPropagation(e)
     const ll = marker.getLatLng()
     const wgs = fromMapLatLng(ll.lat, ll.lng)
-    emit('estimated-select', {
+    const payload = {
       index,
       point,
       photoId: point.photoId,
       latitude: wgs.latitude,
       longitude: wgs.longitude,
       aiPickMode: !!props.aiPickMode
-    })
+    }
+    emit('estimated-select', payload)
+    emit('location-select', payload)
   })
-  const allowDrag = props.estimatedDraggable && !props.aiPickMode
+  const allowDrag = (props.estimatedDraggable || props.locationCorrectable) && !props.aiPickMode
   if (!allowDrag) {
     marker.on('mouseover', () => {
       if (map) map.getContainer().style.cursor = 'pointer'
@@ -901,7 +907,62 @@ function bindEstimatedMarker(marker, point, index) {
     if (map) map.getContainer().style.cursor = ''
     const ll = e.target.getLatLng()
     const wgs = fromMapLatLng(ll.lat, ll.lng)
-    emit('estimated-drag-end', {
+    const payload = {
+      index,
+      point,
+      photoId: point.photoId,
+      latitude: wgs.latitude,
+      longitude: wgs.longitude,
+      mapLatLng: [ll.lat, ll.lng]
+    }
+    emit('estimated-drag-end', payload)
+    emit('location-drag-end', payload)
+  })
+  marker.on('mouseover', () => {
+    if (map) map.getContainer().style.cursor = 'grab'
+  })
+  marker.on('mouseout', () => {
+    if (map) map.getContainer().style.cursor = ''
+  })
+}
+
+function bindCorrectableMarker(marker, point, index) {
+  marker.on('click', (e) => {
+    L.DomEvent.stopPropagation(e)
+    if (props.pointPickable) {
+      emit('point-click', { index, point })
+      return
+    }
+    const ll = marker.getLatLng()
+    const wgs = fromMapLatLng(ll.lat, ll.lng)
+    emit('location-select', {
+      index,
+      point,
+      photoId: point.photoId,
+      latitude: wgs.latitude,
+      longitude: wgs.longitude
+    })
+  })
+  if (!props.locationCorrectable || props.aiPickMode) {
+    if (props.pointPickable) {
+      marker.on('mouseover', () => {
+        if (map) map.getContainer().style.cursor = 'pointer'
+      })
+      marker.on('mouseout', () => {
+        if (map) map.getContainer().style.cursor = ''
+      })
+    }
+    return
+  }
+  marker.on('dragstart', () => {
+    try { marker.closePopup() } catch (e) { /* ignore */ }
+    if (map) map.getContainer().style.cursor = 'grabbing'
+  })
+  marker.on('dragend', (e) => {
+    if (map) map.getContainer().style.cursor = ''
+    const ll = e.target.getLatLng()
+    const wgs = fromMapLatLng(ll.lat, ll.lng)
+    emit('location-drag-end', {
       index,
       point,
       photoId: point.photoId,
@@ -967,16 +1028,22 @@ function renderPoints({ fit = props.autoFit } = {}) {
         return
       }
       const estimated = isEstimatedLocation(p)
-      // 估计点始终置于最高图层，避免被普通点聚合遮挡
-      if (estimated && estimatedLayer && !isWaypointPoint(p)) {
+      const canCorrect = props.locationCorrectable && !isWaypointPoint(p) && p.photoId != null
+      // 估计点 / 纠正模式点：单独图层，避免聚合后无法拖动
+      if ((estimated || canCorrect) && estimatedLayer && !isWaypointPoint(p)) {
         const selected = selectedIdSet.value.has(String(p.photoId))
         const marker = createPhotoMarker(p, {
-          draggable: props.estimatedDraggable && !props.aiPickMode,
+          draggable: ((estimated && props.estimatedDraggable) || canCorrect) && !props.aiPickMode,
           pane: 'estimatedPane',
           selected,
+          correcting: canCorrect,
           aiPickMode: props.aiPickMode
         })
-        bindEstimatedMarker(marker, p, index)
+        if (estimated) {
+          bindEstimatedMarker(marker, p, index)
+        } else {
+          bindCorrectableMarker(marker, p, index)
+        }
         estimatedLayer.addLayer(marker)
         return
       }
@@ -1212,6 +1279,7 @@ watch(
     props.gpxEndpointPickable,
     props.pointPickable,
     props.estimatedDraggable,
+    props.locationCorrectable,
     props.aiPickMode,
     props.selectedPhotoIds,
     props.selectedSegmentIndexes

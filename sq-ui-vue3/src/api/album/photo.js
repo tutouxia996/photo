@@ -63,6 +63,11 @@ export function updateEstimatedPosition(data) {
   return request({ url: '/album/photo/estimatedPosition', method: 'put', data })
 }
 
+/** 纠正媒体定位（设备 GPS 漂移等 → 手工坐标，并同步轨迹） */
+export function correctPhotoPosition(data) {
+  return request({ url: '/album/photo/correctPosition', method: 'put', data })
+}
+
 export function confirmEstimatedPhoto(data) {
   return request({ url: '/album/photo/confirmEstimated', method: 'post', data })
 }

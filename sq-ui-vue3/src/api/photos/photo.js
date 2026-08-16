@@ -117,6 +117,15 @@ export function updateEstimatedPosition(data) {
   })
 }
 
+/** 纠正媒体定位（设备 GPS 漂移等 → 手工坐标，并同步轨迹） */
+export function correctPhotoPosition(data) {
+  return request({
+    url: '/album/photo/correctPosition',
+    method: 'put',
+    data
+  })
+}
+
 /** 确认估计坐标并同步主轨迹 */
 export function confirmEstimatedPhoto(data) {
   return request({
