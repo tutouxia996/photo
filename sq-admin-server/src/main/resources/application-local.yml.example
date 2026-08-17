@@ -1,8 +1,8 @@
 # 本地密钥配置示例（不要提交真实 Key）
 # 使用步骤：
 # 1. 复制本文件为同目录下的 application-local.yml
-# 2. 填入高德 Web Key、通义 DashScope API Key
-# 3. 重启后端
+# 2. 填入高德 Web Key、通义 DashScope API Key、阿里云盘 refresh_token
+# 3. 重启后端（启动参数需包含 local：-Dspring.profiles.active=...,local）
 
 album:
   map:
@@ -16,3 +16,22 @@ album:
     baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
     model: qwen-vl-plus
     maxSample: 40
+  # 阿里云盘个人相册同步（详见 doc/阿里云盘相册同步.md）
+  aliyunDrive:
+    enabled: true
+    # 浏览器登录 https://www.alipan.com → F12 → Application → Local Storage → token → refresh_token
+    refreshToken: 请填写阿里云盘refresh_token
+    # 个人相册中的相册名称（或改填 remoteAlbumId）
+    remoteAlbumName: 平时拍照
+    remoteAlbumId:
+    localPath: F:/照片视频备份/平时拍照
+    # 后台「磁盘扫描」里该目录对应的 path_id（绑定目标相册后填写）
+    scanPathId:
+    triggerScan: true
+    fullScan: false
+    # false=相册内全部原文件（格式不限）；true=仅常见图片/视频扩展名
+    mediaOnly: false
+    downloadConcurrency: 2
+    chunkConcurrency: 8
+    multipartMinBytes: 2097152
+    tokenFile: D:/uploadPath/album/aliyun-drive-token.json

@@ -39,6 +39,9 @@ public class AlbumProperties {
     /** AI 地标识别（视觉模型 + 高德地理编码） */
     private AiLandmarkConfig aiLandmark = new AiLandmarkConfig();
 
+    /** 阿里云盘个人相册定时同步到本地，再走磁盘扫描入库 */
+    private AliyunDriveConfig aliyunDrive = new AliyunDriveConfig();
+
     @Data
     public static class Thumb {
         private int smallWidth = 300;
@@ -200,5 +203,57 @@ public class AlbumProperties {
         private int voteMinCount = 2;
         private int connectTimeoutMs = 15000;
         private int readTimeoutMs = 90000;
+    }
+
+    @Data
+    public static class AliyunDriveConfig {
+        /** 总开关；false 时定时任务直接跳过 */
+        private boolean enabled = false;
+        /**
+         * 网页版 refresh_token（浏览器登录阿里云盘后获取）。
+         * 刷新后会轮换，运行时以 tokenFile 中的值为准。
+         */
+        private String refreshToken = "";
+        /** 云盘个人相册名称（与 remoteAlbumId 二选一；id 优先） */
+        private String remoteAlbumName = "";
+        /** 云盘个人相册 ID（优先于名称） */
+        private String remoteAlbumId = "";
+        /** 本机下载目录 */
+        private String localPath = "F:/照片视频备份/平时拍照";
+        /**
+         * 下载完成后触发扫描的 biz_scan_path.path_id。
+         * 为空时按 localPath 匹配已启用的扫描目录。
+         */
+        private Long scanPathId;
+        /** 同步成功后是否触发增量/全量扫描入库 */
+        private boolean triggerScan = true;
+        /** true=全量扫描，false=增量 */
+        private boolean fullScan = false;
+        /**
+         * refresh_token 与同步状态持久化文件。
+         * 必须可写：每次刷新 token 后旧 refresh_token 会失效。
+         */
+        private String tokenFile = "D:/uploadPath/album/aliyun-drive-token.json";
+        private int connectTimeoutMs = 15000;
+        private int readTimeoutMs = 120000;
+        /** 单文件下载超时（毫秒） */
+        private int downloadTimeoutMs = 600000;
+        /**
+         * true=只下图片/视频（按扩展名+category）；false=相册内全部原文件都下（推荐，格式不限）。
+         */
+        private boolean mediaOnly = false;
+        /**
+         * 同时下载的文件数。开启分片后建议 2～3，避免总连接数过高。
+         */
+        private int downloadConcurrency = 2;
+        /** 成功后记住的下载 Referer；空则默认 https://www.alipan.com/ */
+        private String downloadReferer = "https://www.aliyundrive.com/";
+        /**
+         * 单文件内 Range 分片并行数（接近官方多连接加速）。
+         * 总连接约 ≈ downloadConcurrency × chunkConcurrency。
+         */
+        private int chunkConcurrency = 8;
+        /** 超过该大小才启用分片（字节）；小文件单连接更快 */
+        private long multipartMinBytes = 2L * 1024 * 1024;
     }
 }

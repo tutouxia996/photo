@@ -53,6 +53,9 @@ yarn.lock
 **/application-*-local.yml
 **/application-*-local.yaml
 
+# 阿里云盘 refresh_token 持久化（含密钥，勿提交）
+**/aliyun-drive-token.json
+
 # Reasonix
 .reasonix/
 

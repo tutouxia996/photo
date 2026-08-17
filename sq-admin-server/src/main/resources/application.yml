@@ -214,3 +214,27 @@ album:
     voteMinCount: 2
     connectTimeoutMs: 15000
     readTimeoutMs: 90000
+  # 阿里云盘个人相册 → 本机目录 → 磁盘扫描入库（密钥写 application-local.yml）
+  aliyunDrive:
+    enabled: false
+    refreshToken: ${ALIYUN_DRIVE_REFRESH_TOKEN:}
+    remoteAlbumName: ${ALIYUN_DRIVE_ALBUM_NAME:}
+    remoteAlbumId: ${ALIYUN_DRIVE_ALBUM_ID:}
+    localPath: ${ALIYUN_DRIVE_LOCAL_PATH:F:/照片视频备份/平时拍照}
+    # 填写 biz_scan_path.path_id；空则按 localPath 匹配扫描目录
+    scanPathId:
+    triggerScan: true
+    fullScan: false
+    tokenFile: ${ALIYUN_DRIVE_TOKEN_FILE:D:/uploadPath/album/aliyun-drive-token.json}
+    connectTimeoutMs: 15000
+    readTimeoutMs: 120000
+    downloadTimeoutMs: 600000
+    # false=相册内全部原文件（格式不限）；true=仅常见图片/视频扩展名
+    mediaOnly: false
+    # 同时下载的文件数；配合分片时建议 2～3（总连接≈文件数×分片数）
+    downloadConcurrency: 2
+    # 单文件 Range 分片并行数（接近官方多连接加速）
+    chunkConcurrency: 8
+    # 超过该大小才分片（字节）；小文件单连接更快
+    multipartMinBytes: 2097152
+    downloadReferer: https://www.aliyundrive.com/
