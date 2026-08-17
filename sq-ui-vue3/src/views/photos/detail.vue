@@ -666,6 +666,8 @@ const uploadProgress = reactive({ done: 0, total: 0, ok: 0, fail: 0 })
 const uploadItems = ref([])
 /** 同时上传数，避免一次打满服务器 */
 const UPLOAD_CONCURRENCY = 3
+/** 与 application.yml spring.servlet.multipart.max-file-size 对齐 */
+const MAX_UPLOAD_BYTES = 30 * 1024 * 1024 * 1024
 
 const uploadPercent = computed(() => {
   const items = uploadItems.value
@@ -1071,8 +1073,8 @@ function runWithConcurrency(items, worker, concurrency) {
 async function onFilesSelected(e) {
   const raw = Array.from(e.target.files || [])
   e.target.value = ''
-  const files = raw.filter(isMediaFile)
-  if (!files.length) {
+  const media = raw.filter(isMediaFile)
+  if (!media.length) {
     if (raw.length) proxy.$modal.msgWarning('所选内容中没有可上传的照片或视频')
     return
   }
@@ -1080,6 +1082,17 @@ async function onFilesSelected(e) {
     proxy.$modal.msgWarning('仍有上传任务进行中，请稍候')
     return
   }
+
+  const oversized = media.filter((f) => (f.size || 0) > MAX_UPLOAD_BYTES)
+  const files = media.filter((f) => (f.size || 0) <= MAX_UPLOAD_BYTES)
+  if (oversized.length) {
+    const sample = oversized.slice(0, 3).map((f) => `${f.name}（${formatUploadSize(f.size)}）`).join('、')
+    const more = oversized.length > 3 ? ` 等 ${oversized.length} 个` : ''
+    proxy.$modal.msgWarning(
+      `已跳过超限文件：${sample}${more}。单文件上限约 30GB；本地超大视频请用「扫描入库」。`
+    )
+  }
+  if (!files.length) return
 
   uploading.value = true
   uploadProgress.done = 0

@@ -80,6 +80,13 @@
             <version>2.18.0</version>
         </dependency>
 
+        <!-- 本地中国 OSM PBF 铁路索引（贴轨，不依赖公网 Overpass） -->
+        <dependency>
+            <groupId>org.openstreetmap.osmosis</groupId>
+            <artifactId>osmosis-pbf</artifactId>
+            <version>0.47.3</version>
+        </dependency>
+
     </dependencies>
 
 </project>

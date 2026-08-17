@@ -42,13 +42,13 @@ spring:
   # 自动加载本地密钥文件（若不存在则忽略）；勿把 application-local.yml 提交到 Git
   config:
     import: optional:classpath:application-local.yml
-  # 文件上传（相册含视频，需明显大于默认 10MB）
+  # 文件上传（相册含大视频；超大本地媒体更推荐「扫描入库」）
   servlet:
     multipart:
-      # 单个文件大小
-      max-file-size: 1024MB
-      # 单次请求总大小
-      max-request-size: 2048MB
+      # 单个文件大小（约 30GB，覆盖常见长视频）
+      max-file-size: 30GB
+      # 单次请求总大小（与单文件对齐；前端仍按单文件上传）
+      max-request-size: 30GB
   mvc:
     format:
       date-time: yyyy-MM-dd HH:mm:ss
@@ -74,9 +74,9 @@ server:
       max: 800
       # Tomcat启动初始化的线程数，默认值10
       min-spare: 100
-    # 单次请求体上限（与 multipart 对齐，避免被 connector 截断）
-    max-http-form-post-size: 2048MB
-    max-swallow-size: 2048MB
+    # -1=不限制（multipart 大文件由 spring.servlet.multipart 约束；int 无法表达 30GB）
+    max-http-form-post-size: -1
+    max-swallow-size: -1
 
 # 日志配置
 logging:
@@ -150,6 +150,13 @@ album:
     # Java 访问 Overpass 若报 PKIX 证书错误，保持 true（仅影响 Overpass 连接）
     overpassTrustAllSsl: true
     osmCacheDir: ${OSM_CACHE_DIR:}
+    # 中国 PBF（Geofabrik）；存在则本地建铁路索引并优先查询，不依赖公网镜像
+    osmPbfPath: ${OSM_PBF_PATH:D:/uploadPath/album/osm/china-latest.osm.pbf}
+    osmRailwayIndexPath: ${OSM_RAIL_INDEX:}
+    osmPreferLocal: true
+    # OSM 贴轨最大直线距离（km）；北京-苏州约 1050，默认 1600
+    osmMaxSpanKm: 1600
+    osmMaxSpanKmMetro: 120
     # 火车车次时刻表（聚合数据）；无 Key 时仍可手工填经停站贴轨
     train:
       enabled: true
@@ -192,3 +199,18 @@ album:
     maxRefineRegionKm: 3.0
     includeInMap: true
     includeInTrack: false
+  # AI 地标识别（OpenAI 兼容，默认通义千问 VL）；Key 写 application-local.yml 或环境变量
+  aiLandmark:
+    enabled: true
+    apiKey: ${AI_LANDMARK_API_KEY:}
+    baseUrl: ${AI_LANDMARK_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    model: ${AI_LANDMARK_MODEL:qwen-vl-plus}
+    maxSample: 40
+    maxImageWidth: 896
+    # AI/估点相对区域粗定位中心最大偏离（公里），景区建议 0.45
+    maxOffsetKm: 0.45
+    poiRadiusMeters: 800
+    poiMaxCount: 40
+    voteMinCount: 2
+    connectTimeoutMs: 15000
+    readTimeoutMs: 90000

@@ -62,6 +62,24 @@ public class AlbumProperties {
         private boolean overpassTrustAllSsl = true;
         /** Overpass 结果本地缓存目录（空则用 java.io.tmpdir/album-osm-cache） */
         private String osmCacheDir = "";
+        /**
+         * 中国 OSM PBF 路径（Geofabrik china-latest.osm.pbf）。
+         * 存在时优先本地铁路索引，失败再回退公网 Overpass。
+         */
+        private String osmPbfPath = "D:/uploadPath/album/osm/china-latest.osm.pbf";
+        /**
+         * 预处理后的铁路索引（由 PBF 构建；空则默认与 PBF 同目录 china-railway-index.bin.gz）
+         */
+        private String osmRailwayIndexPath = "";
+        /** 是否优先使用本地 PBF/索引（true=本地优先，false=仍打 Overpass） */
+        private boolean osmPreferLocal = true;
+        /**
+         * OSM 贴轨允许的最大起终点直线距离（公里）。
+         * 北京→苏州约 1050km；公网 Overpass 时代曾限制较紧，本地 PBF 可放大。
+         */
+        private double osmMaxSpanKm = 1600;
+        /** 地铁模式单独上限（公里） */
+        private double osmMaxSpanKmMetro = 120;
         /** 火车车次/时刻表 */
         private TrainConfig train = new TrainConfig();
     }

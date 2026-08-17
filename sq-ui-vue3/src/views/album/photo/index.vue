@@ -394,9 +394,15 @@ function handleDelete(row) {
   }).catch(() => {})
 }
 
+const MAX_UPLOAD_BYTES = 30 * 1024 * 1024 * 1024
+
 function submitUpload() {
   if (!uploadAlbumId.value || !uploadFile.value) {
     proxy.$modal.msgError('请选择相册并选择文件')
+    return
+  }
+  if ((uploadFile.value.size || 0) > MAX_UPLOAD_BYTES) {
+    proxy.$modal.msgError('文件超过约 30GB 上传上限；本地超大视频请用「扫描入库」')
     return
   }
   const fd = new FormData()

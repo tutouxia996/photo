@@ -52,7 +52,8 @@ public class OsmRailwayRouteService {
 
     private static final Logger log = LoggerFactory.getLogger(OsmRailwayRouteService.class);
 
-    private static final double MAX_SPAN_KM = 280.0;
+    private static final double DEFAULT_MAX_SPAN_KM = 1600.0;
+    private static final double DEFAULT_MAX_SPAN_KM_METRO = 120.0;
     private static final double MAX_SNAP_KM = 3.0;
     /** 展示抽稀：相邻点最小间距（米） */
     private static final double SIMPLIFY_MIN_METERS = 40.0;
@@ -63,14 +64,21 @@ public class OsmRailwayRouteService {
     private static final double WAY_SWITCH_PENALTY_M = 900.0;
 
     private static final String[] DEFAULT_MIRRORS = new String[]{
-            // overpass-api.de 常 504，放到后面；优先其它镜像
+            // 公网镜像均可能超时；多试几个提高命中率（overpass-api.de 常慢，放后）
+            "https://overpass.private.coffee/api/interpreter",
             "https://overpass.kumi.systems/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
             "https://overpass.openstreetmap.ru/api/interpreter",
+            "https://z.overpass-api.de/api/interpreter",
+            "https://lz4.overpass-api.de/api/interpreter",
             "https://overpass-api.de/api/interpreter"
     };
 
     @Autowired
     private AlbumProperties albumProperties;
+
+    @Autowired
+    private LocalOsmRailwayIndex localOsmRailwayIndex;
 
     public TrackRoutePlanResult route(double fromLatWgs, double fromLngWgs,
                                       double toLatWgs, double toLngWgs,
@@ -86,8 +94,10 @@ public class OsmRailwayRouteService {
         }
 
         double spanKm = GeoDistanceUtils.haversineKm(fromLatWgs, fromLngWgs, toLatWgs, toLngWgs);
-        if (spanKm > MAX_SPAN_KM) {
-            result.setMessage("起终点过远，暂不使用 OSM");
+        double maxSpan = maxSpanKm(mode);
+        if (spanKm > maxSpan) {
+            result.setMessage("起终点过远（" + Math.round(spanKm) + "km > " + Math.round(maxSpan)
+                    + "km），暂不使用 OSM");
             return result;
         }
         if (spanKm < 0.05) {
@@ -98,7 +108,10 @@ public class OsmRailwayRouteService {
         }
 
         try {
-            double padDeg = Math.max(0.15, Math.min(0.6, spanKm * 0.15 / 111.0));
+            // 长途缩小 padding，避免 bbox 过大拖垮图搜索
+            double padDeg = spanKm > 500
+                    ? Math.max(0.25, Math.min(0.8, spanKm * 0.08 / 111.0))
+                    : Math.max(0.15, Math.min(0.6, spanKm * 0.15 / 111.0));
             double south = Math.min(fromLatWgs, toLatWgs) - padDeg;
             double north = Math.max(fromLatWgs, toLatWgs) + padDeg;
             double west = Math.min(fromLngWgs, toLngWgs) - padDeg;
@@ -122,8 +135,7 @@ public class OsmRailwayRouteService {
 
             for (String pass : passes) {
                 try {
-                    String query = buildQuery(south, west, north, east, pass);
-                    JSONObject json = postOverpassWithFallback(query);
+                    JSONObject json = loadRailElements(south, west, north, east, pass);
                     RailGraph graph = parseGeomGraph(json, mode);
                     if (graph.nodes.size() < 2 || graph.adj.isEmpty()) {
                         lastErr = pass + " 无铁路几何";
@@ -236,6 +248,16 @@ public class OsmRailwayRouteService {
         return map == null || map.isOsmRailwayEnabled();
     }
 
+    private double maxSpanKm(String mode) {
+        AlbumProperties.MapConfig map = albumProperties.getMap();
+        if ("metro".equals(mode)) {
+            double v = map == null ? 0 : map.getOsmMaxSpanKmMetro();
+            return v > 0 ? v : DEFAULT_MAX_SPAN_KM_METRO;
+        }
+        double v = map == null ? 0 : map.getOsmMaxSpanKm();
+        return v > 0 ? v : DEFAULT_MAX_SPAN_KM;
+    }
+
     private List<String> mirrorUrls() {
         List<String> list = new ArrayList<String>();
         AlbumProperties.MapConfig map = albumProperties.getMap();
@@ -285,6 +307,27 @@ public class OsmRailwayRouteService {
                 + "way[\"railway\"=\"rail\"][\"usage\"~\"^(main|branch)$\"]" + noYard + bbox + ";"
                 + "way[\"railway\"=\"rail\"][\"usage\"!~\"^(industrial|military)$\"]" + noYard + bbox + ";"
                 + ");out geom;";
+    }
+
+    /**
+     * 优先本地中国 PBF 铁路索引；不可用再打公网 Overpass。
+     */
+    private JSONObject loadRailElements(double south, double west, double north, double east, String pass)
+            throws Exception {
+        try {
+            JSONObject local = localOsmRailwayIndex.query(south, west, north, east, pass);
+            if (local != null) {
+                JSONArray elements = local.getJSONArray("elements");
+                if (elements != null && !elements.isEmpty()) {
+                    log.info("OSM railway hit local PBF index, pass={} elements={}", pass, elements.size());
+                    return local;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("本地 PBF 铁路查询失败，回退 Overpass: {}", e.getMessage());
+        }
+        String query = buildQuery(south, west, north, east, pass);
+        return postOverpassWithFallback(query);
     }
 
     private JSONObject postOverpassWithFallback(String query) throws Exception {
