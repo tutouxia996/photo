@@ -1,5 +1,6 @@
 package com.sq.bus.task;
 
+import com.sq.bus.domain.vo.AliyunSyncProgress;
 import com.sq.bus.service.cloud.AliyunDriveSyncService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +25,11 @@ public class AliyunAlbumSyncTask {
      * 无参方法，供 sys_job.invoke_target 调用。
      */
     public void syncAndScan() {
+        AliyunSyncProgress p = aliyunDriveSyncService.getProgress();
+        if (p != null && (p.getStatus() == 3 || p.isPaused())) {
+            log.info("云盘下载已暂停（剩余 {}），定时任务跳过，请在页面点继续", p.getRemaining());
+            return;
+        }
         String result = aliyunDriveSyncService.syncAndScan();
         log.info("aliyunAlbumSyncTask: {}", result);
     }

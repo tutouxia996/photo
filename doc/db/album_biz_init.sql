@@ -192,6 +192,34 @@ CREATE TABLE `biz_scan_log` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='扫描记录表';
 
 -- ----------------------------
+-- 阿里云盘相册同步配置（页面保存，单行 id=1）
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `biz_aliyun_drive_setting` (
+  `id` bigint NOT NULL COMMENT '固定为 1',
+  `enabled` tinyint NOT NULL DEFAULT 0 COMMENT '是否启用',
+  `refresh_token` varchar(1024) DEFAULT '' COMMENT '网页版 refresh_token',
+  `remote_album_name` varchar(200) DEFAULT '' COMMENT '云盘相册名称',
+  `remote_album_id` varchar(100) DEFAULT '' COMMENT '云盘相册ID（优先）',
+  `local_path` varchar(500) DEFAULT '' COMMENT '本机下载目录',
+  `scan_path_id` bigint DEFAULT NULL COMMENT '磁盘扫描目录 path_id',
+  `trigger_scan` tinyint NOT NULL DEFAULT 1 COMMENT '下载后是否触发扫描',
+  `full_scan` tinyint NOT NULL DEFAULT 0 COMMENT '1全量 0增量',
+  `token_file` varchar(500) DEFAULT '' COMMENT 'token 与已下文件状态文件',
+  `connect_timeout_ms` int DEFAULT 15000,
+  `read_timeout_ms` int DEFAULT 120000,
+  `download_timeout_ms` int DEFAULT 600000,
+  `media_only` tinyint NOT NULL DEFAULT 0 COMMENT '1仅图片视频扩展名',
+  `download_concurrency` int DEFAULT 2,
+  `download_referer` varchar(200) DEFAULT '',
+  `chunk_concurrency` int DEFAULT 8,
+  `multipart_min_bytes` bigint DEFAULT 2097152,
+  `update_by` varchar(64) DEFAULT '',
+  `update_time` datetime DEFAULT NULL,
+  `remark` varchar(500) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='阿里云盘相册同步配置';
+
+-- ----------------------------
 -- 菜单与权限（相册管理）
 -- ----------------------------
 DELETE FROM sys_role_menu WHERE menu_id BETWEEN 3000 AND 3099;
@@ -203,6 +231,7 @@ INSERT INTO sys_menu(id, menu_name, parent_id, order_num, path, component, query
 (3002,'图片管理',3000,2,'photo','album/photo/index','',1,0,'C','0','0','album:photo:list','image','admin',NOW(),'图片管理菜单'),
 (3003,'轨迹管理',3000,3,'track','album/track/index','',1,0,'C','0','0','album:track:list','guide','admin',NOW(),'轨迹管理菜单'),
 (3004,'磁盘扫描',3000,4,'scan','album/scan/index','',1,0,'C','0','0','album:scan:list','server','admin',NOW(),'磁盘扫描管理'),
+(3005,'云盘同步',3000,5,'aliyun','album/aliyun/index','',1,0,'C','0','0','album:aliyun:query','upload','admin',NOW(),'阿里云盘相册同步配置'),
 (3010,'相册查询',3001,1,'','','',1,0,'F','0','0','album:album:query','#','admin',NOW(),''),
 (3011,'相册新增',3001,2,'','','',1,0,'F','0','0','album:album:add','#','admin',NOW(),''),
 (3012,'相册修改',3001,3,'','','',1,0,'F','0','0','album:album:edit','#','admin',NOW(),''),
@@ -220,7 +249,10 @@ INSERT INTO sys_menu(id, menu_name, parent_id, order_num, path, component, query
 (3041,'扫描新增',3004,2,'','','',1,0,'F','0','0','album:scan:add','#','admin',NOW(),''),
 (3042,'扫描修改',3004,3,'','','',1,0,'F','0','0','album:scan:edit','#','admin',NOW(),''),
 (3043,'扫描删除',3004,4,'','','',1,0,'F','0','0','album:scan:remove','#','admin',NOW(),''),
-(3044,'执行扫描',3004,5,'','','',1,0,'F','0','0','album:scan:run','#','admin',NOW(),'');
+(3044,'执行扫描',3004,5,'','','',1,0,'F','0','0','album:scan:run','#','admin',NOW(),''),
+(3050,'云盘配置查询',3005,1,'','','',1,0,'F','0','0','album:aliyun:query','#','admin',NOW(),''),
+(3051,'云盘配置修改',3005,2,'','','',1,0,'F','0','0','album:aliyun:edit','#','admin',NOW(),''),
+(3052,'云盘立即同步',3005,3,'','','',1,0,'F','0','0','album:aliyun:run','#','admin',NOW(),'');
 
 INSERT INTO sys_role_menu(role_id, menu_id)
 SELECT 1, id FROM sys_menu WHERE id BETWEEN 3000 AND 3099;

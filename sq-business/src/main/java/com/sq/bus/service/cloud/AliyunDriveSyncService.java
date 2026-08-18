@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.domain.BizScanPath;
 import com.sq.bus.service.IBizScanPathService;
+import com.sq.bus.domain.vo.AliyunSyncProgress;
+import com.sq.bus.service.IAliyunDriveSettingService;
 import com.sq.bus.service.cloud.AliyunDriveClient.DriveFile;
 import com.sq.common.exception.ServiceException;
 import com.sq.common.utils.StringUtils;
@@ -14,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +29,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -46,6 +53,24 @@ public class AliyunDriveSyncService {
             "dng", "raw", "arw", "cr2", "cr3", "nef", "orf", "rw2"));
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean paused = new AtomicBoolean(false);
+    private final AtomicInteger progressStatus = new AtomicInteger(1);
+    private final AtomicInteger progressTotal = new AtomicInteger();
+    private final AtomicInteger progressNeed = new AtomicInteger();
+    private final AtomicInteger progressDownloaded = new AtomicInteger();
+    private final AtomicInteger progressSkipped = new AtomicInteger();
+    private final AtomicInteger progressFailed = new AtomicInteger();
+    /** 本轮队列里因云盘 404 已记为缺失、不再计入剩余的个数 */
+    private final AtomicInteger progressGone = new AtomicInteger();
+    private final AtomicInteger progressRemaining = new AtomicInteger();
+    private volatile String progressPhase = "done";
+    private volatile String progressMessage = "";
+    private volatile String activeTokenFile = "";
+    private final ConcurrentHashMap<String, AliyunSyncProgress.CurrentFile> currentFiles =
+            new ConcurrentHashMap<String, AliyunSyncProgress.CurrentFile>();
+    private final CopyOnWriteArrayList<AliyunSyncProgress.FailedFile> failedFiles =
+            new CopyOnWriteArrayList<AliyunSyncProgress.FailedFile>();
+    private volatile TokenStore persistStore;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -53,19 +78,123 @@ public class AliyunDriveSyncService {
     @Autowired
     private IBizScanPathService scanPathService;
 
+    @Autowired
+    private IAliyunDriveSettingService aliyunDriveSettingService;
+
+    @PostConstruct
+    public void restorePersistedProgress() {
+        try {
+            AlbumProperties.AliyunDriveConfig cfg = resolveConfig();
+            if (cfg == null || StringUtils.isEmpty(cfg.getTokenFile())) {
+                return;
+            }
+            activeTokenFile = cfg.getTokenFile();
+            TokenStore store = TokenStore.load(cfg.getTokenFile());
+            persistStore = store;
+            applyPersistedProgress(store.syncProgress, true);
+        } catch (Exception e) {
+            log.warn("恢复云盘下载进度失败：{}", e.getMessage());
+        }
+    }
+
+    public boolean isRunning() {
+        return running.get();
+    }
+
+    public AliyunSyncProgress getProgress() {
+        AliyunSyncProgress p = snapshotProgress();
+        boolean live = running.get() || p.getStatus() == 0;
+        p.setPaused(paused.get() || p.getStatus() == 3);
+        p.setRunning(live);
+        p.setRemaining(Math.max(0, progressRemaining.get()));
+        p.setCanPause(live && !paused.get() && p.getStatus() == 0);
+        p.setCanResume(!live && (p.getStatus() == 3 || p.getRemaining() > 0));
+        p.setPercent(calcPercent(p));
+        return p;
+    }
+
+    /**
+     * 后台页面立即同步 / 继续下载。
+     */
+    public AliyunSyncProgress startSyncAsync() {
+        paused.set(false);
+        if (running.get()) {
+            return getProgress();
+        }
+        markProgress(0, "listing", "正在启动同步…");
+        persistProgressQuiet();
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String msg = syncAndScan();
+                    log.info("阿里云盘异步同步结束：{}", msg);
+                } catch (Exception e) {
+                    log.warn("阿里云盘异步同步失败：{}", e.getMessage());
+                    finishProgress(2, e.getMessage());
+                    persistProgressQuiet();
+                }
+            }
+        }, "aliyun-sync");
+        t.setDaemon(true);
+        t.start();
+        return getProgress();
+    }
+
+    public AliyunSyncProgress pauseSync() {
+        if (!running.get()) {
+            if (progressRemaining.get() > 0) {
+                paused.set(true);
+                markProgress(3, "paused", "已暂停，剩余 " + progressRemaining.get() + " 个未下载");
+                persistProgressQuiet();
+            }
+            return getProgress();
+        }
+        paused.set(true);
+        markProgress(3, "paused", "正在暂停，当前文件完成后停止…");
+        persistProgressQuiet();
+        return getProgress();
+    }
+
+    public AliyunSyncProgress resumeSync() {
+        paused.set(false);
+        if (running.get()) {
+            markProgress(0, "downloading", "继续下载，剩余 " + progressRemaining.get() + " 个");
+            persistProgressQuiet();
+            return getProgress();
+        }
+        return startSyncAsync();
+    }
+
     /**
      * 同步下载 +（可选）触发扫描。供 Quartz 调用。
      */
     public String syncAndScan() {
-        AlbumProperties.AliyunDriveConfig cfg = albumProperties.getAliyunDrive();
+        AlbumProperties.AliyunDriveConfig cfg = resolveConfig();
         if (cfg == null || !cfg.isEnabled()) {
-            return "阿里云盘同步未启用（album.aliyunDrive.enabled=false）";
+            String msg = "阿里云盘同步未启用（请在「相册管理 → 云盘同步」打开开关）";
+            finishProgress(2, msg);
+            persistProgressQuiet();
+            return msg;
         }
         if (!running.compareAndSet(false, true)) {
             return "上一次同步仍在进行中，已跳过";
         }
+        paused.set(false);
+        activeTokenFile = cfg.getTokenFile();
         try {
+            markProgress(0, "listing", "正在登录并列举云盘文件…");
+            persistProgressQuiet();
             SyncResult result = doSync(cfg);
+            if (result.paused) {
+                String msg = String.format(Locale.ROOT,
+                        "已暂停：已下载=%d，跳过=%d，失败=%d，剩余=%d",
+                        result.downloaded, result.skipped, result.failed, progressRemaining.get());
+                markProgress(3, "paused", msg);
+                persistProgressQuiet();
+                log.info(msg);
+                return msg;
+            }
             String msg = String.format(Locale.ROOT,
                     "同步完成：相册=%s，远程媒体=%d，下载=%d，跳过(已存在)=%d，失败=%d",
                     result.albumId, result.remoteMedia, result.downloaded, result.skipped, result.failed);
@@ -74,15 +203,24 @@ public class AliyunDriveSyncService {
                 if (pathId == null) {
                     msg += "；未触发扫描：请配置 scanPathId，或新增 localPath 对应的磁盘扫描目录并绑定相册";
                 } else {
+                    markProgress(0, "scanning", "下载完成，正在触发磁盘扫描…");
                     Long logId = scanPathService.startScanAsync(pathId, cfg.isFullScan());
                     msg += "；已触发扫描 pathId=" + pathId + " logId=" + logId
                             + (cfg.isFullScan() ? "（全量）" : "（增量）");
                 }
             }
             log.info(msg);
+            progressRemaining.set(0);
+            finishProgress(1, msg);
+            persistProgressQuiet();
             return msg;
+        } catch (Exception e) {
+            finishProgress(2, e.getMessage());
+            persistProgressQuiet();
+            throw e;
         } finally {
             running.set(false);
+            currentFiles.clear();
         }
     }
 
@@ -95,9 +233,10 @@ public class AliyunDriveSyncService {
         }
 
         TokenStore store = TokenStore.load(cfg.getTokenFile());
+        persistStore = store;
         String refresh = StringUtils.isNotEmpty(store.refreshToken) ? store.refreshToken : cfg.getRefreshToken();
         if (StringUtils.isEmpty(refresh)) {
-            throw new ServiceException("未配置 refreshToken（application-local.yml 或 tokenFile）");
+            throw new ServiceException("未配置 refreshToken（请在「云盘同步」页面填写，或确认 tokenFile 可读写）");
         }
 
         AliyunDriveClient client = new AliyunDriveClient(cfg, refresh);
@@ -151,6 +290,10 @@ public class AliyunDriveSyncService {
         // 先快速跳过已存在，再并行下载剩余
         List<DriveFile> needDownload = new ArrayList<DriveFile>();
         for (DriveFile file : files) {
+            if (isRememberedMissing(file, fileStateFinal)) {
+                skipped.incrementAndGet();
+                continue;
+            }
             Path existing = findAlreadyDownloaded(file, localDir, fileStateFinal);
             if (existing != null) {
                 skipped.incrementAndGet();
@@ -162,10 +305,37 @@ public class AliyunDriveSyncService {
             needDownload.add(file);
         }
         log.info("已存在跳过 {}，待下载 {}，开始并行下载", skipped.get(), needDownload.size());
+        progressTotal.set(total);
+        progressNeed.set(needDownload.size());
+        progressDownloaded.set(0);
+        progressSkipped.set(skipped.get());
+        progressFailed.set(0);
+        progressGone.set(0);
+        failedFiles.clear();
+        progressRemaining.set(needDownload.size());
+        persistStore = store;
+        if (paused.get()) {
+            markProgress(3, "paused", "已暂停，剩余 " + needDownload.size() + " 个未下载");
+            persistProgress(store, cfg.getTokenFile());
+            result.paused = true;
+            result.downloaded = 0;
+            result.skipped = skipped.get();
+            result.failed = 0;
+            return result;
+        }
+        if (needDownload.isEmpty()) {
+            markProgress(0, "downloading", "没有需要下载的新文件");
+        } else {
+            markProgress(0, "downloading", "开始下载 " + needDownload.size() + " 个文件，剩余 " + needDownload.size());
+        }
+        persistProgress(store, cfg.getTokenFile());
 
         if (!needDownload.isEmpty()) {
+            final ConcurrentLinkedQueue<DriveFile> queue = new ConcurrentLinkedQueue<DriveFile>(needDownload);
+            int workers = Math.min(concurrency, needDownload.size());
+            final CountDownLatch latch = new CountDownLatch(workers);
             java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
-                    Math.min(concurrency, needDownload.size()),
+                    workers,
                     new java.util.concurrent.ThreadFactory() {
                         private final AtomicInteger n = new AtomicInteger();
                         @Override
@@ -176,28 +346,41 @@ public class AliyunDriveSyncService {
                         }
                     });
             try {
-                List<java.util.concurrent.Future<?>> futures = new ArrayList<java.util.concurrent.Future<?>>();
-                for (final DriveFile file : needDownload) {
-                    futures.add(pool.submit(new Runnable() {
+                for (int i = 0; i < workers; i++) {
+                    pool.submit(new Runnable() {
                         @Override
                         public void run() {
                             try {
-                                downloadOne(clientRef, storeRef, stateLock, cfgFinal, localDirFinal, fileStateFinal, file,
-                                        downloaded, failed, total);
-                            } catch (Exception e) {
-                                failed.incrementAndGet();
-                                log.warn("下载失败 name={}: {}", file.name, e.getMessage());
+                                while (!paused.get()) {
+                                    DriveFile file = queue.poll();
+                                    if (file == null) {
+                                        break;
+                                    }
+                                    try {
+                                        downloadOne(clientRef, storeRef, stateLock, cfgFinal, localDirFinal, fileStateFinal, file,
+                                                downloaded, skipped, failed, total);
+                                    } catch (Exception e) {
+                                        markFileFailed(file, e, failed);
+                                    }
+                                    refreshRemaining();
+                                    int done = progressDownloaded.get() + progressFailed.get();
+                                    boolean force = paused.get() || done == 1 || done % 5 == 0;
+                                    if (force) {
+                                        synchronized (stateLock) {
+                                            persistProgress(storeRef, cfgFinal.getTokenFile());
+                                        }
+                                    }
+                                }
+                            } finally {
+                                latch.countDown();
                             }
                         }
-                    }));
+                    });
                 }
-                for (java.util.concurrent.Future<?> f : futures) {
-                    try {
-                        f.get();
-                    } catch (Exception e) {
-                        log.warn("下载任务异常: {}", e.getMessage());
-                    }
-                }
+                latch.await();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                paused.set(true);
             } finally {
                 pool.shutdownNow();
             }
@@ -205,17 +388,25 @@ public class AliyunDriveSyncService {
 
         store.refreshToken = client.getRefreshToken();
         synchronized (stateLock) {
-            store.save(cfg.getTokenFile());
+            persistProgress(store, cfg.getTokenFile());
         }
         result.downloaded = downloaded.get();
         result.skipped = skipped.get();
         result.failed = failed.get();
+        // 失败的仍算剩余（下次重试）；404 已记缺失的不再计入
+        refreshRemaining();
+        int rem = progressRemaining.get();
+        result.paused = rem > 0;
+        if (result.paused) {
+            paused.set(true);
+        }
         return result;
     }
 
     private void downloadOne(AliyunDriveClient client, TokenStore store, Object stateLock,
                              AlbumProperties.AliyunDriveConfig cfg, Path localDir, JSONObject fileState,
-                             DriveFile file, AtomicInteger downloaded, AtomicInteger failed, int total) {
+                             DriveFile file, AtomicInteger downloaded, AtomicInteger skipped, AtomicInteger failed, int total) {
+        final String key = StringUtils.isNotEmpty(file.fileId) ? file.fileId : file.name;
         String localName;
         synchronized (stateLock) {
             localName = pickLocalName(file, fileState, localDir);
@@ -232,12 +423,18 @@ public class AliyunDriveSyncService {
         for (int i = 1; i <= 2; i++) {
             try {
                 String url = client.getDownloadUrl(file.driveId, file.fileId);
-                client.downloadTo(url, target, file.size);
+                beginCurrentFile(key, file.name, file.size);
+                client.downloadTo(url, target, file.size, new AliyunDriveClient.ProgressCallback() {
+                    @Override
+                    public void onBytes(long written, long expected) {
+                        updateCurrentFile(key, file.name, written, expected);
+                    }
+                });
                 ok = true;
                 break;
             } catch (Exception e) {
                 last = e;
-                log.warn("下载重试 {}/2 {} : {}", i, file.name, e.getMessage());
+                log.info("下载重试 {}/2 {} : {}", i, file.name, e.getMessage());
                 try {
                     Thread.sleep(800L * i);
                 } catch (InterruptedException ie) {
@@ -247,8 +444,21 @@ public class AliyunDriveSyncService {
             }
         }
         if (!ok) {
-            failed.incrementAndGet();
-            log.warn("下载失败 name={}: {}", file.name, last == null ? "unknown" : last.getMessage());
+            endCurrentFile(key);
+            if (isRemoteGone(last)) {
+                skipped.incrementAndGet();
+                progressSkipped.incrementAndGet();
+                progressGone.incrementAndGet();
+                synchronized (stateLock) {
+                    rememberMissing(fileState, file);
+                    persistProgress(store, cfg.getTokenFile());
+                }
+                refreshRemaining();
+                log.info("相册有记录但各盘均找不到文件，已跳过：{}（{}）",
+                        file.name, last.getMessage());
+                return;
+            }
+            markFileFailed(file, last, failed);
             return;
         }
 
@@ -257,11 +467,11 @@ public class AliyunDriveSyncService {
             remember(fileState, file, localName);
             store.refreshToken = client.getRefreshToken();
             d = downloaded.incrementAndGet();
-            if (d == 1 || d % 5 == 0) {
-                store.save(cfg.getTokenFile());
-            }
         }
-        log.info("已下载 {}/{}：{} -> {}", d, total, file.name, target.getFileName());
+        progressDownloaded.incrementAndGet();
+        endCurrentFile(key);
+        refreshRemaining();
+        log.info("已下载 {}/{}：{} -> {}，剩余 {}", d, total, file.name, target.getFileName(), progressRemaining.get());
     }
 
     /**
@@ -322,6 +532,211 @@ public class AliyunDriveSyncService {
         }
     }
 
+    private AliyunSyncProgress snapshotProgress() {
+        AliyunSyncProgress p = new AliyunSyncProgress();
+        p.setStatus(progressStatus.get());
+        p.setPhase(progressPhase);
+        p.setTotal(progressTotal.get());
+        p.setNeedDownload(progressNeed.get());
+        p.setDownloaded(progressDownloaded.get());
+        p.setSkipped(progressSkipped.get());
+        p.setFailed(progressFailed.get());
+        p.setRemaining(Math.max(0, progressRemaining.get()));
+        p.setMessage(progressMessage == null ? "" : progressMessage);
+        p.setCurrentFiles(new ArrayList<AliyunSyncProgress.CurrentFile>(currentFiles.values()));
+        p.setFailedFiles(new ArrayList<AliyunSyncProgress.FailedFile>(failedFiles));
+        return p;
+    }
+
+    private void markProgress(int status, String phase, String message) {
+        progressStatus.set(status);
+        progressPhase = phase;
+        progressMessage = message == null ? "" : message;
+        if (status == 0 && "listing".equals(phase)) {
+            currentFiles.clear();
+            failedFiles.clear();
+        }
+        if (status == 3) {
+            paused.set(true);
+        }
+    }
+
+    private void finishProgress(int status, String message) {
+        progressStatus.set(status);
+        progressPhase = status == 1 ? "done" : (status == 3 ? "paused" : "failed");
+        progressMessage = message == null ? "" : message;
+        currentFiles.clear();
+        if (status == 1) {
+            progressRemaining.set(0);
+            paused.set(false);
+        }
+    }
+
+    private void persistProgressQuiet() {
+        try {
+            TokenStore store = persistStore;
+            String file = activeTokenFile;
+            if (StringUtils.isEmpty(file)) {
+                AlbumProperties.AliyunDriveConfig cfg = resolveConfig();
+                if (cfg != null) {
+                    file = cfg.getTokenFile();
+                }
+            }
+            if (store == null && StringUtils.isNotEmpty(file)) {
+                store = TokenStore.load(file);
+                persistStore = store;
+            }
+            persistProgress(store, file);
+        } catch (Exception e) {
+            log.warn("持久化下载进度失败：{}", e.getMessage());
+        }
+    }
+
+    private void persistProgress(TokenStore store, String tokenFile) {
+        if (store == null || StringUtils.isEmpty(tokenFile)) {
+            return;
+        }
+        store.syncProgress = snapshotProgressJson();
+        store.save(tokenFile);
+    }
+
+    private JSONObject snapshotProgressJson() {
+        JSONObject o = new JSONObject();
+        o.put("status", progressStatus.get());
+        o.put("phase", progressPhase);
+        o.put("total", progressTotal.get());
+        o.put("needDownload", progressNeed.get());
+        o.put("downloaded", progressDownloaded.get());
+        o.put("skipped", progressSkipped.get());
+        o.put("failed", progressFailed.get());
+        o.put("remaining", progressRemaining.get());
+        o.put("message", progressMessage);
+        o.put("paused", paused.get() || progressStatus.get() == 3);
+        if (!failedFiles.isEmpty()) {
+            o.put("failedFiles", JSON.parseArray(JSON.toJSONString(failedFiles)));
+        }
+        return o;
+    }
+
+    private void applyPersistedProgress(JSONObject o, boolean processRestarted) {
+        if (o == null || o.isEmpty()) {
+            return;
+        }
+        int status = o.getIntValue("status");
+        int remaining = o.getIntValue("remaining");
+        if (processRestarted && status == 0 && remaining > 0) {
+            status = 3;
+        }
+        progressStatus.set(status);
+        progressPhase = o.getString("phase");
+        progressTotal.set(o.getIntValue("total"));
+        progressNeed.set(o.getIntValue("needDownload"));
+        progressDownloaded.set(o.getIntValue("downloaded"));
+        progressSkipped.set(o.getIntValue("skipped"));
+        progressFailed.set(o.getIntValue("failed"));
+        progressRemaining.set(remaining);
+        progressMessage = o.getString("message");
+        paused.set(status == 3 || Boolean.TRUE.equals(o.getBoolean("paused")));
+        if (status == 3 && remaining > 0 && StringUtils.isEmpty(progressMessage)) {
+            progressMessage = "已暂停，剩余 " + remaining + " 个未下载";
+            progressPhase = "paused";
+        }
+        failedFiles.clear();
+        com.alibaba.fastjson2.JSONArray arr = o.getJSONArray("failedFiles");
+        if (arr != null) {
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject row = arr.getJSONObject(i);
+                if (row == null) {
+                    continue;
+                }
+                AliyunSyncProgress.FailedFile f = new AliyunSyncProgress.FailedFile();
+                f.setName(row.getString("name"));
+                f.setReason(row.getString("reason"));
+                failedFiles.add(f);
+            }
+        }
+    }
+
+    private void refreshRemaining() {
+        progressRemaining.set(Math.max(0,
+                progressNeed.get() - progressDownloaded.get() - progressGone.get()));
+    }
+
+    private void markFileFailed(DriveFile file, Throwable e, AtomicInteger failed) {
+        failed.incrementAndGet();
+        progressFailed.incrementAndGet();
+        AliyunSyncProgress.FailedFile row = new AliyunSyncProgress.FailedFile();
+        row.setName(file == null || file.name == null ? "" : file.name);
+        row.setReason(e == null || e.getMessage() == null ? "unknown" : e.getMessage());
+        failedFiles.add(row);
+        while (failedFiles.size() > 30) {
+            failedFiles.remove(0);
+        }
+        refreshRemaining();
+        log.info("下载失败 name={}：{}", row.getName(), row.getReason());
+    }
+
+    private void beginCurrentFile(String key, String name, long expected) {
+        AliyunSyncProgress.CurrentFile f = new AliyunSyncProgress.CurrentFile();
+        f.setName(name);
+        f.setExpected(expected);
+        f.setWritten(0L);
+        f.setPercent(0);
+        currentFiles.put(key, f);
+        progressMessage = "正在下载 " + (name == null ? "" : name);
+    }
+
+    private void updateCurrentFile(String key, String name, long written, long expected) {
+        AliyunSyncProgress.CurrentFile f = currentFiles.get(key);
+        if (f == null) {
+            f = new AliyunSyncProgress.CurrentFile();
+            f.setName(name);
+            currentFiles.put(key, f);
+        }
+        f.setName(name);
+        f.setWritten(written);
+        f.setExpected(expected);
+        if (expected > 0) {
+            f.setPercent((int) Math.min(99, (written * 100) / expected));
+        }
+    }
+
+    private void endCurrentFile(String key) {
+        currentFiles.remove(key);
+    }
+
+    private int calcPercent(AliyunSyncProgress p) {
+        if (p.getStatus() == 1) {
+            return 100;
+        }
+        int need = p.getNeedDownload();
+        if (need <= 0) {
+            return "listing".equals(p.getPhase()) ? 0 : ((p.getStatus() == 2 || p.getRemaining() <= 0) ? 100 : 0);
+        }
+        double done = p.getDownloaded() + p.getFailed();
+        for (AliyunSyncProgress.CurrentFile f : p.getCurrentFiles()) {
+            if (f.getExpected() > 0) {
+                done += Math.min(0.99d, (double) f.getWritten() / (double) f.getExpected());
+            }
+        }
+        int pct = (int) Math.floor(done * 100.0d / need);
+        if (p.getStatus() == 0) {
+            return Math.min(99, Math.max(0, pct));
+        }
+        return Math.min(99, Math.max(0, pct));
+    }
+
+    private AlbumProperties.AliyunDriveConfig resolveConfig() {
+        try {
+            if (aliyunDriveSettingService != null) {
+                return aliyunDriveSettingService.getEffectiveConfig();
+            }
+        } catch (Exception e) {
+            log.warn("读取云盘页面配置失败，回落 yml：{}", e.getMessage());
+        }
+        return albumProperties.getAliyunDrive();
+    }
+
     private Long resolveScanPathId(AlbumProperties.AliyunDriveConfig cfg) {
         if (cfg.getScanPathId() != null) {
             return cfg.getScanPathId();
@@ -353,6 +768,31 @@ public class AliyunDriveSyncService {
         return dot > 0
                 ? base.substring(0, dot) + "_" + shortId + base.substring(dot)
                 : base + "_" + shortId;
+    }
+
+    private static boolean isRememberedMissing(DriveFile file, JSONObject fileState) {
+        if (file == null || StringUtils.isEmpty(file.fileId) || fileState == null) {
+            return false;
+        }
+        JSONObject prev = fileState.getJSONObject(file.fileId);
+        return prev != null && Boolean.TRUE.equals(prev.getBoolean("missing"));
+    }
+
+    private static boolean isRemoteGone(Throwable e) {
+        if (e == null || e.getMessage() == null) {
+            return false;
+        }
+        String msg = e.getMessage().toLowerCase(Locale.ROOT);
+        return msg.contains("404") || msg.contains("cannot be found") || msg.contains("notfound");
+    }
+
+    private static void rememberMissing(JSONObject fileState, DriveFile file) {
+        JSONObject row = new JSONObject();
+        row.put("name", file.name);
+        row.put("size", file.size);
+        row.put("missing", true);
+        row.put("driveId", file.driveId);
+        fileState.put(file.fileId, row);
     }
 
     private static void remember(JSONObject fileState, DriveFile file, String localName) {
@@ -412,11 +852,13 @@ public class AliyunDriveSyncService {
         int downloaded;
         int skipped;
         int failed;
+        boolean paused;
     }
 
     private static class TokenStore {
         String refreshToken;
         JSONObject files = new JSONObject();
+        JSONObject syncProgress;
 
         static TokenStore load(String tokenFile) {
             TokenStore store = new TokenStore();
@@ -436,6 +878,7 @@ public class AliyunDriveSyncService {
                     if (files != null) {
                         store.files = files;
                     }
+                    store.syncProgress = obj.getJSONObject("syncProgress");
                 }
             } catch (Exception e) {
                 log.warn("读取 tokenFile 失败 {}: {}", tokenFile, e.getMessage());
@@ -457,6 +900,9 @@ public class AliyunDriveSyncService {
                     JSONObject obj = new JSONObject();
                     obj.put("refreshToken", refreshToken);
                     obj.put("files", files == null ? new JSONObject() : files);
+                    if (syncProgress != null) {
+                        obj.put("syncProgress", syncProgress);
+                    }
                     Files.write(path, obj.toJSONString().getBytes(StandardCharsets.UTF_8));
                 } catch (Exception e) {
                     log.warn("写入 tokenFile 失败 {}: {}", tokenFile, e.getMessage());

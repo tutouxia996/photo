@@ -128,9 +128,7 @@ service.interceptors.response.use(res => {
     closeActionLoading(res.config)
     // 未设置状态码则默认成功状态
     const code = res.data.code || 200;
-    // 获取错误信息
     const msg = errorCode[code] || res.data.msg || errorCode['default']
-    // 二进制数据则直接返回
     if (res.request.responseType ===  'blob' || res.request.responseType ===  'arraybuffer') {
       return res.data
     }
@@ -154,6 +152,9 @@ service.interceptors.response.use(res => {
       ElMessage({ message: msg, type: 'warning' })
       return Promise.reject(new Error(msg))
     } else if (code !== 200) {
+      if (res.config && res.config.silent) {
+        return Promise.reject(new Error(msg))
+      }
       ElNotification.error({ title: msg })
       return Promise.reject('error')
     } else {
@@ -162,7 +163,9 @@ service.interceptors.response.use(res => {
   },
   error => {
     closeActionLoading(error.config)
-    console.log('err' + error)
+    if (error.config && error.config.silent) {
+      return Promise.reject(error)
+    }
     let { message } = error;
     if (message == "Network Error") {
       message = "后端接口连接异常";

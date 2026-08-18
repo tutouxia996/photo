@@ -33,6 +33,10 @@ public class AliyunDriveClient {
 
     private static final Logger log = LoggerFactory.getLogger(AliyunDriveClient.class);
 
+    public interface ProgressCallback {
+        void onBytes(long written, long expected);
+    }
+
     private static final String[] AUTH_HOSTS = {
             "https://auth.alipan.com",
             "https://auth.aliyundrive.com"
@@ -47,6 +51,8 @@ public class AliyunDriveClient {
     private String refreshToken;
     private String defaultDriveId;
     private String albumDriveId;
+    private String backupDriveId;
+    private String resourceDriveId;
     private String apiHost = API_HOSTS[0];
     /** 记住可用的下载 Referer，避免每个文件都试错 */
     private volatile String stickyDownloadReferer;
@@ -139,11 +145,12 @@ public class AliyunDriveClient {
             if (items != null) {
                 for (int i = 0; i < items.size(); i++) {
                     JSONObject raw = items.getJSONObject(i);
-                    // 兼容 items[].file 嵌套
-                    if (raw != null && raw.getJSONObject("file") != null
-                            && StringUtils.isEmpty(raw.getString("file_id"))
-                            && StringUtils.isEmpty(raw.getString("fileId"))) {
-                        raw = raw.getJSONObject("file");
+                    if (raw != null && raw.getJSONObject("file") != null) {
+                        JSONObject inner = raw.getJSONObject("file");
+                        JSONObject merged = new JSONObject();
+                        merged.putAll(raw);
+                        merged.putAll(inner);
+                        raw = merged;
                     }
                     DriveFile f = DriveFile.from(raw);
                     if (f == null || StringUtils.isEmpty(f.fileId)) {
@@ -170,21 +177,76 @@ public class AliyunDriveClient {
     }
 
     public synchronized String getDownloadUrl(String driveId, String fileId) {
+        ensureDriveIds();
+        List<String> driveIds = new ArrayList<String>();
+        if (StringUtils.isNotEmpty(driveId)) {
+            driveIds.add(driveId);
+        }
+        if (StringUtils.isNotEmpty(defaultDriveId) && !driveIds.contains(defaultDriveId)) {
+            driveIds.add(defaultDriveId);
+        }
+        if (StringUtils.isNotEmpty(albumDriveId) && !driveIds.contains(albumDriveId)) {
+            driveIds.add(albumDriveId);
+        }
+        if (StringUtils.isNotEmpty(resourceDriveId) && !driveIds.contains(resourceDriveId)) {
+            driveIds.add(resourceDriveId);
+        }
+        if (StringUtils.isNotEmpty(backupDriveId) && !driveIds.contains(backupDriveId)) {
+            driveIds.add(backupDriveId);
+        }
+        Exception last = null;
+        for (String did : driveIds) {
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    String url = getDownloadUrlOnce(did, fileId);
+                    if (StringUtils.isNotEmpty(driveId) && !driveId.equals(did)) {
+                        log.info("下载地址改用 driveId={}（原 driveId={}）fileId={}", did, driveId, fileId);
+                    }
+                    return url;
+                } catch (Exception e) {
+                    last = e;
+                    String msg = e.getMessage() == null ? "" : e.getMessage();
+                    boolean notFound = msg.contains("404") || msg.toLowerCase(Locale.ROOT).contains("cannot be found")
+                            || msg.toLowerCase(Locale.ROOT).contains("notfound");
+                    if (notFound) {
+                        log.info("driveId={} 无此文件，尝试下一盘 fileId={}", did, fileId);
+                        break;
+                    }
+                    boolean rateLimited = msg.contains("429") || msg.toLowerCase(Locale.ROOT).contains("too many")
+                            || msg.toLowerCase(Locale.ROOT).contains("throttl");
+                    if (rateLimited && attempt < 3) {
+                        log.info("获取下载地址限流，{}ms 后重试 fileId={} driveId={}", 700 * attempt, fileId, did);
+                        try {
+                            Thread.sleep(700L * attempt);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new ServiceException("获取下载地址被中断");
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        throw last == null
+                ? new ServiceException("获取原文件下载地址失败：fileId=" + fileId)
+                : (last instanceof RuntimeException ? (RuntimeException) last : new ServiceException(last.getMessage()));
+    }
+
+    private String getDownloadUrlOnce(String driveId, String fileId) {
         JSONObject body = new JSONObject();
         body.put("drive_id", driveId);
         body.put("file_id", fileId);
         // 原文件下载（不要带 image_thumbnail_process / video_thumbnail_process）
         body.put("expire_sec", 14400);
         JSONObject resp = postApi("/v2/file/get_download_url", body);
-        // 优先 url（原文件）；不要用 thumbnail / preview 类字段
         String url = firstNonEmpty(
                 resp.getString("url"),
                 resp.getString("download_url"),
                 resp.getString("cdn_url"));
         if (StringUtils.isEmpty(url)) {
-            throw new ServiceException("获取原文件下载地址失败：fileId=" + fileId);
+            throw new ServiceException("获取原文件下载地址失败：fileId=" + fileId + " driveId=" + driveId);
         }
-        // 防御误用缩略图域名（极少数接口混返回）
         String lower = url.toLowerCase(Locale.ROOT);
         if (lower.contains("image/resize") || lower.contains("video/snapshot") || lower.contains("thumbnail")) {
             throw new ServiceException("接口返回了缩略图地址而非原文件：fileId=" + fileId);
@@ -200,6 +262,11 @@ public class AliyunDriveClient {
      * </p>
      */
     public void downloadTo(String downloadUrl, Path target, long expectedSize) throws Exception {
+        downloadTo(downloadUrl, target, expectedSize, null);
+    }
+
+    public void downloadTo(String downloadUrl, Path target, long expectedSize,
+                           ProgressCallback progress) throws Exception {
         Path parent = target.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
@@ -213,7 +280,7 @@ public class AliyunDriveClient {
             Exception lastMp = null;
             for (String referer : refererCandidates(preferredReferer())) {
                 try {
-                    downloadMultipart(downloadUrl, target, part, expectedSize, referer, chunks);
+                    downloadMultipart(downloadUrl, target, part, expectedSize, referer, chunks, progress);
                     stickyDownloadReferer = referer;
                     return;
                 } catch (Exception e) {
@@ -230,7 +297,7 @@ public class AliyunDriveClient {
                     lastMp == null ? "unknown" : lastMp.getMessage());
             Files.deleteIfExists(part);
         }
-        downloadSingleWithRefererFallback(downloadUrl, target, part, expectedSize);
+        downloadSingleWithRefererFallback(downloadUrl, target, part, expectedSize, progress);
     }
 
     private String preferredReferer() {
@@ -261,11 +328,11 @@ public class AliyunDriveClient {
     }
 
     private void downloadSingleWithRefererFallback(String downloadUrl, Path target, Path part,
-                                                   long expectedSize) throws Exception {
+                                                   long expectedSize, ProgressCallback progress) throws Exception {
         Exception last = null;
         for (String referer : refererCandidates(preferredReferer())) {
             try {
-                downloadSingle(downloadUrl, target, part, expectedSize, referer);
+                downloadSingle(downloadUrl, target, part, expectedSize, referer, progress);
                 stickyDownloadReferer = referer;
                 return;
             } catch (Exception e) {
@@ -283,7 +350,8 @@ public class AliyunDriveClient {
     }
 
     private void downloadMultipart(String downloadUrl, Path target, Path part,
-                                   long expectedSize, String referer, int chunkCount) throws Exception {
+                                   long expectedSize, String referer, int chunkCount,
+                                   ProgressCallback progress) throws Exception {
         String finalUrl = looksLikeCdnUrl(downloadUrl)
                 ? downloadUrl
                 : resolveFinalDownloadUrl(downloadUrl, referer);
@@ -326,7 +394,8 @@ public class AliyunDriveClient {
                     public void run() {
                         try {
                             downloadRangeToFile(urlFinal, refererFinal, partFinal, start, end,
-                                    writtenTotal, lastLogAt, expectedFinal, target.getFileName().toString());
+                                    writtenTotal, lastLogAt, expectedFinal, target.getFileName().toString(),
+                                    progress);
                         } catch (Exception e) {
                             throw new RuntimeException("分片" + idx + "失败 [" + start + "-" + end + "]：" + e.getMessage(), e);
                         }
@@ -355,7 +424,8 @@ public class AliyunDriveClient {
     private void downloadRangeToFile(String url, String referer, Path part,
                                      long start, long end,
                                      AtomicLong writtenTotal, AtomicLong lastLogAt,
-                                     long expectedSize, String displayName) throws Exception {
+                                     long expectedSize, String displayName,
+                                     ProgressCallback progress) throws Exception {
         HttpURLConnection conn = null;
         try {
             conn = openDownload(url, referer, start, end);
@@ -395,6 +465,7 @@ public class AliyunDriveClient {
                     }
                     got += n;
                     long total = writtenTotal.addAndGet(n);
+                    notifyProgress(progress, total, expectedSize);
                     long now = System.currentTimeMillis();
                     long prev = lastLogAt.get();
                     if (now - prev >= 10000L && lastLogAt.compareAndSet(prev, now)) {
@@ -414,7 +485,7 @@ public class AliyunDriveClient {
     }
 
     private void downloadSingle(String downloadUrl, Path target, Path part,
-                                long expectedSize, String referer) throws Exception {
+                                long expectedSize, String referer, ProgressCallback progress) throws Exception {
         HttpURLConnection conn = null;
         try {
             Files.deleteIfExists(part);
@@ -444,6 +515,7 @@ public class AliyunDriveClient {
                 while ((n = in.read(buf)) >= 0) {
                     out.write(buf, 0, n);
                     written += n;
+                    notifyProgress(progress, written, expectedSize);
                     long now = System.currentTimeMillis();
                     if (now - lastLogAt >= 10000L) {
                         if (expectedSize > 0) {
@@ -468,6 +540,16 @@ public class AliyunDriveClient {
         } finally {
             if (conn != null) {
                 conn.disconnect();
+            }
+        }
+    }
+
+    private static void notifyProgress(ProgressCallback progress, long written, long expected) {
+        if (progress != null) {
+            try {
+                progress.onBytes(written, expected);
+            } catch (Exception ignored) {
+                // ignore
             }
         }
     }
@@ -599,7 +681,10 @@ public class AliyunDriveClient {
                 this.accessToken = access;
                 this.refreshToken = refresh;
                 this.defaultDriveId = firstNonEmpty(resp.getString("default_drive_id"), resp.getString("defaultDriveId"));
-                log.info("阿里云盘 token 刷新成功");
+                this.resourceDriveId = firstNonEmpty(resp.getString("resource_drive_id"), resp.getString("resourceDriveId"));
+                this.backupDriveId = firstNonEmpty(resp.getString("backup_drive_id"), resp.getString("backupDriveId"));
+                log.info("阿里云盘 token 刷新成功 defaultDrive={} backupDrive={} resourceDrive={}",
+                        defaultDriveId, backupDriveId, resourceDriveId);
                 return;
             } catch (Exception e) {
                 last = e;

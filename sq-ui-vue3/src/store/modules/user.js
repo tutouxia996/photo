@@ -76,7 +76,11 @@ const useUserStore = defineStore(
             this.roles = []
             this.permissions = []
             removeToken()
-            resolve()
+            import('@/store/modules/aliyunSync').then(mod => {
+              try {
+                mod.default().stopPolling()
+              } catch (e) { /* ignore */ }
+            }).finally(() => resolve())
           }).catch(error => {
             reject(error)
           })

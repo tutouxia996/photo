@@ -214,7 +214,7 @@ album:
     voteMinCount: 2
     connectTimeoutMs: 15000
     readTimeoutMs: 90000
-  # 阿里云盘个人相册 → 本机目录 → 磁盘扫描入库（密钥写 application-local.yml）
+  # 阿里云盘同步默认值（实际配置请在后台「相册管理 → 云盘同步」保存；此处仅作未保存前的回落）
   aliyunDrive:
     enabled: false
     refreshToken: ${ALIYUN_DRIVE_REFRESH_TOKEN:}
