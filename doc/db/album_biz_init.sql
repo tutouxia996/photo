@@ -70,6 +70,8 @@ CREATE TABLE `biz_photo` (
   `score_pass` tinyint(4) DEFAULT NULL COMMENT '是否达到图生图门槛：0否 1是 空未打分',
   `score_reason` varchar(200) DEFAULT NULL COMMENT '打分摘要',
   `scored_at` datetime DEFAULT NULL COMMENT '最近打分时间',
+  `origin_type` varchar(20) DEFAULT 'original' COMMENT '来源：original原片 ai_draw AI出图',
+  `source_photo_id` bigint(20) DEFAULT NULL COMMENT 'AI出图时的源照片ID',
   `deleted` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0未删除 1已删除 2回收站',
   PRIMARY KEY (`photo_id`),
   KEY `idx_album_id` (`album_id`),
@@ -77,6 +79,27 @@ CREATE TABLE `biz_photo` (
   KEY `idx_md5` (`md5`),
   KEY `idx_deleted` (`deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='图片表';
+
+-- ----------------------------
+-- AI 出图记录
+-- ----------------------------
+DROP TABLE IF EXISTS `biz_photo_draw`;
+CREATE TABLE `biz_photo_draw` (
+  `draw_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '出图记录ID',
+  `album_id` bigint(20) NOT NULL COMMENT '相册ID',
+  `source_photo_id` bigint(20) NOT NULL COMMENT '源照片ID',
+  `result_photo_id` bigint(20) DEFAULT NULL COMMENT '生成后入库的照片ID',
+  `preset` varchar(64) NOT NULL COMMENT '预设标识',
+  `status` varchar(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/running/success/failed',
+  `task_id` varchar(64) DEFAULT NULL COMMENT '万相异步任务ID',
+  `error_msg` varchar(500) DEFAULT NULL COMMENT '失败原因',
+  `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`draw_id`),
+  KEY `idx_source_photo` (`source_photo_id`),
+  KEY `idx_album` (`album_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='照片AI出图记录';
 
 -- ----------------------------
 -- 轨迹表

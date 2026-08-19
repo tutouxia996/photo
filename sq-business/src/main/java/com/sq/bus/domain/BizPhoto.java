@@ -102,6 +102,12 @@ public class BizPhoto implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date scoredAt;
 
+    /** 来源：original 原片，ai_draw AI 出图 */
+    private String originType;
+
+    /** AI 出图时的源照片 ID */
+    private Long sourcePhotoId;
+
     /** 0未删除 1已删除 2回收站 */
     private Integer deleted;
 }

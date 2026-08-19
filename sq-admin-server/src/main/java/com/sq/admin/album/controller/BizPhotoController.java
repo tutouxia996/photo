@@ -7,11 +7,14 @@ import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.RegionLocateRequest;
+import com.sq.bus.domain.vo.PhotoDrawBatchRequest;
+import com.sq.bus.domain.vo.PhotoDrawRequest;
 import com.sq.bus.domain.vo.PhotoScoreRequest;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.service.IPhotoFallbackLocationService;
+import com.sq.bus.service.IPhotoDrawService;
 import com.sq.bus.service.IPhotoQualityService;
 import com.sq.bus.service.route.AmapPlaceSearchService;
 import com.sq.bus.utils.ExifParseUtils;
@@ -74,6 +77,9 @@ public class BizPhotoController extends BaseController {
     private IPhotoQualityService photoQualityService;
 
     @Autowired
+    private IPhotoDrawService photoDrawService;
+
+    @Autowired
     private AmapPlaceSearchService amapPlaceSearchService;
 
     @Autowired
@@ -113,7 +119,8 @@ public class BizPhotoController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo list(BizPhoto query,
                               @RequestParam(value = "shootTimeOrder", defaultValue = "desc") String shootTimeOrder,
-                              @RequestParam(value = "scoreFilter", required = false) String scoreFilter) {
+                              @RequestParam(value = "scoreFilter", required = false) String scoreFilter,
+                              @RequestParam(value = "originFilter", required = false) String originFilter) {
         startPage();
         int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
@@ -122,6 +129,7 @@ public class BizPhotoController extends BaseController {
                 .like(StringUtils.isNotEmpty(query.getFileName()), BizPhoto::getFileName, query.getFileName())
                 .eq(BizPhoto::getDeleted, deleted);
         applyScoreFilter(wrapper, scoreFilter);
+        applyOriginFilter(wrapper, originFilter);
         boolean asc = "asc".equalsIgnoreCase(shootTimeOrder);
         if (asc) {
             wrapper.orderByAsc(BizPhoto::getShootTime).orderByAsc(BizPhoto::getPhotoId);
@@ -424,14 +432,54 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 本地算法为相册照片打出图质量分，合格者才允许图生图。
+     * 启动相册照片后台打分（不阻塞；进度见 /score/progress）。
      */
     @PreAuthorize("@ss.hasPermi('album:photo:edit')")
     @Log(title = "照片质量打分", businessType = BusinessType.UPDATE)
     @PostMapping("/score/{albumId}")
     public AjaxResult scoreAlbum(@PathVariable Long albumId,
                                  @RequestBody(required = false) PhotoScoreRequest request) {
-        return success(photoQualityService.scoreAlbum(albumId, request));
+        return success(photoQualityService.startScoreAlbum(albumId, request));
+    }
+
+    /**
+     * 照片质量打分进度。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @GetMapping("/score/progress")
+    public AjaxResult scoreProgress() {
+        return success(photoQualityService.getScoreProgress());
+    }
+
+    /**
+     * AI 出图可用预设。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @GetMapping("/draw/presets")
+    public AjaxResult drawPresets() {
+        return success(photoDrawService.listPresets());
+    }
+
+    /**
+     * 对单张照片执行万相图生图 + 程序拼版（须已通过质量打分）。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "AI出图", businessType = BusinessType.INSERT)
+    @PostMapping("/draw/{photoId}")
+    public AjaxResult drawPhoto(@PathVariable Long photoId,
+                                @RequestBody(required = false) PhotoDrawRequest request) {
+        return success(photoDrawService.drawPhoto(photoId, request, getUsername()));
+    }
+
+    /**
+     * 批量 AI 出图（多选合格原片）。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "AI出图批量", businessType = BusinessType.INSERT)
+    @PostMapping("/draw/batch/{albumId}")
+    public AjaxResult drawPhotoBatch(@PathVariable Long albumId,
+                                     @RequestBody(required = false) PhotoDrawBatchRequest request) {
+        return success(photoDrawService.drawPhotoBatch(albumId, request, getUsername()));
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:query')")
@@ -686,6 +734,19 @@ public class BizPhotoController extends BaseController {
             wrapper.eq(BizPhoto::getScorePass, 0);
         } else if ("unscored".equalsIgnoreCase(scoreFilter)) {
             wrapper.isNull(BizPhoto::getScorePass);
+        }
+    }
+
+    private void applyOriginFilter(LambdaQueryWrapper<BizPhoto> wrapper, String originFilter) {
+        if (StringUtils.isEmpty(originFilter) || "all".equalsIgnoreCase(originFilter)) {
+            return;
+        }
+        if ("aiDraw".equalsIgnoreCase(originFilter)) {
+            wrapper.eq(BizPhoto::getOriginType, "ai_draw");
+        } else if ("original".equalsIgnoreCase(originFilter)) {
+            wrapper.and(w -> w.isNull(BizPhoto::getOriginType)
+                    .or().eq(BizPhoto::getOriginType, "")
+                    .or().eq(BizPhoto::getOriginType, "original"));
         }
     }
 

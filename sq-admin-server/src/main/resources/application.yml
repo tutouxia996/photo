@@ -219,6 +219,18 @@ album:
     passScore: 70
     analyzeWidth: 320
     minShortSide: 720
+  # 万相图生图（与 aiLandmark 共用 Key 时可只配 AI_LANDMARK_API_KEY）
+  photoDraw:
+    enabled: true
+    apiKey: ${AI_LANDMARK_API_KEY:}
+    baseUrl: ${AI_WANXIANG_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
+    model: ${AI_WANXIANG_MODEL:wan2.5-i2i-preview}
+    maxInputEdge: 1280
+    connectTimeoutMs: 15000
+    readTimeoutMs: 120000
+    pollIntervalMs: 2500
+    maxPollAttempts: 60
+    jpegQuality: 0.95
   # 阿里云盘同步默认值（实际配置请在后台「相册管理 → 云盘同步」保存；此处仅作未保存前的回落）
   aliyunDrive:
     enabled: false

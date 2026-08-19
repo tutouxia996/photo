@@ -10,6 +10,7 @@
       <app-main />
       <settings ref="settingRef" />
       <aliyun-sync-float />
+      <photo-score-float />
     </div>
   </div>
 </template>
@@ -19,6 +20,7 @@ import { useWindowSize } from '@vueuse/core'
 import Sidebar from './components/Sidebar/index.vue'
 import { AppMain, Navbar, Settings, TagsView } from './components'
 import AliyunSyncFloat from './components/AliyunSyncFloat.vue'
+import PhotoScoreFloat from './components/PhotoScoreFloat.vue'
 import defaultSettings from '@/settings'
 
 import useAppStore from '@/store/modules/app'

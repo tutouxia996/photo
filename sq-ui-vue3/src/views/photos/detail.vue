@@ -112,6 +112,23 @@
           <el-icon><Medal /></el-icon>
           <span>质量打分</span>
         </button>
+        <button type="button" class="tool-btn" title="对已选或当前预览的合格照片 AI 出图" @click="openDrawDialogFromToolbar">
+          <el-icon><Brush /></el-icon>
+          <span>AI 出图</span>
+        </button>
+        <el-dropdown trigger="click" @command="handleOriginFilter">
+          <button type="button" class="tool-btn">
+            <el-icon><Picture /></el-icon>
+            <span>{{ originFilterLabel }}</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="original">仅原片</el-dropdown-item>
+              <el-dropdown-item command="aiDraw">仅 AI 创作</el-dropdown-item>
+              <el-dropdown-item command="all">全部内容</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-dropdown trigger="click" @command="handleShootTimeOrder">
           <button type="button" class="tool-btn">
             <el-icon><Sort /></el-icon>
@@ -144,7 +161,7 @@
     </div>
 
     <div v-if="!photoList.length && !loading" class="empty-box">
-      <el-empty description="相册暂无内容，点击右上角添加照片" />
+      <el-empty :description="emptyHint" />
     </div>
 
     <div v-else ref="gridWrapRef" class="photo-grid-wrap">
@@ -191,6 +208,7 @@
             <div v-if="item.aestheticScore != null" class="score-mark" :class="item.scorePass === 1 ? 'pass' : 'fail'">
               {{ item.aestheticScore }}
             </div>
+            <div v-if="isAiDraw(item)" class="ai-mark">AI</div>
             <div class="check-mark" aria-hidden="true">
               <el-icon :size="14"><Select /></el-icon>
             </div>
@@ -219,6 +237,9 @@
     <teleport to="body">
       <transition name="sel-bar">
         <div v-if="selectedIds.length" class="selection-bar" @click.stop>
+          <button type="button" class="sel-btn" title="AI 出图" @click="openDrawDialogFromSelection">
+            <el-icon :size="20"><Brush /></el-icon>
+          </button>
           <button type="button" class="sel-btn" title="下载" @click="downloadSelected">
             <el-icon :size="20"><Download /></el-icon>
           </button>
@@ -270,6 +291,12 @@
           <div class="ctx-divider"></div>
           <button type="button" class="ctx-item" @click="onItemCtxAddTo">添加到...</button>
           <button type="button" class="ctx-item" @click="onItemCtxDetail">查看详细信息</button>
+          <button
+            v-if="ctxTargetPhoto && ctxTargetPhoto.fileType !== 2 && ctxTargetPhoto.scorePass === 1 && !isAiDraw(ctxTargetPhoto)"
+            type="button"
+            class="ctx-item"
+            @click="onItemCtxDraw"
+          >AI 出图</button>
           <button type="button" class="ctx-item" @click="onItemCtxSetCover">设置为相册封面</button>
           <div class="ctx-divider"></div>
           <button type="button" class="ctx-item danger" @click="onItemCtxRemoveFromAlbum">从当前相册移除</button>
@@ -509,6 +536,15 @@
           <button type="button" class="media-action-btn" title="下载" @click.stop="onMediaDownload">
             <el-icon :size="20"><Download /></el-icon>
           </button>
+          <button
+            v-if="currentMedia && currentMedia.fileType !== 2 && !isAiDraw(currentMedia) && currentMedia.scorePass === 1"
+            type="button"
+            class="media-action-btn"
+            title="AI 出图（万相）"
+            @click.stop="openDrawDialog"
+          >
+            <el-icon :size="20"><Brush /></el-icon>
+          </button>
           <button type="button" class="media-action-btn" title="添加到..." @click.stop="onMediaAddTo">
             <el-icon :size="20"><FolderAdd /></el-icon>
           </button>
@@ -530,12 +566,23 @@
 
     <!-- 详细信息右侧面板：避开顶部操作栏，仅在下方区域弹出 -->
     <teleport to="body">
+      <div
+        v-if="detailOpen && detailPhoto && !mediaVisible"
+        class="photo-detail-backdrop"
+        @click="closePhotoDetail"
+      />
       <transition name="detail-panel">
         <aside
           v-if="detailOpen && detailPhoto"
           class="photo-detail-panel"
           @click.stop
         >
+          <div class="photo-detail-head">
+            <h3 class="detail-head-title">详细信息</h3>
+            <button type="button" class="detail-close-btn" title="关闭" @click="closePhotoDetail">
+              <el-icon :size="18"><Close /></el-icon>
+            </button>
+          </div>
           <div class="photo-detail-album">
             <h3 class="detail-section-title">所属相册</h3>
             <div class="detail-album-row">
@@ -547,7 +594,7 @@
           </div>
 
           <div class="photo-detail-info">
-            <h3 class="detail-section-title">详细信息</h3>
+            <h3 class="detail-section-title">属性</h3>
             <div class="photo-detail-list">
               <div class="photo-detail-row">
                 <span class="label">出图评分</span>
@@ -618,6 +665,55 @@
         </aside>
       </transition>
     </teleport>
+
+    <teleport to="body">
+      <el-dialog
+        v-model="drawOpen"
+        title="AI 出图"
+        width="460px"
+        append-to-body
+        destroy-on-close
+        class="above-media-draw-dialog"
+        modal-class="above-media-draw-overlay"
+        :z-index="5100"
+      >
+        <p class="draw-tip">
+          将对 <strong>{{ drawTargetLabel }}</strong> 出图。文件会保存到本机
+          <code>upload/ai-draw/</code>，并在「仅 AI 创作」中查看，不会与原片混在一起。
+        </p>
+        <el-form label-width="88px">
+          <el-form-item label="预设风格">
+            <el-select
+              v-model="drawForm.preset"
+              placeholder="选择预设"
+              style="width: 100%"
+              teleported
+              popper-class="above-media-draw-select-popper"
+            >
+              <el-option
+                v-for="p in drawPresets"
+                :key="p.id"
+                :label="p.label"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="英文标题">
+            <el-input v-model="drawForm.title" placeholder="可选，默认取地点或文件名" clearable />
+          </el-form-item>
+          <el-form-item v-if="drawForm.preset === 'ink-wash-flat'" label="英文副句">
+            <el-input v-model="drawForm.subtitle" placeholder="可选，水墨海报底部小字" clearable />
+          </el-form-item>
+          <el-form-item v-if="drawForm.preset === 'travel-poster'" label="三词关键词">
+            <el-input v-model="drawForm.keywords" placeholder="如 memory / light / place" clearable />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="drawOpen = false">取消</el-button>
+          <el-button type="primary" :loading="drawSubmitting" @click="submitDraw">开始出图</el-button>
+        </template>
+      </el-dialog>
+    </teleport>
   </div>
 </template>
 
@@ -628,10 +724,12 @@ import { getToken } from '@/utils/auth'
 import { saveAs } from 'file-saver'
 import axios from 'axios'
 import { getAlbum, updateAlbum, listAlbum, addAlbum } from '@/api/photos/album'
-import { listPhoto, uploadPhoto, delPhoto, updatePhoto, scoreAlbumPhotos } from '@/api/photos/photo'
+import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch } from '@/api/photos/photo'
+import usePhotoScoreStore from '@/store/modules/photoScore'
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
+const photoScoreStore = usePhotoScoreStore()
 
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -648,6 +746,8 @@ const loadMoreSentinel = ref(null)
 let loadMoreObserver = null
 const typeFilter = ref('all')
 const scoreFilter = ref('all')
+/** 内容来源：默认仅原片，AI 出图单独查看 */
+const originFilter = ref('original')
 /** 拍摄时间排序：desc 新→旧，asc 旧→新 */
 const shootTimeOrder = ref('desc')
 const sizeMode = ref('small')
@@ -690,6 +790,18 @@ const mediaIndex = ref(0)
 const uploading = ref(false)
 const uploadProgress = reactive({ done: 0, total: 0, ok: 0, fail: 0 })
 const uploadItems = ref([])
+/** AI 出图 */
+const drawOpen = ref(false)
+const drawSubmitting = ref(false)
+const drawPresets = ref([])
+const drawTargetIds = ref([])
+const drawTargetLabel = ref('')
+const drawForm = reactive({
+  preset: 'ink-wash-flat',
+  title: '',
+  subtitle: '',
+  keywords: ''
+})
 /** 同时上传数，避免一次打满服务器 */
 const UPLOAD_CONCURRENCY = 3
 /** 与 application.yml spring.servlet.multipart.max-file-size 对齐 */
@@ -793,6 +905,17 @@ const typeFilterLabel = computed(() => {
 const scoreFilterLabel = computed(() => {
   const map = { all: '全部评分', pass: '仅合格', fail: '仅不合格', unscored: '未打分' }
   return map[scoreFilter.value] || '全部评分'
+})
+
+const originFilterLabel = computed(() => {
+  const map = { original: '仅原片', aiDraw: '仅 AI 创作', all: '全部内容' }
+  return map[originFilter.value] || '仅原片'
+})
+
+const emptyHint = computed(() => {
+  if (originFilter.value === 'aiDraw') return '还没有 AI 创作。勾选合格原片后点「AI 出图」'
+  if (originFilter.value === 'original') return '相册暂无原片，点击右上角添加照片'
+  return '相册暂无内容，点击右上角添加照片'
 })
 
 const scoreDetailText = computed(() => {
@@ -985,6 +1108,82 @@ function handleScoreFilter(cmd) {
   reload()
 }
 
+function handleOriginFilter(cmd) {
+  originFilter.value = cmd
+  reload()
+}
+
+function isAiDraw(item) {
+  if (!item) return false
+  if (item.originType === 'ai_draw') return true
+  return typeof item.remark === 'string' && item.remark.startsWith('AI出图:')
+}
+
+function collectDrawCandidates(ids) {
+  const idSet = new Set(ids)
+  return photoList.value.filter(p =>
+    idSet.has(p.photoId) &&
+    p.fileType !== 2 &&
+    !isAiDraw(p) &&
+    p.scorePass === 1
+  )
+}
+
+function prepareDrawDialog(targets) {
+  if (!targets.length) {
+    proxy.$modal.msgWarning('没有可出图的照片：请选择已打分合格的原片（AI 创作不能再次出图）')
+    return false
+  }
+  drawTargetIds.value = targets.map(p => p.photoId)
+  drawTargetLabel.value = targets.length === 1
+    ? (targets[0].fileName || '1 张照片')
+    : `${targets.length} 张合格原片`
+  const first = targets[0]
+  drawForm.preset = drawPresets.value[0]?.id || 'ink-wash-flat'
+  drawForm.title = first.city || first.district || ''
+  drawForm.subtitle = ''
+  drawForm.keywords = ''
+  return true
+}
+
+async function openDrawDialogForPhotos(targets) {
+  await ensureDrawPresets()
+  if (!prepareDrawDialog(targets)) return
+  drawOpen.value = true
+}
+
+async function openDrawDialog() {
+  const item = currentMedia.value
+  if (!item || item.fileType === 2) return
+  const targets = collectDrawCandidates([item.photoId])
+  await openDrawDialogForPhotos(targets)
+}
+
+async function openDrawDialogFromToolbar() {
+  let targets = []
+  if (selectedIds.value.length) {
+    targets = collectDrawCandidates(selectedIds.value)
+  } else if (currentMedia.value && mediaVisible.value) {
+    targets = collectDrawCandidates([currentMedia.value.photoId])
+  } else {
+    proxy.$modal.msgWarning('请先勾选照片，或在预览中打开一张合格原片')
+    return
+  }
+  await openDrawDialogForPhotos(targets)
+}
+
+async function openDrawDialogFromSelection() {
+  const targets = collectDrawCandidates(selectedIds.value)
+  await openDrawDialogForPhotos(targets)
+}
+
+function onItemCtxDraw() {
+  const item = ctxTargetPhoto.value
+  closeCtxMenu()
+  if (!item) return
+  openDrawDialogForPhotos(collectDrawCandidates([item.photoId]))
+}
+
 async function runPhotoScore() {
   const selected = selectedIds.value.filter(Boolean)
   const targetHint = selected.length
@@ -1004,14 +1203,74 @@ async function runPhotoScore() {
     payload.photoIds = selected
   }
   try {
-    const res = await scoreAlbumPhotos(albumId.value, payload)
-    const data = res.data || {}
-    proxy.$modal.msgSuccess(
-      `已打分 ${data.scored || 0} 张，合格 ${data.passed || 0}，不合格 ${data.failed || 0}，跳过 ${data.skipped || 0}`
-    )
-    reload()
+    await photoScoreStore.start(albumId.value, payload)
+    proxy.$modal.msgSuccess('已开始后台打分，可在右下角查看进度')
   } catch (e) {
     /* request 已提示 */
+  }
+}
+
+async function ensureDrawPresets() {
+  if (drawPresets.value.length) return
+  try {
+    const res = await listDrawPresets()
+    drawPresets.value = res.data || []
+    if (drawPresets.value.length && !drawForm.preset) {
+      drawForm.preset = drawPresets.value[0].id
+    }
+  } catch (e) {
+    drawPresets.value = [
+      { id: 'ink-wash-flat', label: '水墨扁平重构' },
+      { id: 'travel-poster', label: '旅行摄影海报 3:4' },
+      { id: 'minimal-zine', label: '极简 Zine 海报' },
+      { id: 'photo-diptych', label: '摄影+抽象双联（上下）' },
+      { id: 'photo-diptych-column', label: '摄影+抽象双列' },
+      { id: 'photo-abstract', label: '摄影+抽象编辑' },
+      { id: 'scene-to-art', label: '场景蒸馏艺术' },
+      { id: 'photo-relic', label: 'Photo Relic 编辑' }
+    ]
+  }
+}
+
+async function submitDraw() {
+  if (!drawTargetIds.value.length) return
+  if (!drawForm.preset) {
+    proxy.$modal.msgWarning('请选择预设风格')
+    return
+  }
+  drawSubmitting.value = true
+  const payload = { preset: drawForm.preset, photoIds: drawTargetIds.value.slice() }
+  if (drawForm.title?.trim()) payload.title = drawForm.title.trim()
+  if (drawForm.subtitle?.trim()) payload.subtitle = drawForm.subtitle.trim()
+  if (drawForm.keywords?.trim()) payload.keywords = drawForm.keywords.trim()
+  try {
+    let data
+    if (drawTargetIds.value.length === 1) {
+      const single = { ...payload }
+      delete single.photoIds
+      const res = await drawPhoto(drawTargetIds.value[0], single)
+      data = { success: 1, failed: 0, total: 1, items: [{ ok: true, result: res.data }] }
+    } else {
+      const res = await drawPhotoBatch(albumId.value, payload)
+      data = res.data || {}
+    }
+    drawOpen.value = false
+    if (mediaVisible.value) closeMedia()
+    const ok = data.success || 0
+    const fail = data.failed || 0
+    if (fail > 0) {
+      proxy.$modal.msgWarning(`出图完成：成功 ${ok}，失败 ${fail}。可在「仅 AI 创作」中查看成品。`)
+    } else {
+      proxy.$modal.msgSuccess(`出图成功 ${ok} 张，已保存到本机并在「仅 AI 创作」中查看。`)
+    }
+    if (ok > 0 && originFilter.value === 'original') {
+      originFilter.value = 'aiDraw'
+    }
+    await reload()
+  } catch (e) {
+    /* request 已提示 */
+  } finally {
+    drawSubmitting.value = false
   }
 }
 
@@ -1312,6 +1571,10 @@ function openPhotoDetail(item) {
   detailOpen.value = true
 }
 
+function closePhotoDetail() {
+  detailOpen.value = false
+}
+
 function ensureMediaSelected() {
   const item = currentMedia.value
   if (!item) return null
@@ -1362,7 +1625,7 @@ function onMediaAddTo() {
 
 function onMediaDetail() {
   if (detailOpen.value && detailPhoto.value?.photoId === currentMedia.value?.photoId) {
-    detailOpen.value = false
+    closePhotoDetail()
     return
   }
   openPhotoDetail(currentMedia.value)
@@ -1377,7 +1640,7 @@ function onDetailAddTo() {
 }
 
 function goCurrentAlbumFromDetail() {
-  detailOpen.value = false
+  closePhotoDetail()
   if (mediaVisible.value) closeMedia()
 }
 
@@ -1900,6 +2163,9 @@ function loadPhotos(reset = false) {
   if (scoreFilter.value !== 'all') {
     query.scoreFilter = scoreFilter.value
   }
+  if (originFilter.value !== 'all') {
+    query.originFilter = originFilter.value
+  }
   return listPhoto(query)
     .then(res => {
       const rows = res.rows || []
@@ -1967,6 +2233,11 @@ function init() {
 
 function onKeydown(e) {
   if (e.key === 'Escape') {
+    if (drawOpen.value) return
+    if (detailOpen.value) {
+      closePhotoDetail()
+      return
+    }
     if (ctxMenu.visible) {
       closeCtxMenu()
       return
@@ -1986,6 +2257,17 @@ function onWindowBlurOrScroll() {
 watch(() => route.params.albumId, (id) => {
   if (id) init()
 })
+
+watch(
+  () => photoScoreStore.finishedAt,
+  (at) => {
+    if (!at) return
+    const p = photoScoreStore.progress
+    if (String(p.albumId) !== String(albumId.value)) return
+    if (Number(p.status) !== 1) return
+    reload()
+  }
+)
 
 watch(currentMedia, (item) => {
   if (detailOpen.value && item) {
@@ -2333,6 +2615,27 @@ init()
   background: rgba(0, 0, 0, 0.5);
 }
 
+.ai-mark {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  z-index: 1;
+  color: #fff;
+  background: rgba(88, 64, 200, 0.88);
+}
+
+.draw-tip {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+
 .check-mark {
   position: absolute;
   top: 6px;
@@ -2651,6 +2954,15 @@ body > .el-overlay:has(.above-media-msgbox) {
   z-index: 4300 !important;
 }
 
+body > .el-overlay.above-media-draw-overlay,
+body > .el-overlay:has(.above-media-draw-dialog) {
+  z-index: 5100 !important;
+}
+
+.el-popper.above-media-draw-select-popper {
+  z-index: 5200 !important;
+}
+
 .add-to-dialog {
   border-radius: 12px;
   overflow: hidden;
@@ -2869,6 +3181,13 @@ body > .el-overlay:has(.above-media-msgbox) {
   background: #ececec;
 }
 
+.photo-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3005;
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .photo-detail-panel {
   position: fixed;
   /* 避开顶部返回/操作按钮区域，只在下方红框范围弹出 */
@@ -2883,6 +3202,40 @@ body > .el-overlay:has(.above-media-msgbox) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.photo-detail-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 12px 18px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.detail-head-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #222;
+}
+
+.detail-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+
+  &:hover {
+    background: #f3f3f3;
+    color: #222;
+  }
 }
 
 .detail-panel-enter-active,

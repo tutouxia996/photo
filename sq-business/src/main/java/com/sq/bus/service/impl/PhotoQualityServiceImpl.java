@@ -5,6 +5,7 @@ import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
+import com.sq.bus.domain.vo.PhotoScoreProgress;
 import com.sq.bus.domain.vo.PhotoScoreRequest;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
@@ -18,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PreDestroy;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Date;
@@ -26,11 +28,18 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class PhotoQualityServiceImpl implements IPhotoQualityService {
 
     private static final Logger log = LoggerFactory.getLogger(PhotoQualityServiceImpl.class);
+
+    private static final int FLUSH_EVERY = 12;
 
     @Autowired
     private IBizPhotoService photoService;
@@ -41,12 +50,79 @@ public class PhotoQualityServiceImpl implements IPhotoQualityService {
     @Autowired
     private AlbumProperties albumProperties;
 
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicInteger status = new AtomicInteger(1);
+    private final AtomicInteger total = new AtomicInteger();
+    private final AtomicInteger done = new AtomicInteger();
+    private final AtomicInteger passed = new AtomicInteger();
+    private final AtomicInteger failed = new AtomicInteger();
+    private final AtomicInteger skipped = new AtomicInteger();
+    private volatile Long albumId;
+    private volatile String albumName = "";
+    private volatile String currentFile = "";
+    private volatile String message = "";
+
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "album-photo-score");
+            t.setDaemon(true);
+            return t;
+        }
+    });
+
     @Override
-    public Map<String, Object> scoreAlbum(Long albumId, PhotoScoreRequest request) {
+    public Map<String, Object> startScoreAlbum(Long albumId, PhotoScoreRequest request) {
         BizAlbum album = albumService.getById(albumId);
         if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             throw new ServiceException("相册不存在");
         }
+        if (!running.compareAndSet(false, true)) {
+            throw new ServiceException("已有打分任务进行中（" + safeName(this.albumName) + "），请稍后再试");
+        }
+
+        this.albumId = albumId;
+        this.albumName = album.getAlbumName() == null ? "" : album.getAlbumName();
+        status.set(0);
+        total.set(0);
+        done.set(0);
+        passed.set(0);
+        failed.set(0);
+        skipped.set(0);
+        currentFile = "";
+        message = "正在准备打分…";
+
+        final PhotoScoreRequest req = request;
+        final Long targetAlbumId = albumId;
+        final String targetAlbumName = this.albumName;
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    runScore(targetAlbumId, targetAlbumName, req);
+                } catch (Exception e) {
+                    log.warn("photo score job failed albumId={}: {}", targetAlbumId, e.getMessage());
+                    status.set(2);
+                    message = "打分失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+                } finally {
+                    running.set(false);
+                    currentFile = "";
+                }
+            }
+        });
+
+        Map<String, Object> map = new HashMap<String, Object>();
+        map.put("started", true);
+        map.put("progress", snapshot());
+        return map;
+    }
+
+    @Override
+    public PhotoScoreProgress getScoreProgress() {
+        return snapshot();
+    }
+
+    private void runScore(Long albumId, String albumName, PhotoScoreRequest request) {
         AlbumProperties.PhotoScoreConfig cfg = albumProperties.getPhotoScore();
         int passScore = cfg == null ? 70 : cfg.getPassScore();
         int analyzeWidth = cfg == null ? 320 : cfg.getAnalyzeWidth();
@@ -63,21 +139,41 @@ public class PhotoQualityServiceImpl implements IPhotoQualityService {
             idFilter = new HashSet<Long>(request.getPhotoIds());
         }
 
-        int scored = 0;
-        int passed = 0;
-        int failed = 0;
-        int skipped = 0;
-        Date now = new Date();
-        List<BizPhoto> toUpdate = new ArrayList<BizPhoto>();
-
+        List<BizPhoto> targets = new ArrayList<BizPhoto>();
+        int skipCount = 0;
         for (BizPhoto photo : all) {
             if (idFilter != null && !idFilter.contains(photo.getPhotoId())) {
                 continue;
             }
             if (!force && photo.getAestheticScore() != null) {
-                skipped++;
+                skipCount++;
                 continue;
             }
+            targets.add(photo);
+        }
+        skipped.set(skipCount);
+        total.set(targets.size());
+        done.set(0);
+        passed.set(0);
+        failed.set(0);
+        status.set(0);
+        message = targets.isEmpty()
+                ? "没有需要打分的照片"
+                : ("开始打分，共 " + targets.size() + " 张");
+
+        if (targets.isEmpty()) {
+            status.set(1);
+            message = "已跳过 " + skipCount + " 张，无需打分";
+            return;
+        }
+
+        Date now = new Date();
+        List<BizPhoto> buffer = new ArrayList<BizPhoto>();
+        for (int i = 0; i < targets.size(); i++) {
+            BizPhoto photo = targets.get(i);
+            currentFile = photo.getFileName() == null ? ("#" + photo.getPhotoId()) : photo.getFileName();
+            message = "正在打分 " + (i + 1) + "/" + targets.size() + "：" + currentFile;
+
             PhotoQualityResult result;
             if (photo.getFileType() != null && photo.getFileType() == 2) {
                 result = PhotoQualityResult.fail(0, "视频不参与图生图");
@@ -89,29 +185,46 @@ public class PhotoQualityServiceImpl implements IPhotoQualityService {
             photo.setScorePass(result.isPassed() ? 1 : 0);
             photo.setScoreReason(result.getReason());
             photo.setScoredAt(now);
-            toUpdate.add(photo);
-            scored++;
+            buffer.add(photo);
+
+            done.incrementAndGet();
             if (result.isPassed()) {
-                passed++;
+                passed.incrementAndGet();
             } else {
-                failed++;
+                failed.incrementAndGet();
+            }
+
+            if (buffer.size() >= FLUSH_EVERY || i == targets.size() - 1) {
+                photoService.updateBatchById(buffer, 80);
+                buffer.clear();
             }
         }
 
-        if (!toUpdate.isEmpty()) {
-            photoService.updateBatchById(toUpdate, 80);
-        }
+        status.set(1);
+        message = "完成：合格 " + passed.get() + "，不合格 " + failed.get()
+                + (skipCount > 0 ? "，跳过 " + skipCount : "");
+        log.info("photo score albumId={} name={} done={} passed={} failed={} skipped={}",
+                albumId, albumName, done.get(), passed.get(), failed.get(), skipCount);
+    }
 
-        Map<String, Object> map = new HashMap<String, Object>();
-        map.put("albumId", albumId);
-        map.put("passScore", passScore);
-        map.put("scored", scored);
-        map.put("passed", passed);
-        map.put("failed", failed);
-        map.put("skipped", skipped);
-        log.info("photo score albumId={} scored={} passed={} failed={} skipped={}",
-                albumId, scored, passed, failed, skipped);
-        return map;
+    private PhotoScoreProgress snapshot() {
+        PhotoScoreProgress p = new PhotoScoreProgress();
+        int t = total.get();
+        int d = done.get();
+        p.setStatus(status.get());
+        p.setAlbumId(albumId);
+        p.setAlbumName(albumName);
+        p.setTotal(t);
+        p.setDone(d);
+        p.setPassed(passed.get());
+        p.setFailed(failed.get());
+        p.setSkipped(skipped.get());
+        p.setRemaining(Math.max(0, t - d));
+        p.setPercent(t <= 0 ? (status.get() == 1 ? 100 : 0) : Math.min(100, (int) Math.round(d * 100.0 / t)));
+        p.setRunning(running.get() || status.get() == 0);
+        p.setCurrentFile(currentFile == null ? "" : currentFile);
+        p.setMessage(message == null ? "" : message);
+        return p;
     }
 
     @Override
@@ -123,6 +236,9 @@ public class PhotoQualityServiceImpl implements IPhotoQualityService {
             return false;
         }
         if (photo.getFileType() != null && photo.getFileType() == 2) {
+            return false;
+        }
+        if ("ai_draw".equals(photo.getOriginType())) {
             return false;
         }
         return photo.getScorePass() != null && photo.getScorePass() == 1;
@@ -139,5 +255,14 @@ public class PhotoQualityServiceImpl implements IPhotoQualityService {
             }
         }
         return null;
+    }
+
+    private static String safeName(String name) {
+        return StringUtils.isEmpty(name) ? "其他相册" : name.trim();
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        executor.shutdownNow();
     }
 }

@@ -130,15 +130,57 @@ export function correctPhotoPosition(data) {
   })
 }
 
-/** 相册照片出图质量打分（本地算法） */
+/** 启动相册照片后台打分（不阻塞页面） */
 export function scoreAlbumPhotos(albumId, data) {
   return request({
     url: '/album/photo/score/' + albumId,
     method: 'post',
     data: data || {},
-    timeout: 180000,
+    timeout: 30000,
+    showActionLoading: false
+  })
+}
+
+/** 照片质量打分进度 */
+export function getPhotoScoreProgress() {
+  return request({
+    url: '/album/photo/score/progress',
+    method: 'get',
+    headers: { repeatSubmit: false },
+    silent: true
+  })
+}
+
+/** AI 出图可用预设 */
+export function listDrawPresets() {
+  return request({
+    url: '/album/photo/draw/presets',
+    method: 'get'
+  })
+}
+
+/** 单张照片 AI 出图（万相，耗时较长） */
+export function drawPhoto(photoId, data) {
+  return request({
+    url: '/album/photo/draw/' + photoId,
+    method: 'post',
+    data: data || {},
+    timeout: 300000,
     showActionLoading: true,
-    actionLoadingText: '正在为照片打分，请稍候…'
+    actionLoadingText: '正在 AI 出图，请稍候（约 15–60 秒）…'
+  })
+}
+
+/** 批量 AI 出图 */
+export function drawPhotoBatch(albumId, data) {
+  const count = data?.photoIds?.length || 1
+  return request({
+    url: '/album/photo/draw/batch/' + albumId,
+    method: 'post',
+    data: data || {},
+    timeout: Math.min(3600000, 300000 * count),
+    showActionLoading: true,
+    actionLoadingText: `正在批量 AI 出图（${count} 张），请勿关闭…`
   })
 }
 

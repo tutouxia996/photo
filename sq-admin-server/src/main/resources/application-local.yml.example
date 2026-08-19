@@ -17,6 +17,10 @@ album:
     baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
     model: qwen-vl-plus
     maxSample: 40
+  photoDraw:
+    enabled: true
+    # 可与 aiLandmark 共用同一 Key；需在百炼控制台开通万相图生图
+    apiKey: 请填写通义DashScope-API-Key
   # 阿里云盘个人相册同步（详见 doc/阿里云盘相册同步.md）
   aliyunDrive:
     enabled: true

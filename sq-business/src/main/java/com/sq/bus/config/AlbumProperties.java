@@ -42,6 +42,9 @@ public class AlbumProperties {
     /** 照片出图质量打分（本地算法，合格才允许图生图） */
     private PhotoScoreConfig photoScore = new PhotoScoreConfig();
 
+    /** 万相图生图 + 程序拼版出海报 */
+    private PhotoDrawConfig photoDraw = new PhotoDrawConfig();
+
     /** 阿里云盘个人相册定时同步到本地，再走磁盘扫描入库 */
     private AliyunDriveConfig aliyunDrive = new AliyunDriveConfig();
 
@@ -216,6 +219,31 @@ public class AlbumProperties {
         private int analyzeWidth = 320;
         /** 短边低于该像素直接不及格 */
         private int minShortSide = 720;
+    }
+
+    @Data
+    public static class PhotoDrawConfig {
+        /** 是否启用 AI 出图 */
+        private boolean enabled = true;
+        /** 万相 API Key；空则复用 aiLandmark.apiKey */
+        private String apiKey = "";
+        /** 万相异步任务 API 根路径 */
+        private String baseUrl = "https://dashscope.aliyuncs.com/api/v1";
+        /** 图生图模型 */
+        private String model = "wan2.5-i2i-preview";
+        /** 反向提示词 */
+        private String negativePrompt = "low quality, blurry, watermark, text, logo, distorted face";
+        /** 送检参考图最长边 */
+        private int maxInputEdge = 1280;
+        private boolean promptExtend = true;
+        private int connectTimeoutMs = 15000;
+        private int readTimeoutMs = 120000;
+        /** 轮询任务间隔 */
+        private int pollIntervalMs = 2500;
+        /** 轮询最大次数 */
+        private int maxPollAttempts = 60;
+        /** 成品 JPEG 质量 0~1，原图尺寸保存时建议 0.92+ */
+        private float jpegQuality = 0.95f;
     }
 
     @Data
