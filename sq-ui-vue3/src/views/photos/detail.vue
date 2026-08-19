@@ -94,6 +94,24 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-dropdown trigger="click" @command="handleScoreFilter">
+          <button type="button" class="tool-btn">
+            <el-icon><Star /></el-icon>
+            <span>{{ scoreFilterLabel }}</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="all">全部评分</el-dropdown-item>
+              <el-dropdown-item command="pass">仅合格</el-dropdown-item>
+              <el-dropdown-item command="fail">仅不合格</el-dropdown-item>
+              <el-dropdown-item command="unscored">未打分</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <button type="button" class="tool-btn" title="为照片打出图质量分，合格才图生图" @click="runPhotoScore">
+          <el-icon><Medal /></el-icon>
+          <span>质量打分</span>
+        </button>
         <el-dropdown trigger="click" @command="handleShootTimeOrder">
           <button type="button" class="tool-btn">
             <el-icon><Sort /></el-icon>
@@ -170,6 +188,9 @@
               @error="onThumbError(item)"
             />
             <div v-else class="thumb-placeholder" aria-hidden="true" />
+            <div v-if="item.aestheticScore != null" class="score-mark" :class="item.scorePass === 1 ? 'pass' : 'fail'">
+              {{ item.aestheticScore }}
+            </div>
             <div class="check-mark" aria-hidden="true">
               <el-icon :size="14"><Select /></el-icon>
             </div>
@@ -529,6 +550,10 @@
             <h3 class="detail-section-title">详细信息</h3>
             <div class="photo-detail-list">
               <div class="photo-detail-row">
+                <span class="label">出图评分</span>
+                <span class="value">{{ scoreDetailText }}</span>
+              </div>
+              <div class="photo-detail-row">
                 <span class="label">名称</span>
                 <span class="value">{{ detailPhoto.fileName || '-' }}</span>
               </div>
@@ -603,7 +628,7 @@ import { getToken } from '@/utils/auth'
 import { saveAs } from 'file-saver'
 import axios from 'axios'
 import { getAlbum, updateAlbum, listAlbum, addAlbum } from '@/api/photos/album'
-import { listPhoto, uploadPhoto, delPhoto, updatePhoto } from '@/api/photos/photo'
+import { listPhoto, uploadPhoto, delPhoto, updatePhoto, scoreAlbumPhotos } from '@/api/photos/photo'
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
@@ -622,6 +647,7 @@ let autoChainBudget = MAX_AUTO_CHAIN
 const loadMoreSentinel = ref(null)
 let loadMoreObserver = null
 const typeFilter = ref('all')
+const scoreFilter = ref('all')
 /** 拍摄时间排序：desc 新→旧，asc 旧→新 */
 const shootTimeOrder = ref('desc')
 const sizeMode = ref('small')
@@ -762,6 +788,19 @@ const albumId = computed(() => route.params.albumId)
 const typeFilterLabel = computed(() => {
   const map = { all: '全部', 1: '仅图片', 2: '仅视频' }
   return map[typeFilter.value] || '全部'
+})
+
+const scoreFilterLabel = computed(() => {
+  const map = { all: '全部评分', pass: '仅合格', fail: '仅不合格', unscored: '未打分' }
+  return map[scoreFilter.value] || '全部评分'
+})
+
+const scoreDetailText = computed(() => {
+  const p = detailPhoto.value
+  if (!p || p.aestheticScore == null) return '未打分'
+  const flag = p.scorePass === 1 ? '合格' : '不合格'
+  const reason = p.scoreReason ? ` · ${p.scoreReason}` : ''
+  return `${p.aestheticScore}（${flag}）${reason}`
 })
 
 const shootTimeOrderLabel = computed(() =>
@@ -939,6 +978,41 @@ function openPhotoMap() {
 function handleFilterType(cmd) {
   typeFilter.value = cmd
   reload()
+}
+
+function handleScoreFilter(cmd) {
+  scoreFilter.value = cmd
+  reload()
+}
+
+async function runPhotoScore() {
+  const selected = selectedIds.value.filter(Boolean)
+  const targetHint = selected.length
+    ? `已选的 ${selected.length} 张`
+    : '本相册尚未打分的照片'
+  try {
+    await ElMessageBox.confirm(
+      `将为${targetHint}做本地质量打分（清晰度/曝光/对比等），满分 100，默认 70 分以上才允许图生图。是否继续？`,
+      '质量打分',
+      { type: 'info', confirmButtonText: '开始打分', cancelButtonText: '取消' }
+    )
+  } catch (e) {
+    return
+  }
+  const payload = { force: false }
+  if (selected.length) {
+    payload.photoIds = selected
+  }
+  try {
+    const res = await scoreAlbumPhotos(albumId.value, payload)
+    const data = res.data || {}
+    proxy.$modal.msgSuccess(
+      `已打分 ${data.scored || 0} 张，合格 ${data.passed || 0}，不合格 ${data.failed || 0}，跳过 ${data.skipped || 0}`
+    )
+    reload()
+  } catch (e) {
+    /* request 已提示 */
+  }
 }
 
 function handleShootTimeOrder(cmd) {
@@ -1823,6 +1897,9 @@ function loadPhotos(reset = false) {
   if (typeFilter.value !== 'all') {
     query.fileType = Number(typeFilter.value)
   }
+  if (scoreFilter.value !== 'all') {
+    query.scoreFilter = scoreFilter.value
+  }
   return listPhoto(query)
     .then(res => {
       const rows = res.rows || []
@@ -2230,6 +2307,30 @@ init()
 
 .video-duration {
   transform: translateY(0.5px);
+}
+
+.score-mark {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+  color: #fff;
+}
+
+.score-mark.pass {
+  background: rgba(16, 140, 72, 0.82);
+}
+
+.score-mark.fail {
+  background: rgba(0, 0, 0, 0.5);
 }
 
 .check-mark {

@@ -7,10 +7,12 @@ import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.RegionLocateRequest;
+import com.sq.bus.domain.vo.PhotoScoreRequest;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.service.IPhotoFallbackLocationService;
+import com.sq.bus.service.IPhotoQualityService;
 import com.sq.bus.service.route.AmapPlaceSearchService;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
@@ -69,6 +71,9 @@ public class BizPhotoController extends BaseController {
     private IPhotoFallbackLocationService fallbackLocationService;
 
     @Autowired
+    private IPhotoQualityService photoQualityService;
+
+    @Autowired
     private AmapPlaceSearchService amapPlaceSearchService;
 
     @Autowired
@@ -107,7 +112,8 @@ public class BizPhotoController extends BaseController {
     @PreAuthorize("@ss.hasPermi('album:photo:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizPhoto query,
-                              @RequestParam(value = "shootTimeOrder", defaultValue = "desc") String shootTimeOrder) {
+                              @RequestParam(value = "shootTimeOrder", defaultValue = "desc") String shootTimeOrder,
+                              @RequestParam(value = "scoreFilter", required = false) String scoreFilter) {
         startPage();
         int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
@@ -115,6 +121,7 @@ public class BizPhotoController extends BaseController {
                 .eq(query.getFileType() != null, BizPhoto::getFileType, query.getFileType())
                 .like(StringUtils.isNotEmpty(query.getFileName()), BizPhoto::getFileName, query.getFileName())
                 .eq(BizPhoto::getDeleted, deleted);
+        applyScoreFilter(wrapper, scoreFilter);
         boolean asc = "asc".equalsIgnoreCase(shootTimeOrder);
         if (asc) {
             wrapper.orderByAsc(BizPhoto::getShootTime).orderByAsc(BizPhoto::getPhotoId);
@@ -416,6 +423,17 @@ public class BizPhotoController extends BaseController {
         return success(result);
     }
 
+    /**
+     * 本地算法为相册照片打出图质量分，合格者才允许图生图。
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:edit')")
+    @Log(title = "照片质量打分", businessType = BusinessType.UPDATE)
+    @PostMapping("/score/{albumId}")
+    public AjaxResult scoreAlbum(@PathVariable Long albumId,
+                                 @RequestBody(required = false) PhotoScoreRequest request) {
+        return success(photoQualityService.scoreAlbum(albumId, request));
+    }
+
     @PreAuthorize("@ss.hasPermi('album:photo:query')")
     @GetMapping("/{photoId}")
     public AjaxResult getInfo(@PathVariable Long photoId) {
@@ -656,6 +674,19 @@ public class BizPhotoController extends BaseController {
     @DeleteMapping("/purge/{photoIds}")
     public AjaxResult purge(@PathVariable Long[] photoIds) {
         return toAjax(photoService.purgePhotos(Arrays.asList(photoIds)));
+    }
+
+    private void applyScoreFilter(LambdaQueryWrapper<BizPhoto> wrapper, String scoreFilter) {
+        if (StringUtils.isEmpty(scoreFilter) || "all".equalsIgnoreCase(scoreFilter)) {
+            return;
+        }
+        if ("pass".equalsIgnoreCase(scoreFilter)) {
+            wrapper.eq(BizPhoto::getScorePass, 1);
+        } else if ("fail".equalsIgnoreCase(scoreFilter)) {
+            wrapper.eq(BizPhoto::getScorePass, 0);
+        } else if ("unscored".equalsIgnoreCase(scoreFilter)) {
+            wrapper.isNull(BizPhoto::getScorePass);
+        }
     }
 
     private File resolveMediaFile(BizPhoto photo, boolean original) {

@@ -130,6 +130,18 @@ export function correctPhotoPosition(data) {
   })
 }
 
+/** 相册照片出图质量打分（本地算法） */
+export function scoreAlbumPhotos(albumId, data) {
+  return request({
+    url: '/album/photo/score/' + albumId,
+    method: 'post',
+    data: data || {},
+    timeout: 180000,
+    showActionLoading: true,
+    actionLoadingText: '正在为照片打分，请稍候…'
+  })
+}
+
 /** 确认估计坐标并同步主轨迹 */
 export function confirmEstimatedPhoto(data) {
   return request({

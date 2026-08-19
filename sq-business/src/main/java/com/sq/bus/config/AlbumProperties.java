@@ -39,6 +39,9 @@ public class AlbumProperties {
     /** AI 地标识别（视觉模型 + 高德地理编码） */
     private AiLandmarkConfig aiLandmark = new AiLandmarkConfig();
 
+    /** 照片出图质量打分（本地算法，合格才允许图生图） */
+    private PhotoScoreConfig photoScore = new PhotoScoreConfig();
+
     /** 阿里云盘个人相册定时同步到本地，再走磁盘扫描入库 */
     private AliyunDriveConfig aliyunDrive = new AliyunDriveConfig();
 
@@ -203,6 +206,16 @@ public class AlbumProperties {
         private int voteMinCount = 2;
         private int connectTimeoutMs = 15000;
         private int readTimeoutMs = 90000;
+    }
+
+    @Data
+    public static class PhotoScoreConfig {
+        /** 图生图最低分（0-100） */
+        private int passScore = 70;
+        /** 分析图最长边，越小越快 */
+        private int analyzeWidth = 320;
+        /** 短边低于该像素直接不及格 */
+        private int minShortSide = 720;
     }
 
     @Data

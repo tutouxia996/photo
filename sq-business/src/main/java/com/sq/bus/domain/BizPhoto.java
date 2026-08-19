@@ -90,6 +90,18 @@ public class BizPhoto implements Serializable {
 
     private String remark;
 
+    /** 出图质量分 0-100，未打分为空 */
+    private Integer aestheticScore;
+
+    /** 是否达到图生图门槛：0否 1是，空未打分 */
+    private Integer scorePass;
+
+    /** 打分摘要，如 偏糊 / 过曝 / 合格 */
+    private String scoreReason;
+
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date scoredAt;
+
     /** 0未删除 1已删除 2回收站 */
     private Integer deleted;
 }

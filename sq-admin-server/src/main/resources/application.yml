@@ -214,6 +214,11 @@ album:
     voteMinCount: 2
     connectTimeoutMs: 15000
     readTimeoutMs: 90000
+  # 出图质量打分（本地算法，不耗 API）；低于 passScore 的不参与图生图
+  photoScore:
+    passScore: 70
+    analyzeWidth: 320
+    minShortSide: 720
   # 阿里云盘同步默认值（实际配置请在后台「相册管理 → 云盘同步」保存；此处仅作未保存前的回落）
   aliyunDrive:
     enabled: false
