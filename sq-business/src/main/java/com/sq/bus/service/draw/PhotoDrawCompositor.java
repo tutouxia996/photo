@@ -39,8 +39,16 @@ public final class PhotoDrawCompositor {
 
     public static BufferedImage compose(PhotoDrawPreset preset, BufferedImage original, BufferedImage panel,
                                         String title, String subtitle, String keywords) {
+        boolean gradePhoto = preset != PhotoDrawPreset.PHOTO_ABSTRACT && preset != PhotoDrawPreset.PHOTO_RELIC;
+        return compose(preset.getLayout(), gradePhoto, original, panel, title, subtitle, keywords);
+    }
+
+    public static BufferedImage compose(PhotoDrawLayout drawLayout, boolean gradePhoto,
+                                        BufferedImage original, BufferedImage panel,
+                                        String title, String subtitle, String keywords) {
         Layout layout = new Layout();
-        switch (preset.getLayout()) {
+        PhotoDrawLayout mode = drawLayout == null ? PhotoDrawLayout.FULL_CANVAS : drawLayout;
+        switch (mode) {
             case FULL_CANVAS:
                 return fullCanvas(panel, layout);
             case FULL_WITH_TITLES:
@@ -50,8 +58,7 @@ public final class PhotoDrawCompositor {
             case MINIMAL_ZINE:
                 return minimalZine(original, panel, title, layout);
             case TOP_PHOTO_BOTTOM_PANEL:
-                boolean graded = preset != PhotoDrawPreset.PHOTO_ABSTRACT && preset != PhotoDrawPreset.PHOTO_RELIC;
-                return topPhotoBottomPanel(original, panel, title, graded, layout);
+                return topPhotoBottomPanel(original, panel, title, gradePhoto, layout);
             case LEFT_PHOTO_RIGHT_PANEL:
                 return leftPhotoRightPanel(original, panel, title, layout);
             default:

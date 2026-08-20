@@ -1,7 +1,7 @@
 package com.sq.bus.service.draw;
 
 /**
- * AI 出图预设（含海报拼版与整页艺术风格）。
+ * AI 出图预设（历史内置枚举，仅作文档/对照；运行时请使用 biz_photo_draw_preset）。
  */
 public enum PhotoDrawPreset {
 

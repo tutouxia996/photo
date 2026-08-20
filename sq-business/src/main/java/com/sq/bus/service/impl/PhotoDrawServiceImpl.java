@@ -4,16 +4,18 @@ import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizPhotoDraw;
+import com.sq.bus.domain.BizPhotoDrawPreset;
 import com.sq.bus.domain.vo.PhotoDrawBatchRequest;
 import com.sq.bus.domain.vo.PhotoDrawRequest;
 import com.sq.bus.mapper.BizPhotoDrawMapper;
 import com.sq.bus.service.IBizAlbumService;
+import com.sq.bus.service.IBizPhotoDrawPresetService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IPhotoDrawService;
 import com.sq.bus.service.IPhotoQualityService;
 import com.sq.bus.service.ai.WanxiangImg2ImgClient;
 import com.sq.bus.service.draw.PhotoDrawCompositor;
-import com.sq.bus.service.draw.PhotoDrawPreset;
+import com.sq.bus.service.draw.PhotoDrawLayout;
 import com.sq.bus.utils.ImageEncodeUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
@@ -58,13 +60,17 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
     @Autowired
     private AlbumProperties albumProperties;
 
+    @Autowired
+    private IBizPhotoDrawPresetService drawPresetService;
+
     @Override
     public List<Map<String, Object>> listPresets() {
         List<Map<String, Object>> list = new ArrayList<Map<String, Object>>();
-        for (PhotoDrawPreset p : PhotoDrawPreset.values()) {
+        for (BizPhotoDrawPreset p : drawPresetService.listEnabled()) {
             Map<String, Object> row = new LinkedHashMap<String, Object>();
-            row.put("id", p.getId());
+            row.put("id", p.getPresetKey());
             row.put("label", p.getLabel());
+            row.put("layout", p.getLayout());
             list.add(row);
         }
         return list;
@@ -83,7 +89,7 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         if (!photoQualityService.isEligibleForDraw(source)) {
             throw new ServiceException("该照片未通过出图质量打分，请先打分并确保合格（默认≥70分）");
         }
-        PhotoDrawPreset preset = PhotoDrawPreset.fromId(request == null ? null : request.getPreset());
+        BizPhotoDrawPreset preset = drawPresetService.getEnabledByKey(request == null ? null : request.getPreset());
         if (preset == null) {
             throw new ServiceException("无效出图预设，请从列表中选择");
         }
@@ -96,7 +102,7 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         BizPhotoDraw record = new BizPhotoDraw();
         record.setAlbumId(source.getAlbumId());
         record.setSourcePhotoId(source.getPhotoId());
-        record.setPreset(preset.getId());
+        record.setPreset(preset.getPresetKey());
         record.setStatus("running");
         record.setCreateBy(operator);
         record.setCreateTime(now);
@@ -106,15 +112,18 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         try {
             AlbumProperties.PhotoDrawConfig cfg = drawCfg();
             String dataUrl = ImageEncodeUtils.toDataUrlJpeg(originFile, cfg.getMaxInputEdge());
-            byte[] panelBytes = wanxiangClient.generatePanel(dataUrl, preset.getPanelPrompt(), preset.getPanelSize());
+            String panelSize = StringUtils.isEmpty(preset.getPanelSize()) ? "960*1280" : preset.getPanelSize();
+            byte[] panelBytes = wanxiangClient.generatePanel(dataUrl, preset.getPanelPrompt(), panelSize);
             BufferedImage original = PhotoDrawCompositor.readImage(originFile);
             BufferedImage panel = PhotoDrawCompositor.readImage(panelBytes);
 
             String title = buildTitle(source, request);
             String subtitle = buildSubtitle(source, request);
             String keywords = buildKeywords(source, request);
+            PhotoDrawLayout layout = resolveLayout(preset.getLayout());
+            boolean gradePhoto = preset.getGradePhoto() == null || preset.getGradePhoto() != 0;
             BufferedImage poster = PhotoDrawCompositor.compose(
-                    preset, original, panel, title, subtitle, keywords);
+                    layout, gradePhoto, original, panel, title, subtitle, keywords);
 
             BizPhoto saved = savePoster(source, preset, poster, operator, now);
             record.setResultPhotoId(saved.getPhotoId());
@@ -126,10 +135,10 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
             Map<String, Object> result = new HashMap<String, Object>();
             result.put("drawId", record.getDrawId());
             result.put("sourcePhotoId", source.getPhotoId());
-            result.put("preset", preset.getId());
+            result.put("preset", preset.getPresetKey());
             result.put("presetLabel", preset.getLabel());
             result.put("photo", saved);
-            log.info("photo draw ok source={} result={} preset={}", source.getPhotoId(), saved.getPhotoId(), preset.getId());
+            log.info("photo draw ok source={} result={} preset={}", source.getPhotoId(), saved.getPhotoId(), preset.getPresetKey());
             return result;
         } catch (Exception e) {
             record.setStatus("failed");
@@ -183,14 +192,14 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         return summary;
     }
 
-    private BizPhoto savePoster(BizPhoto source, PhotoDrawPreset preset, BufferedImage poster,
+    private BizPhoto savePoster(BizPhoto source, BizPhotoDrawPreset preset, BufferedImage poster,
                                   String operator, Date now) throws Exception {
         String datePath = new SimpleDateFormat("yyyy/MM/dd").format(now);
         File dir = new File(albumProperties.getUploadPath(), "ai-draw/" + datePath);
         if (!dir.exists()) {
             dir.mkdirs();
         }
-        String baseName = source.getPhotoId() + "_" + preset.getId() + "_" + System.currentTimeMillis() + ".jpg";
+        String baseName = source.getPhotoId() + "_" + preset.getPresetKey() + "_" + System.currentTimeMillis() + ".jpg";
         File dest = new File(dir, baseName);
         float quality = drawCfg().getJpegQuality() > 0 ? drawCfg().getJpegQuality() : 0.95f;
         ImageEncodeUtils.writeJpeg(poster, dest, quality);
@@ -227,6 +236,18 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         PhotoFieldUtils.clamp(photo);
         photoService.save(photo);
         return photo;
+    }
+
+    private PhotoDrawLayout resolveLayout(String layout) {
+        if (StringUtils.isEmpty(layout)) {
+            return PhotoDrawLayout.FULL_CANVAS;
+        }
+        try {
+            return PhotoDrawLayout.valueOf(layout.trim());
+        } catch (Exception e) {
+            log.warn("unknown draw layout {}, fallback FULL_CANVAS", layout);
+            return PhotoDrawLayout.FULL_CANVAS;
+        }
     }
 
     private String createThumb(File dest, String datePath, String savedName) {

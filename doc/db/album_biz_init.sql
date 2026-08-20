@@ -102,6 +102,34 @@ CREATE TABLE `biz_photo_draw` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='照片AI出图记录';
 
 -- ----------------------------
+-- AI 出图预设风格
+-- ----------------------------
+DROP TABLE IF EXISTS `biz_photo_draw_preset`;
+CREATE TABLE `biz_photo_draw_preset` (
+  `preset_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '预设ID',
+  `preset_key` varchar(64) NOT NULL COMMENT '预设标识（出图时使用）',
+  `label` varchar(100) NOT NULL COMMENT '显示名称',
+  `panel_prompt` text NOT NULL COMMENT '万相图生图风格描述/prompt',
+  `panel_size` varchar(32) NOT NULL DEFAULT '960*1280' COMMENT '万相输出尺寸',
+  `layout` varchar(64) NOT NULL DEFAULT 'FULL_CANVAS' COMMENT '拼版布局 PhotoDrawLayout',
+  `grade_photo` tinyint(4) NOT NULL DEFAULT 1 COMMENT '上下双联时是否对原图轻调色：0否 1是',
+  `sort_order` int(11) NOT NULL DEFAULT 0 COMMENT '排序（升序）',
+  `enabled` tinyint(4) NOT NULL DEFAULT 1 COMMENT '是否启用：0禁用 1启用',
+  `source` varchar(32) NOT NULL DEFAULT 'manual' COMMENT '来源：builtin/manual/skill_import',
+  `skill_raw` mediumtext COMMENT '导入的 skill 原文（可选）',
+  `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`preset_id`),
+  UNIQUE KEY `uk_preset_key` (`preset_key`),
+  KEY `idx_enabled_sort` (`enabled`, `sort_order`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI出图预设风格';
+
+-- 内置预设种子见 doc/db/album_add_draw_preset.sql（或执行该脚本中的 INSERT IGNORE）
+
+-- ----------------------------
 -- 轨迹表
 -- ----------------------------
 DROP TABLE IF EXISTS `biz_track`;
@@ -259,6 +287,7 @@ INSERT INTO sys_menu(id, menu_name, parent_id, order_num, path, component, query
 (3003,'轨迹管理',3000,3,'track','album/track/index','',1,0,'C','0','0','album:track:list','guide','admin',NOW(),'轨迹管理菜单'),
 (3004,'磁盘扫描',3000,4,'scan','album/scan/index','',1,0,'C','0','0','album:scan:list','server','admin',NOW(),'磁盘扫描管理'),
 (3005,'云盘同步',3000,5,'aliyun','album/aliyun/index','',1,0,'C','0','0','album:aliyun:query','upload','admin',NOW(),'阿里云盘相册同步配置'),
+(3006,'AI预设风格',3000,6,'drawPreset','album/draw-preset/index','',1,0,'C','0','0','album:drawPreset:list','star','admin',NOW(),'AI出图预设风格管理'),
 (3010,'相册查询',3001,1,'','','',1,0,'F','0','0','album:album:query','#','admin',NOW(),''),
 (3011,'相册新增',3001,2,'','','',1,0,'F','0','0','album:album:add','#','admin',NOW(),''),
 (3012,'相册修改',3001,3,'','','',1,0,'F','0','0','album:album:edit','#','admin',NOW(),''),
@@ -279,7 +308,11 @@ INSERT INTO sys_menu(id, menu_name, parent_id, order_num, path, component, query
 (3044,'执行扫描',3004,5,'','','',1,0,'F','0','0','album:scan:run','#','admin',NOW(),''),
 (3050,'云盘配置查询',3005,1,'','','',1,0,'F','0','0','album:aliyun:query','#','admin',NOW(),''),
 (3051,'云盘配置修改',3005,2,'','','',1,0,'F','0','0','album:aliyun:edit','#','admin',NOW(),''),
-(3052,'云盘立即同步',3005,3,'','','',1,0,'F','0','0','album:aliyun:run','#','admin',NOW(),'');
+(3052,'云盘立即同步',3005,3,'','','',1,0,'F','0','0','album:aliyun:run','#','admin',NOW(),''),
+(3060,'预设查询',3006,1,'','','',1,0,'F','0','0','album:drawPreset:query','#','admin',NOW(),''),
+(3061,'预设新增',3006,2,'','','',1,0,'F','0','0','album:drawPreset:add','#','admin',NOW(),''),
+(3062,'预设修改',3006,3,'','','',1,0,'F','0','0','album:drawPreset:edit','#','admin',NOW(),''),
+(3063,'预设删除',3006,4,'','','',1,0,'F','0','0','album:drawPreset:remove','#','admin',NOW(),'');
 
 INSERT INTO sys_role_menu(role_id, menu_id)
 SELECT 1, id FROM sys_menu WHERE id BETWEEN 3000 AND 3099;

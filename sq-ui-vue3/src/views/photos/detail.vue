@@ -705,10 +705,10 @@
           <el-form-item label="英文标题">
             <el-input v-model="drawForm.title" placeholder="可选，默认取地点或文件名" clearable />
           </el-form-item>
-          <el-form-item v-if="drawForm.preset === 'ink-wash-flat'" label="英文副句">
+          <el-form-item v-if="selectedDrawLayout === 'FULL_WITH_TITLES'" label="英文副句">
             <el-input v-model="drawForm.subtitle" placeholder="可选，水墨海报底部小字" clearable />
           </el-form-item>
-          <el-form-item v-if="drawForm.preset === 'travel-poster'" label="三词关键词">
+          <el-form-item v-if="selectedDrawLayout === 'TOP_PANEL_BOTTOM_PHOTO'" label="三词关键词">
             <el-input v-model="drawForm.keywords" placeholder="如 memory / light / place" clearable />
           </el-form-item>
         </el-form>
@@ -805,6 +805,10 @@ const drawForm = reactive({
   title: '',
   subtitle: '',
   keywords: ''
+})
+const selectedDrawLayout = computed(() => {
+  const p = drawPresets.value.find(x => x.id === drawForm.preset)
+  return p?.layout || ''
 })
 /** 同时上传数，避免一次打满服务器 */
 const UPLOAD_CONCURRENCY = 3
