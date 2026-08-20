@@ -334,7 +334,7 @@ function purgeSelected() {
     return
   }
   const label = activeTab.value === 'album' ? '相册' : '文件'
-  proxy.$modal.confirm(`确认彻底删除选中的 ${ids.length} 个${label}吗？此操作不可恢复。`)
+  proxy.$modal.confirm(`确认彻底删除选中的 ${ids.length} 个${label}吗？将删除数据库记录和本地文件，此操作不可恢复。`)
     .then(() => purgeByIds(ids))
     .then(() => {
       proxy.$modal.msgSuccess('已彻底删除')
@@ -360,7 +360,7 @@ function emptyRecycle() {
     proxy.$modal.msg('回收站已为空')
     return
   }
-  proxy.$modal.confirm('确认清空回收站吗？其中的相册与文件将被彻底删除，此操作不可恢复。')
+  proxy.$modal.confirm('确认清空回收站吗？将彻底删除其中的相册与文件（含本地磁盘文件），此操作不可恢复。')
     .then(async () => {
       loading.value = true
       try {

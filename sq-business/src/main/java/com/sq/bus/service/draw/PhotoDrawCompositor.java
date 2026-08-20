@@ -12,12 +12,12 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 
 /**
- * 将万相生成的面板与原图拼成最终海报；画布尺寸跟随原图。
+ * 将万相生成的面板与原图拼成最终海报；画布固定为预设默认尺寸 960×1280。
  */
 public final class PhotoDrawCompositor {
 
-    /** 版式基准宽度，用于按比例缩放字号与间距 */
-    private static final float BASE_W = 960f;
+    private static final int CANVAS_W = 960;
+    private static final int CANVAS_H = 1280;
     private static final Color CREAM = new Color(245, 240, 232);
     private static final Color INK = new Color(45, 42, 38);
 
@@ -25,28 +25,21 @@ public final class PhotoDrawCompositor {
     }
 
     private static final class Layout {
-        private final int w;
-        private final int h;
-        private final float scale;
-
-        Layout(BufferedImage original) {
-            this.w = Math.max(1, original.getWidth());
-            this.h = Math.max(1, original.getHeight());
-            this.scale = this.w / BASE_W;
-        }
+        private final int w = CANVAS_W;
+        private final int h = CANVAS_H;
 
         int px(int base) {
-            return Math.max(1, Math.round(base * scale));
+            return base;
         }
 
         Font font(String name, int style, int baseSize) {
-            return new Font(name, style, px(baseSize));
+            return new Font(name, style, baseSize);
         }
     }
 
     public static BufferedImage compose(PhotoDrawPreset preset, BufferedImage original, BufferedImage panel,
                                         String title, String subtitle, String keywords) {
-        Layout layout = new Layout(original);
+        Layout layout = new Layout();
         switch (preset.getLayout()) {
             case FULL_CANVAS:
                 return fullCanvas(panel, layout);
@@ -70,11 +63,11 @@ public final class PhotoDrawCompositor {
         BufferedImage canvas = newCanvas(layout);
         Graphics2D g = canvas.createGraphics();
         setup(g);
-        int textBand = layout.px(120);
+        int textBand = 120;
         drawCoverRegion(g, panel, 0, 0, layout.w, layout.h - textBand);
-        drawCenteredText(g, safeTitle(title, "Quiet Journey"), layout.h - layout.px(88),
+        drawCenteredText(g, safeTitle(title, "Quiet Journey"), layout.h - 88,
                 layout.font("Serif", Font.ITALIC, 32), INK, layout.w);
-        drawCenteredText(g, safeLower(subtitle, "memory on rice paper"), layout.h - layout.px(52),
+        drawCenteredText(g, safeLower(subtitle, "memory on rice paper"), layout.h - 52,
                 layout.font("SansSerif", Font.PLAIN, 18), new Color(90, 86, 78), layout.w);
         g.dispose();
         return canvas;
@@ -236,8 +229,13 @@ public final class PhotoDrawCompositor {
         return op.filter(rgb, null);
     }
 
+    /**
+     * cover 裁切：在源图坐标系内按目标宽高比居中裁切，再拉伸到目标区域。
+     * 注意：sx/sy 必须是源图像素坐标，不能把「缩放后画布上的偏移」误当成源图坐标
+     * （画布跟原图同尺寸、万相面板只有 960×1280 时，旧算法会读到图外 → 全白）。
+     */
     private static void drawCoverRegion(Graphics2D g, BufferedImage src, int dx, int dy, int dw, int dh) {
-        if (src == null) {
+        if (src == null || dw <= 0 || dh <= 0) {
             return;
         }
         int sw = src.getWidth();
@@ -245,12 +243,32 @@ public final class PhotoDrawCompositor {
         if (sw <= 0 || sh <= 0) {
             return;
         }
-        float scale = Math.max((float) dw / sw, (float) dh / sh);
-        int rw = Math.round(sw * scale);
-        int rh = Math.round(sh * scale);
-        int sx = (rw - dw) / 2;
-        int sy = (rh - dh) / 2;
-        g.drawImage(src, dx, dy, dx + dw, dy + dh, sx, sy, sx + dw, sy + dh, null);
+        float srcAspect = (float) sw / (float) sh;
+        float dstAspect = (float) dw / (float) dh;
+        int cropW;
+        int cropH;
+        int sx;
+        int sy;
+        if (srcAspect > dstAspect) {
+            // 源图更宽：上下铺满，左右裁切
+            cropH = sh;
+            cropW = Math.max(1, Math.round(sh * dstAspect));
+            sx = Math.max(0, (sw - cropW) / 2);
+            sy = 0;
+        } else {
+            // 源图更高或等比：左右铺满，上下裁切
+            cropW = sw;
+            cropH = Math.max(1, Math.round(sw / dstAspect));
+            sx = 0;
+            sy = Math.max(0, (sh - cropH) / 2);
+        }
+        if (sx + cropW > sw) {
+            cropW = sw - sx;
+        }
+        if (sy + cropH > sh) {
+            cropH = sh - sy;
+        }
+        g.drawImage(src, dx, dy, dx + dw, dy + dh, sx, sy, sx + cropW, sy + cropH, null);
     }
 
     private static BufferedImage fitInside(BufferedImage src, int maxW, int maxH) {

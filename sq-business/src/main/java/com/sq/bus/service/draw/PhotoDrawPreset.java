@@ -1,7 +1,7 @@
 package com.sq.bus.service.draw;
 
 /**
- * AI 出图预设（对应用户定义的 7 套风格；5/7 合并为 photo-abstract）。
+ * AI 出图预设（含海报拼版与整页艺术风格）。
  */
 public enum PhotoDrawPreset {
 
@@ -78,6 +78,20 @@ public enum PhotoDrawPreset {
                     + "Independent ink-wash or flat illustration with structural essence of the scene, "
                     + "soft blocks and quiet ink atmosphere, academic minimal composition. "
                     + "The original photograph should not appear; only artistic reinterpretation. No text."
+    ),
+
+    RDR2_JOURNAL(
+            "rdr2-journal",
+            "荒野大镖客2 · 日记炭笔",
+            "960*1280",
+            PhotoDrawLayout.FULL_CANVAS,
+            "Redraw the reference photo as a full-page charcoal pencil sketch from Arthur Morgan's journal in Red Dead Redemption 2. "
+                    + "Aged cream journal paper with faint stains, soft fiber texture, and mild yellowing. "
+                    + "Loose but skilled observational charcoal and graphite drawing: visible strokes, cross-hatching, smudged shading, "
+                    + "soft edges, uneven pressure, hand-drawn imperfections. Monochrome graphite and charcoal only, slight sepia cast allowed. "
+                    + "Keep the scene composition and subject recognizable; simplify fine textures into sketch marks. "
+                    + "Western frontier field-journal aesthetic, intimate diary illustration, not a clean digital line art. "
+                    + "No photorealism, no color painting, no modern UI, no watermark. Absolutely no handwritten text, signatures, dates, or captions."
     ),
 
     PHOTO_RELIC(

@@ -35,8 +35,8 @@
           </button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="createDesc">按创建时间降序</el-dropdown-item>
-              <el-dropdown-item command="createAsc">按创建时间升序</el-dropdown-item>
+              <el-dropdown-item command="dateDesc">按拍摄时间降序</el-dropdown-item>
+              <el-dropdown-item command="dateAsc">按拍摄时间升序</el-dropdown-item>
               <el-dropdown-item command="nameAsc">按名称升序</el-dropdown-item>
               <el-dropdown-item command="countDesc">按照片数降序</el-dropdown-item>
             </el-dropdown-menu>
@@ -231,7 +231,7 @@ const { proxy } = getCurrentInstance()
 const loading = ref(false)
 const albumList = ref([])
 const filterKey = ref('all')
-const sortKey = ref('createDesc')
+const sortKey = ref('dateDesc')
 const fabOpen = ref(false)
 const createOpen = ref(false)
 const creating = ref(false)
@@ -332,12 +332,12 @@ const filterLabel = computed(() => {
 
 const sortLabel = computed(() => {
   const map = {
-    createDesc: '按创建时间降序',
-    createAsc: '按创建时间升序',
+    dateDesc: '按拍摄时间降序',
+    dateAsc: '按拍摄时间升序',
     nameAsc: '按名称升序',
     countDesc: '按照片数降序'
   }
-  return map[sortKey.value] || '按创建时间降序'
+  return map[sortKey.value] || '按拍摄时间降序'
 })
 
 const displayList = computed(() => {
@@ -354,12 +354,26 @@ const displayList = computed(() => {
     if (sortKey.value === 'countDesc') {
       return (b.photoCount || 0) - (a.photoCount || 0)
     }
-    const ta = new Date(a.createTime || 0).getTime()
-    const tb = new Date(b.createTime || 0).getTime()
-    return sortKey.value === 'createAsc' ? ta - tb : tb - ta
+    // 与卡片日期一致：相册 startTime = 相册内照片/视频拍摄时间的最早值
+    const ta = shootTimeTs(a)
+    const tb = shootTimeTs(b)
+    const aMissing = ta == null
+    const bMissing = tb == null
+    if (aMissing && bMissing) return 0
+    if (aMissing) return 1
+    if (bMissing) return -1
+    return sortKey.value === 'dateAsc' ? ta - tb : tb - ta
   })
   return list
 })
+
+/** 相册拍摄时间：后端 refreshAlbumStats 写入的 startTime（min 拍摄时间） */
+function shootTimeTs(item) {
+  const raw = item?.startTime
+  if (!raw) return null
+  const t = new Date(typeof raw === 'string' ? raw.replace(/-/g, '/') : raw).getTime()
+  return Number.isNaN(t) ? null : t
+}
 
 function resolveUrl(url) {
   if (!url) return ''

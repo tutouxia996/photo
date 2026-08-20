@@ -621,6 +621,10 @@
                 <span class="value">相册</span>
               </div>
               <div class="photo-detail-row">
+                <span class="label">文件夹位置</span>
+                <span class="value" :title="detailFolderPath">{{ detailFolderPath }}</span>
+              </div>
+              <div class="photo-detail-row">
                 <span class="label">创建时间</span>
                 <span class="value">{{ formatDetailTime(detailPhoto.createTime) }}</span>
               </div>
@@ -876,6 +880,19 @@ const detailLocationText = computed(() => {
   if (parts.length) return parts.join(' ')
   if (p.latitude != null && p.longitude != null) return `${p.latitude}, ${p.longitude}`
   return '-'
+})
+
+/** 磁盘上的文件夹路径（去掉文件名） */
+const detailFolderPath = computed(() => {
+  const raw = detailPhoto.value?.filePath
+  if (!raw || typeof raw !== 'string') return '-'
+  const path = raw.trim()
+  if (!path) return '-'
+  const norm = path.replace(/\\/g, '/')
+  const idx = norm.lastIndexOf('/')
+  if (idx <= 0) return path
+  const dir = norm.slice(0, idx)
+  return path.includes('\\') ? dir.replace(/\//g, '\\') : dir
 })
 const imageMode = ref('contain') // contain | original
 const mediaImageRef = ref()
@@ -1227,6 +1244,7 @@ async function ensureDrawPresets() {
       { id: 'photo-diptych-column', label: '摄影+抽象双列' },
       { id: 'photo-abstract', label: '摄影+抽象编辑' },
       { id: 'scene-to-art', label: '场景蒸馏艺术' },
+      { id: 'rdr2-journal', label: '荒野大镖客2 · 日记炭笔' },
       { id: 'photo-relic', label: 'Photo Relic 编辑' }
     ]
   }
@@ -3308,7 +3326,7 @@ body > .el-overlay:has(.above-media-draw-dialog) {
   line-height: 1.5;
 
   .label {
-    width: 72px;
+    width: 84px;
     flex-shrink: 0;
     color: #999;
   }

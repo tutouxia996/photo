@@ -17,7 +17,7 @@ public interface IBizPhotoService extends IService<BizPhoto> {
     BizPhoto findByMd5(String md5);
 
     /**
-     * 匹配任意状态的同 MD5 记录（优先回收站，其次已删除）
+     * 匹配回收站中的同 MD5 记录（便于重新上传时复用）
      */
     BizPhoto findReusableByMd5(String md5);
 
@@ -25,5 +25,8 @@ public interface IBizPhotoService extends IService<BizPhoto> {
 
     boolean restorePhotos(Collection<Long> photoIds);
 
+    /**
+     * 彻底删除：物理删除数据库记录，并删除本地原图/缩略图
+     */
     boolean purgePhotos(Collection<Long> photoIds);
 }

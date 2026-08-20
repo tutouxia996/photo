@@ -23,7 +23,7 @@ public interface IBizAlbumService extends IService<BizAlbum> {
     boolean restoreAlbums(Collection<Long> albumIds);
 
     /**
-     * 彻底删除标记（deleted=1）
+     * 彻底删除：物理删除数据库记录，并删除本地原图/缩略图
      */
     boolean purgeAlbums(Collection<Long> albumIds);
 

@@ -9,11 +9,14 @@ import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.mapper.BizAlbumMapper;
 import com.sq.bus.mapper.BizPhotoMapper;
 import com.sq.bus.service.IBizAlbumService;
+import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.utils.PhotoFieldUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashSet;
@@ -26,6 +29,10 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
 
     @Autowired
     private BizPhotoMapper photoMapper;
+
+    @Lazy
+    @Autowired
+    private IBizPhotoService photoService;
 
     @Override
     public void refreshAlbumStats(Long albumId) {
@@ -132,18 +139,17 @@ public class BizAlbumServiceImpl extends ServiceImpl<BizAlbumMapper, BizAlbum> i
         if (albumIds == null || albumIds.isEmpty()) {
             return false;
         }
-        Date now = new Date();
-        boolean ok = update(new LambdaUpdateWrapper<BizAlbum>()
-                .in(BizAlbum::getAlbumId, albumIds)
-                .in(BizAlbum::getDeleted, AlbumDeleted.TRASH, AlbumDeleted.NORMAL)
-                .set(BizAlbum::getDeleted, AlbumDeleted.PURGED)
-                .set(BizAlbum::getUpdateTime, now));
-        photoMapper.update(null, new LambdaUpdateWrapper<BizPhoto>()
-                .in(BizPhoto::getAlbumId, albumIds)
-                .ne(BizPhoto::getDeleted, AlbumDeleted.PURGED)
-                .set(BizPhoto::getDeleted, AlbumDeleted.PURGED)
-                .set(BizPhoto::getUpdateTime, now));
-        return ok;
+        List<BizPhoto> photos = photoMapper.selectList(new LambdaQueryWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds));
+        if (photos != null && !photos.isEmpty()) {
+            List<Long> photoIds = new ArrayList<Long>(photos.size());
+            for (BizPhoto photo : photos) {
+                photoIds.add(photo.getPhotoId());
+            }
+            photoService.purgePhotos(photoIds);
+        }
+        return remove(new LambdaQueryWrapper<BizAlbum>()
+                .in(BizAlbum::getAlbumId, albumIds));
     }
 
     @Override

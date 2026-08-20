@@ -3,17 +3,24 @@ package com.sq.bus.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
+import com.sq.bus.domain.BizPhotoDraw;
+import com.sq.bus.domain.BizTrackPoint;
+import com.sq.bus.mapper.BizPhotoDrawMapper;
 import com.sq.bus.mapper.BizPhotoMapper;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
+import com.sq.bus.service.IBizTrackPointService;
+import com.sq.bus.utils.PhotoStorageCleanup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
@@ -28,6 +35,15 @@ public class BizPhotoServiceImpl extends ServiceImpl<BizPhotoMapper, BizPhoto> i
     @Lazy
     @Autowired
     private IBizAlbumService albumService;
+
+    @Autowired
+    private AlbumProperties albumProperties;
+
+    @Autowired
+    private BizPhotoDrawMapper photoDrawMapper;
+
+    @Autowired(required = false)
+    private IBizTrackPointService trackPointService;
 
     @Override
     public List<Map<String, Object>> groupCountByDate(Long albumId) {
@@ -53,17 +69,10 @@ public class BizPhotoServiceImpl extends ServiceImpl<BizPhotoMapper, BizPhoto> i
         if (md5 == null || md5.isEmpty()) {
             return null;
         }
-        BizPhoto trash = getOne(new LambdaQueryWrapper<BizPhoto>()
-                .eq(BizPhoto::getMd5, md5)
-                .eq(BizPhoto::getDeleted, AlbumDeleted.TRASH)
-                .orderByDesc(BizPhoto::getPhotoId)
-                .last("limit 1"), false);
-        if (trash != null) {
-            return trash;
-        }
+        // 仅复用回收站中的记录（彻底删除会物理清库与文件，不可再复用）
         return getOne(new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getMd5, md5)
-                .eq(BizPhoto::getDeleted, AlbumDeleted.PURGED)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.TRASH)
                 .orderByDesc(BizPhoto::getPhotoId)
                 .last("limit 1"), false);
     }
@@ -108,19 +117,39 @@ public class BizPhotoServiceImpl extends ServiceImpl<BizPhotoMapper, BizPhoto> i
         if (photoIds == null || photoIds.isEmpty()) {
             return false;
         }
-        List<BizPhoto> photos = listByIds(photoIds);
+        List<BizPhoto> photos = list(new LambdaQueryWrapper<BizPhoto>()
+                .in(BizPhoto::getPhotoId, photoIds)
+                .in(BizPhoto::getDeleted, AlbumDeleted.TRASH, AlbumDeleted.NORMAL, AlbumDeleted.PURGED));
         if (photos.isEmpty()) {
             return false;
         }
-        boolean ok = update(new LambdaUpdateWrapper<BizPhoto>()
-                .in(BizPhoto::getPhotoId, photoIds)
-                .in(BizPhoto::getDeleted, AlbumDeleted.TRASH, AlbumDeleted.NORMAL)
-                .set(BizPhoto::getDeleted, AlbumDeleted.PURGED)
-                .set(BizPhoto::getUpdateTime, new Date()));
+
+        List<Long> ids = new ArrayList<Long>(photos.size());
+        for (BizPhoto photo : photos) {
+            ids.add(photo.getPhotoId());
+            PhotoStorageCleanup.deleteLocalFiles(photo, albumProperties);
+        }
+
+        cleanupRelatedRows(ids);
+        boolean ok = removeByIds(ids);
         if (ok) {
             refreshAlbums(photos);
         }
         return ok;
+    }
+
+    private void cleanupRelatedRows(List<Long> photoIds) {
+        if (photoIds == null || photoIds.isEmpty()) {
+            return;
+        }
+        photoDrawMapper.delete(new LambdaQueryWrapper<BizPhotoDraw>()
+                .and(w -> w.in(BizPhotoDraw::getSourcePhotoId, photoIds)
+                        .or()
+                        .in(BizPhotoDraw::getResultPhotoId, photoIds)));
+        if (trackPointService != null) {
+            trackPointService.remove(new LambdaQueryWrapper<BizTrackPoint>()
+                    .in(BizTrackPoint::getPhotoId, photoIds));
+        }
     }
 
     private boolean markPhotos(Collection<Long> photoIds, int toStatus, int fromStatus) {
@@ -133,7 +162,10 @@ public class BizPhotoServiceImpl extends ServiceImpl<BizPhotoMapper, BizPhoto> i
         if (photos.isEmpty()) {
             return false;
         }
-        List<Long> ids = photos.stream().map(BizPhoto::getPhotoId).collect(java.util.stream.Collectors.toList());
+        List<Long> ids = new ArrayList<Long>(photos.size());
+        for (BizPhoto photo : photos) {
+            ids.add(photo.getPhotoId());
+        }
         boolean ok = update(new LambdaUpdateWrapper<BizPhoto>()
                 .in(BizPhoto::getPhotoId, ids)
                 .eq(BizPhoto::getDeleted, fromStatus)
