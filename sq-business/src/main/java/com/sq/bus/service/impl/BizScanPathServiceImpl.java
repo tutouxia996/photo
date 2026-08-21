@@ -32,12 +32,18 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.math.BigDecimal;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
 @Service
 public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizScanPath> implements IBizScanPathService {
@@ -328,12 +334,16 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     boolean albumAlive = owner != null
                             && (owner.getDeleted() == null || owner.getDeleted() == AlbumDeleted.NORMAL);
                     if (sameAlbum || albumAlive) {
-                        // 全量扫描：同相册已入库媒体补齐缩略图（视频另补 GPS/时长）
-                        if (fullScan && sameAlbum) {
+                        // 已入库媒体：缺缩略图时补齐（增量也补；全量时视频再补 GPS/时长）
+                        if (sameAlbum) {
                             try {
                                 if (fileType == 2) {
-                                    if (enrichExistingVideo(exists, mediaFile, scanPath)) {
-                                        counter.gpsUpdated++;
+                                    if (fullScan) {
+                                        if (enrichExistingVideo(exists, mediaFile, scanPath)) {
+                                            counter.gpsUpdated++;
+                                        }
+                                    } else {
+                                        repairOneVideoThumb(exists, mediaFile, scanPath);
                                     }
                                 } else if (fileType == 1) {
                                     enrichExistingImageThumb(exists, mediaFile, scanPath);
@@ -591,13 +601,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 dirty = true;
             }
         }
-        if (!hasUsableThumb(photo) && shouldCreateVideoThumb(file)) {
-            String relativeName = file.getName();
-            File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
-            String thumbName = "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg";
-            File thumbFile = new File(thumbDir, thumbName);
-            if (ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
-                photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+        if (!hasUsableThumb(photo)) {
+            if (repairOneVideoThumb(photo, file, scanPath)) {
                 dirty = true;
             }
         }
@@ -609,6 +614,126 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         return gpsFilled;
     }
 
+    /**
+     * 单条视频补缩略图（忽略「超大跳过」上限，大疆 4K 也尽量截一帧）。
+     * @return 是否写入了可用 thumbUrl
+     */
+    private boolean repairOneVideoThumb(BizPhoto photo, File file, BizScanPath scanPath) {
+        if (photo == null || file == null || !file.isFile() || scanPath == null || scanPath.getPathId() == null) {
+            return false;
+        }
+        if (hasUsableThumb(photo)) {
+            return false;
+        }
+        String relativeName = file.getName();
+        File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
+        String thumbName = "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg";
+        File thumbFile = new File(thumbDir, thumbName);
+        // 磁盘上已有可用文件：只回写 URL
+        if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
+            photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+            photo.setUpdateTime(new Date());
+            PhotoFieldUtils.clamp(photo);
+            photoService.updateById(photo);
+            return true;
+        }
+        if (!ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+            return false;
+        }
+        photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+        photo.setUpdateTime(new Date());
+        PhotoFieldUtils.clamp(photo);
+        photoService.updateById(photo);
+        return true;
+    }
+
+    @Override
+    public Map<String, Object> repairMissingVideoThumbs(Long pathId, boolean force) {
+        List<BizScanPath> paths;
+        if (pathId != null) {
+            BizScanPath one = getById(pathId);
+            if (one == null || (one.getDeleted() != null && one.getDeleted() == 1)) {
+                throw new ServiceException("扫描目录不存在或已删除");
+            }
+            paths = new ArrayList<BizScanPath>();
+            paths.add(one);
+        } else {
+            paths = list(new LambdaQueryWrapper<BizScanPath>()
+                    .eq(BizScanPath::getDeleted, 0)
+                    .eq(BizScanPath::getStatus, 1));
+            if (paths == null) {
+                paths = new ArrayList<BizScanPath>();
+            }
+        }
+
+        int total = 0;
+        int repaired = 0;
+        int failed = 0;
+        int skipped = 0;
+        List<String> samples = new ArrayList<String>();
+
+        for (BizScanPath scanPath : paths) {
+            if (scanPath.getDefaultAlbumId() == null) {
+                continue;
+            }
+            List<BizPhoto> videos = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                    .eq(BizPhoto::getAlbumId, scanPath.getDefaultAlbumId())
+                    .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                    .eq(BizPhoto::getFileType, 2));
+            if (videos == null) {
+                continue;
+            }
+            for (BizPhoto photo : videos) {
+                total++;
+                if (!force && hasUsableThumb(photo)) {
+                    skipped++;
+                    continue;
+                }
+                String fp = photo.getFilePath();
+                if (fp == null || fp.isEmpty()) {
+                    failed++;
+                    continue;
+                }
+                File file = new File(fp);
+                if (!file.isFile()) {
+                    failed++;
+                    if (samples.size() < 8) {
+                        samples.add(photo.getFileName() + "（源文件不存在）");
+                    }
+                    continue;
+                }
+                try {
+                    if (repairOneVideoThumb(photo, file, scanPath)) {
+                        repaired++;
+                    } else {
+                        failed++;
+                        if (samples.size() < 8) {
+                            samples.add(photo.getFileName() + "（截帧失败）");
+                        }
+                    }
+                } catch (Exception e) {
+                    failed++;
+                    log.warn("补视频缩略图异常 photoId={} err={}", photo.getPhotoId(), e.toString());
+                    if (samples.size() < 8) {
+                        samples.add(photo.getFileName() + "（" + e.getMessage() + "）");
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("total", total);
+        result.put("repaired", repaired);
+        result.put("failed", failed);
+        result.put("skipped", skipped);
+        result.put("force", force);
+        result.put("samples", samples);
+        if (!force && repaired == 0 && failed == 0 && skipped > 0) {
+            result.put("hint", "库里已有可用封面文件，故全部跳过；请强制刷新首页/地图。若仍显示「视频」占位，可勾选强制重截后再试。");
+        }
+        return result;
+    }
+
     private boolean hasUsableThumb(BizPhoto photo) {
         if (photo.getThumbUrl() == null || photo.getThumbUrl().isEmpty()) {
             return false;
@@ -618,7 +743,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         }
         String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
         File thumb = new File(albumProperties.getThumbPath(), rel);
-        return thumb.exists() && thumb.isFile();
+        // 过小文件多半是截帧失败残留，视为不可用
+        return thumb.exists() && thumb.isFile() && thumb.length() >= 1024L;
     }
 
     private static final class MediaMeta {
@@ -704,11 +830,15 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             photoService.updateById(exists);
         }
 
-        if (fullScan && sameAlbum) {
+        if (sameAlbum) {
             try {
                 if (fileType == 2) {
-                    if (enrichExistingVideo(exists, file, scanPath)) {
-                        counter.gpsUpdated++;
+                    if (fullScan) {
+                        if (enrichExistingVideo(exists, file, scanPath)) {
+                            counter.gpsUpdated++;
+                        }
+                    } else {
+                        repairOneVideoThumb(exists, file, scanPath);
                     }
                 } else if (fileType == 1) {
                     enrichExistingImageThumb(exists, file, scanPath);

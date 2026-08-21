@@ -13,7 +13,17 @@ export function listPhotoMapPoints(query) {
   return request({
     url: '/album/photo/mapPoints',
     method: 'get',
-    params: query
+    params: query,
+    timeout: 120000
+  })
+}
+
+/** 足迹图：已访问省/市/区县高德边界 GeoJSON */
+export function getVisitedRegionGeo() {
+  return request({
+    url: '/album/photo/visitedRegionGeo',
+    method: 'get',
+    timeout: 120000
   })
 }
 

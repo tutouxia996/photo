@@ -16,23 +16,30 @@
       <el-table-column label="状态" prop="status" width="80">
         <template #default="scope">{{ scope.row.status === 1 ? '启用' : '禁用' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="280">
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="handleUpdate(scope.row)" v-hasPermi="['album:scan:edit']">修改</el-button>
           <el-button
             link
             type="primary"
-            :disabled="scanning"
+            :disabled="scanning || repairing"
             @click="handleRun(scope.row, false)"
             v-hasPermi="['album:scan:run']"
           >增量扫描</el-button>
           <el-button
             link
             type="warning"
-            :disabled="scanning"
+            :disabled="scanning || repairing"
             @click="handleRun(scope.row, true)"
             v-hasPermi="['album:scan:run']"
           >全量扫描</el-button>
+          <el-button
+            link
+            type="success"
+            :disabled="scanning || repairing"
+            @click="handleRepairThumbs(scope.row)"
+            v-hasPermi="['album:scan:run']"
+          >补视频缩略图</el-button>
           <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:scan:remove']">删除</el-button>
         </template>
       </el-table-column>
@@ -112,7 +119,7 @@
 </template>
 
 <script setup name="AlbumScan">
-import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, pollScanProgress } from '@/api/album/scan'
+import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, pollScanProgress, repairVideoThumbs } from '@/api/album/scan'
 
 const { proxy } = getCurrentInstance()
 const pathList = ref([])
@@ -122,6 +129,7 @@ const open = ref(false)
 const title = ref('')
 const form = ref({})
 const scanning = ref(false)
+const repairing = ref(false)
 const scanDialogVisible = ref(false)
 const scanProgress = reactive({
   status: 0,
@@ -234,6 +242,55 @@ async function handleRun(row, fullScan) {
     // 全局拦截器已提示
   } finally {
     scanning.value = false
+  }
+}
+
+async function handleRepairThumbs(row) {
+  if (repairing.value || scanning.value) {
+    proxy.$modal.msgWarning('请等待当前任务完成')
+    return
+  }
+  let force = false
+  try {
+    await proxy.$modal.confirm(
+      `为「${row.pathName || row.pathId}」补齐缺少封面的视频缩略图？\n` +
+      `大疆 Action 等大视频可能较慢。\n\n` +
+      `若提示「全部跳过」但地图仍是灰底「视频」，请再点一次并在下一框选择强制重截。`
+    )
+  } catch (e) {
+    return
+  }
+  try {
+    await proxy.$modal.confirm('是否强制重截已有封面？（Action 5 Pro 等 HEVC 建议选「确定」重截；已有封面正常则选「取消」只补缺失）')
+    force = true
+  } catch (e) {
+    force = false
+  }
+  repairing.value = true
+  try {
+    const res = await repairVideoThumbs(row.pathId, force)
+    const data = res.data || {}
+    const repaired = Number(data.repaired) || 0
+    const failed = Number(data.failed) || 0
+    const skipped = Number(data.skipped) || 0
+    const samples = Array.isArray(data.samples) ? data.samples : []
+    let msg = `补齐完成：成功 ${repaired}，跳过 ${skipped}，失败 ${failed}`
+    if (data.hint) {
+      msg += `。${data.hint}`
+    } else if (samples.length) {
+      msg += `。示例：${samples.slice(0, 3).join('；')}`
+    } else if (repaired > 0) {
+      msg += '。请强制刷新首页/地图查看封面。'
+    }
+    if (failed > 0 && repaired === 0) {
+      proxy.$modal.msgError(msg)
+    } else {
+      proxy.$modal.msgSuccess(msg)
+    }
+  } catch (e) {
+    // 全局拦截器已提示
+  } finally {
+    repairing.value = false
   }
 }
 

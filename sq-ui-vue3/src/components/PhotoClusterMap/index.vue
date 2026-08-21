@@ -93,7 +93,11 @@ const props = defineProps({
   /** 框选模式：拖拽拉矩形选中路段 */
   boxSelectActive: { type: Boolean, default: false },
   /** 框选高亮的路段下标 */
-  selectedSegmentIndexes: { type: Array, default: () => [] }
+  selectedSegmentIndexes: { type: Array, default: () => [] },
+  /** 已访问行政区 GeoJSON FeatureCollection（GCJ-02） */
+  regionGeoJson: { type: Object, default: null },
+  /** 是否绘制行政区蓝色高亮 */
+  showRegionHighlight: { type: Boolean, default: true }
 })
 
 const emit = defineEmits([
@@ -127,6 +131,8 @@ let waypointLayer = null
 let estimatedLayer = null
 /** GPX 等叠层折线 */
 let gpxOverlayLayer = null
+/** 已访问省市区高亮 */
+let regionLayer = null
 /** 轨迹线用 SVG，才能做流动虚线 CSS 动画 */
 let svgRenderer = null
 let canvasRenderer = null
@@ -261,6 +267,7 @@ function applyBaseLayers(styleKey) {
   if (conf.labelUrl) {
     labelLayer = L.tileLayer(conf.labelUrl, conf.labelOptions || conf.options).addTo(map)
   }
+  if (regionLayer) regionLayer.bringToFront()
   if (lineLayer) lineLayer.bringToFront()
   if (gpxOverlayLayer) gpxOverlayLayer.bringToFront()
   if (clusterGroup) clusterGroup.bringToFront()
@@ -306,6 +313,7 @@ function clearOverlays() {
   if (clusterGroup) clusterGroup.clearLayers()
   if (waypointLayer) waypointLayer.clearLayers()
   if (estimatedLayer) estimatedLayer.clearLayers()
+  // regionLayer 由 drawRegionHighlight 单独刷新，避免每次点位刷新闪烁
 }
 
 function distToSegmentSq(p, a, b) {
@@ -729,6 +737,59 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
 }
 
+/** 省/市/区蓝色高亮样式（区最深，省最浅） */
+function regionStyle(feature) {
+  const level = String(feature?.properties?.level || '').toLowerCase()
+  if (level === 'district') {
+    return { color: '#1D4ED8', weight: 1.5, opacity: 0.95, fillColor: '#2563EB', fillOpacity: 0.45 }
+  }
+  if (level === 'city') {
+    return { color: '#2563EB', weight: 1.2, opacity: 0.85, fillColor: '#3B82F6', fillOpacity: 0.32 }
+  }
+  return { color: '#3B82F6', weight: 1, opacity: 0.7, fillColor: '#60A5FA', fillOpacity: 0.22 }
+}
+
+function drawRegionHighlight() {
+  if (!map) return
+  if (regionLayer) {
+    regionLayer.clearLayers()
+  }
+  if (!props.showRegionHighlight) return
+  const geo = props.regionGeoJson
+  const features = geo && Array.isArray(geo.features) ? geo.features : null
+  if (!features || !features.length) return
+  if (!regionLayer) {
+    if (!map.getPane('regionPane')) {
+      map.createPane('regionPane')
+      const pane = map.getPane('regionPane')
+      pane.style.zIndex = 350
+      pane.style.pointerEvents = 'none'
+    }
+    regionLayer = L.geoJSON(null, {
+      pane: 'regionPane',
+      style: regionStyle,
+      interactive: false,
+      // 跳过坏几何，避免整批 addData 抛错
+      filter: (feature) => !!(feature && feature.geometry && feature.geometry.coordinates)
+    }).addTo(map)
+  }
+  const order = { province: 0, city: 1, district: 2 }
+  const sorted = features
+    .filter(f => f && f.geometry && f.geometry.coordinates)
+    .sort((a, b) => {
+      const la = order[String(a?.properties?.level || '').toLowerCase()] ?? 0
+      const lb = order[String(b?.properties?.level || '').toLowerCase()] ?? 0
+      return la - lb
+    })
+  if (!sorted.length) return
+  regionLayer.addData({ type: 'FeatureCollection', features: sorted })
+  if (lineLayer) lineLayer.bringToFront()
+  if (gpxOverlayLayer) gpxOverlayLayer.bringToFront()
+  if (clusterGroup) clusterGroup.bringToFront()
+  if (waypointLayer) waypointLayer.bringToFront()
+  if (estimatedLayer) estimatedLayer.bringToFront()
+}
+
 function drawGpxFlow(latlngs, color) {
   if (!gpxOverlayLayer || !latlngs || latlngs.length < 2) return
   const common = {
@@ -1001,8 +1062,25 @@ function renderPoints({ fit = props.autoFit } = {}) {
   const matchedBounds = drawGpxMatchedPhotos()
   const matchedIds = new Set(visibleMatchedPhotos().map(p => String(p.photoId)).filter(Boolean))
 
+  const hasRegions = props.showRegionHighlight
+    && props.regionGeoJson
+    && Array.isArray(props.regionGeoJson.features)
+    && props.regionGeoJson.features.length > 0
+
   if (!list.length && !preview && !gpxPath.length && !matchedBounds.length) {
-    map.setView([35.0, 105.0], 4)
+    // 无点位时仍尝试画行政区；高亮失败不能影响后续逻辑
+    try { drawRegionHighlight() } catch (e) { console.warn('[PhotoClusterMap] region highlight failed', e) }
+    if (hasRegions && regionLayer) {
+      try {
+        const rb = regionLayer.getBounds?.()
+        if (fit && rb && rb.isValid()) {
+          map.fitBounds(rb, { padding: [48, 48], maxZoom: 8 })
+          didFit = true
+        }
+      } catch (e) { /* ignore */ }
+    } else if (!hasRegions) {
+      map.setView([35.0, 105.0], 4)
+    }
     return
   }
 
@@ -1091,6 +1169,9 @@ function renderPoints({ fit = props.autoFit } = {}) {
     if (photoMarkers.length && clusterGroup) clusterGroup.addLayers(photoMarkers)
   }
 
+  // 行政区高亮放在点位之后：失败不影响照片/视频标记
+  try { drawRegionHighlight() } catch (e) { console.warn('[PhotoClusterMap] region highlight failed', e) }
+
   let boundsPts = preview
     ? preview
     : (fullPath.length >= 2 ? fullPath : list.map(p => toMapLatLng(p)))
@@ -1141,6 +1222,17 @@ function initMap() {
     pane.style.zIndex = 650
     pane.style.pointerEvents = 'auto'
   }
+  if (!map.getPane('regionPane')) {
+    map.createPane('regionPane')
+    const regionPane = map.getPane('regionPane')
+    regionPane.style.zIndex = 350
+    regionPane.style.pointerEvents = 'none'
+  }
+  regionLayer = L.geoJSON(null, {
+    pane: 'regionPane',
+    style: regionStyle,
+    interactive: false
+  }).addTo(map)
   lineLayer = L.layerGroup().addTo(map)
   gpxOverlayLayer = L.layerGroup().addTo(map)
   clusterGroup = createClusterGroup().addTo(map)
@@ -1301,6 +1393,13 @@ watch(
   { deep: true }
 )
 
+/** 行政区 GeoJSON 很大，禁止 deep watch（会遍历全部坐标导致卡死、点位不渲染） */
+watch(
+  () => [props.regionGeoJson, props.showRegionHighlight],
+  () => refresh({ fit: false }),
+  { deep: false }
+)
+
 watch(
   () => props.visibleTravelModes,
   () => refresh({ fit: false }),
@@ -1343,6 +1442,7 @@ onBeforeUnmount(() => {
     waypointLayer = null
     estimatedLayer = null
     gpxOverlayLayer = null
+    regionLayer = null
     svgRenderer = null
     canvasRenderer = null
   }

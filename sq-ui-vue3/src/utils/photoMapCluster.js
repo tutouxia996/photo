@@ -440,6 +440,11 @@ export function resolveUrl(url) {
   return import.meta.env.VITE_APP_BASE_API + url
 }
 
+function pointThumbUrl(point) {
+  const u = point?.thumbUrl || point?.thumb_url
+  return u && String(u).trim() ? String(u).trim() : ''
+}
+
 export function mediaSrc(point, original = false) {
   if (original) {
     if (point?.photoId) {
@@ -448,12 +453,13 @@ export function mediaSrc(point, original = false) {
     if (point?.fileUrl) return resolveUrl(point.fileUrl)
     return ''
   }
+  const thumb = pointThumbUrl(point)
   // 视频无 thumbUrl 时不要请求 media：服务端对无截帧视频会 404，地图 <img> 会空白
-  if (Number(point?.fileType) === 2 && !point?.thumbUrl) {
+  if (Number(point?.fileType) === 2 && !thumb) {
     return ''
   }
   // 网格/地图标记优先静态缩略图
-  if (point?.thumbUrl) return resolveUrl(point.thumbUrl)
+  if (thumb) return resolveUrl(thumb)
   if (point?.photoId) {
     return resolveUrl('/album/photo/media/' + point.photoId)
   }
@@ -484,7 +490,7 @@ function pickCoverPoint(markers) {
 
 /** 缩略图 DivIcon；count>1 时显示数量角标 */
 export function createThumbDivIcon(point, count = 1, options = {}) {
-  const isVideo = point?.fileType === 2
+  const isVideo = Number(point?.fileType) === 2
   const estimated = count <= 1 && isEstimatedLocation(point)
   const selected = !!(options.selected && count <= 1)
   const thumb = mediaSrc(point, false)
@@ -495,9 +501,11 @@ export function createThumbDivIcon(point, count = 1, options = {}) {
       : '')
   const pick = selected ? '<span class="pmc-ai-pick" title="已选入 AI 识别">✓</span>' : ''
   const video = isVideo && count <= 1 ? '<span class="pmc-video">▶</span>' : ''
+  // Leaflet DivIcon 在 transform/overflow 容器里，native lazy 常不触发加载 → 一直灰底
+  const fallbackText = isVideo ? '视频' : '图'
   const img = thumb
-    ? `<img src="${thumb}" loading="lazy" decoding="async" alt="" />`
-    : `<span class="pmc-fallback">${isVideo ? '视频' : '图'}</span>`
+    ? `<img src="${escapeHtml(thumb)}" decoding="async" alt="" onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('span'),{className:'pmc-fallback',textContent:'${fallbackText}'}))" />`
+    : `<span class="pmc-fallback">${fallbackText}</span>`
   const classes = [
     'pmc-marker',
     estimated ? 'pmc-marker--estimated' : '',
@@ -588,7 +596,7 @@ export function isWaypointPoint(point) {
 
 export function buildPopupHtml(point) {
   const waypoint = isWaypointPoint(point)
-  const isVideo = point.fileType === 2
+  const isVideo = Number(point.fileType) === 2
   const thumb = mediaSrc(point, false)
   const original = mediaSrc(point, true)
   const title = escapeHtml(

@@ -103,6 +103,19 @@ public class BizScanPathController extends BaseController {
     }
 
     /**
+     * 为已入库但缺少封面的视频补截帧（大疆 HEVC 等）。
+     * pathId 可空：空则处理全部启用中的扫描目录。
+     * force=true：即使已有封面也强制重截。
+     */
+    @PreAuthorize("@ss.hasPermi('album:scan:run')")
+    @Log(title = "补视频缩略图", businessType = BusinessType.UPDATE)
+    @PostMapping("/repairVideoThumbs")
+    public AjaxResult repairVideoThumbs(@RequestParam(required = false) Long pathId,
+                                        @RequestParam(required = false, defaultValue = "false") Boolean force) {
+        return success(scanPathService.repairMissingVideoThumbs(pathId, Boolean.TRUE.equals(force)));
+    }
+
+    /**
      * 查询单条扫描日志（含进行中进度），供前端轮询
      */
     @PreAuthorize("@ss.hasPermi('album:scan:query') or @ss.hasPermi('album:scan:list') or @ss.hasPermi('album:album:add') or @ss.hasPermi('album:album:list')")

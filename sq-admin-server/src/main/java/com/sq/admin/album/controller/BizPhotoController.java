@@ -83,7 +83,33 @@ public class BizPhotoController extends BaseController {
     private AmapPlaceSearchService amapPlaceSearchService;
 
     @Autowired
+    private com.sq.bus.service.VisitedRegionGeoService visitedRegionGeoService;
+
+    @Autowired
     private AlbumProperties albumProperties;
+
+    /**
+     * 足迹图：已访问省/市/区县的行政区边界（GeoJSON，GCJ-02）
+     */
+    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @GetMapping("/visitedRegionGeo")
+    public AjaxResult visitedRegionGeo() {
+        try {
+            return success(visitedRegionGeoService.buildVisitedRegionGeo());
+        } catch (Exception e) {
+            // 高亮失败不阻断首页点位展示
+            java.util.Map<String, Object> empty = new java.util.LinkedHashMap<String, Object>();
+            java.util.Map<String, Object> geo = new java.util.LinkedHashMap<String, Object>();
+            geo.put("type", "FeatureCollection");
+            geo.put("features", new java.util.ArrayList<Object>());
+            empty.put("geojson", geo);
+            empty.put("provinces", new java.util.ArrayList<String>());
+            empty.put("cities", new java.util.ArrayList<String>());
+            empty.put("districts", new java.util.ArrayList<String>());
+            empty.put("featureCount", 0);
+            return success(empty);
+        }
+    }
 
     /**
      * 媒体访问：默认缩略图；original=true 返回原文件（支持 Range，便于视频播放）

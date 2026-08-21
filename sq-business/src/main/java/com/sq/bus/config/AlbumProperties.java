@@ -66,9 +66,9 @@ public class AlbumProperties {
         private long sampleHashChunkBytes = 4L * 1024 * 1024;
         /**
          * 扫描入库时，超过该大小的视频不截缩略图（ffmpeg 对超大文件也很慢）。
-         * 默认 1GB；设为 0 表示始终截帧。可稍后在相册里补生成。
+         * 默认 8GB（大疆 4K 常见 1～4GB）；设为 0 表示始终截帧。
          */
-        private long skipVideoThumbAboveBytes = 1024L * 1024 * 1024;
+        private long skipVideoThumbAboveBytes = 8L * 1024 * 1024 * 1024;
     }
 
     @Data

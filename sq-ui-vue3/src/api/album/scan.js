@@ -31,6 +31,20 @@ export function runScan(pathId, fullScan = false) {
   })
 }
 
+/** 为缺少封面的视频补截帧（大疆 HEVC 等）；pathId 可空=全部目录；force=强制重截 */
+export function repairVideoThumbs(pathId, force = false) {
+  const params = {}
+  if (pathId != null) params.pathId = pathId
+  if (force) params.force = true
+  return request({
+    url: '/album/scan/repairVideoThumbs',
+    method: 'post',
+    params,
+    timeout: 600000,
+    actionLoadingText: force ? '正在强制重截视频缩略图，请稍候…' : '正在补视频缩略图，请稍候…'
+  })
+}
+
 export function listScanLog(query) {
   return request({ url: '/album/scan/log/list', method: 'get', params: query })
 }

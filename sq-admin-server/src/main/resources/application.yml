@@ -141,8 +141,8 @@ album:
     # 超过 256MB 用头+中+尾采样 MD5，避免整文件读盘
     sampleHashThresholdBytes: 268435456
     sampleHashChunkBytes: 4194304
-    # 超过 1GB 的视频扫描时不截缩略图（可显著加速；列表可能暂时无封面）
-    skipVideoThumbAboveBytes: 1073741824
+    # 超过 8GB 的视频扫描时不截缩略图（大疆 4K 常见 1～4GB，需能截帧）
+    skipVideoThumbAboveBytes: 8589934592
   thumb:
     smallWidth: 300
     mediumWidth: 800
