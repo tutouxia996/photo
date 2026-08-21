@@ -135,6 +135,14 @@ album:
   uploadPath: D:/uploadPath/album/upload
   thumbPath: D:/uploadPath/album/cache/thumb
   localRoot: D:/uploadPath/album
+  # 磁盘扫描：大视频优化（路径跳过 / 采样哈希 / 超大文件不截帧）
+  scan:
+    pathSizeSkip: true
+    # 超过 256MB 用头+中+尾采样 MD5，避免整文件读盘
+    sampleHashThresholdBytes: 268435456
+    sampleHashChunkBytes: 4194304
+    # 超过 1GB 的视频扫描时不截缩略图（可显著加速；列表可能暂时无封面）
+    skipVideoThumbAboveBytes: 1073741824
   thumb:
     smallWidth: 300
     mediumWidth: 800

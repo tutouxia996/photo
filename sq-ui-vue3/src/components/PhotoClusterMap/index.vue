@@ -45,6 +45,10 @@ const props = defineProps({
   points: { type: Array, default: () => [] },
   /** 是否绘制轨迹折线（按点序） */
   showPolyline: { type: Boolean, default: false },
+  /**
+   * 可选：折线专用点序。有值时 markers 仍用 points，折线用本数组（照片地图叠轨迹）
+   */
+  polylinePoints: { type: Array, default: null },
   polylineColor: { type: String, default: '#3B82F6' },
   emptyText: { type: String, default: '暂无带定位的照片' },
   fitMaxZoom: { type: Number, default: 17 },
@@ -148,6 +152,13 @@ const selectedIdSet = computed(() => {
 })
 
 const validPoints = computed(() => filterValidPoints(props.points))
+/** 折线点序：优先 polylinePoints，否则与 markers 同源 */
+const polylineSource = computed(() => {
+  if (Array.isArray(props.polylinePoints) && props.polylinePoints.length) {
+    return filterValidPoints(props.polylinePoints)
+  }
+  return validPoints.value
+})
 const overlayList = computed(() => {
   const list = Array.isArray(props.overlayPaths) ? props.overlayPaths : []
   return list.filter(o => {
@@ -1000,20 +1011,21 @@ function renderPoints({ fit = props.autoFit } = {}) {
   }
 
   let fullPath = []
-  if (props.showPolyline && list.length > 1) {
+  const lineList = polylineSource.value
+  if (props.showPolyline && lineList.length > 1) {
     // 保留原始点序索引，便于编辑出行方式/贴合路网；仅跳过已挂 GPX 的媒体相关路段
-    fullPath = drawSegments(list, matchedIds)
+    fullPath = drawSegments(lineList, matchedIds)
     // 编辑拐点时隐藏方向装饰，避免遮挡拖拽
     if (props.showDirection && props.pathEditIndex < 0 && fullPath.length >= 2) {
       // 筛选时只画可见段的流动箭头，起终点仅在未筛选时显示
       if (modeFilterSet.value) {
-        drawDirectionDecorations(null, list)
+        drawDirectionDecorations(null, lineList)
       } else {
-        drawDirectionDecorations(fullPath, list)
+        drawDirectionDecorations(fullPath, lineList)
       }
     }
     if (props.pathEditIndex >= 0) {
-      bindPathEditor(list, props.pathEditIndex)
+      bindPathEditor(lineList, props.pathEditIndex)
     }
   }
   if (preview) {
@@ -1267,6 +1279,7 @@ watch(
   () => [
     props.points,
     props.showPolyline,
+    props.polylinePoints,
     props.polylineColor,
     props.segmentByTravelMode,
     props.editable,

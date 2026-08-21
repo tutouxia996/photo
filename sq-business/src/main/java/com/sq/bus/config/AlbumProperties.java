@@ -48,6 +48,29 @@ public class AlbumProperties {
     /** 阿里云盘个人相册定时同步到本地，再走磁盘扫描入库 */
     private AliyunDriveConfig aliyunDrive = new AliyunDriveConfig();
 
+    /** 磁盘扫描性能（大视频路径跳过 / 采样哈希 / 截帧） */
+    private ScanConfig scan = new ScanConfig();
+
+    @Data
+    public static class ScanConfig {
+        /**
+         * 已入库且路径+大小未变时，跳过整文件 MD5（增量扫描大视频的关键路径）。
+         */
+        private boolean pathSizeSkip = true;
+        /**
+         * 超过该大小（字节）的媒体改用「头+中+尾」采样 MD5，避免 1～30GB 视频整文件读盘。
+         * 默认 256MB；设为 0 表示始终整文件哈希。
+         */
+        private long sampleHashThresholdBytes = 256L * 1024 * 1024;
+        /** 采样哈希每段读取长度（字节），默认 4MB */
+        private long sampleHashChunkBytes = 4L * 1024 * 1024;
+        /**
+         * 扫描入库时，超过该大小的视频不截缩略图（ffmpeg 对超大文件也很慢）。
+         * 默认 1GB；设为 0 表示始终截帧。可稍后在相册里补生成。
+         */
+        private long skipVideoThumbAboveBytes = 1024L * 1024 * 1024;
+    }
+
     @Data
     public static class Thumb {
         private int smallWidth = 300;

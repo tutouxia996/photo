@@ -8,21 +8,18 @@
         <h1 class="page-title">照片地图</h1>
         <span class="page-sub">{{ headerSub }}</span>
       </div>
-      <el-select
-        v-model="albumId"
-        clearable
-        filterable
-        placeholder="全部相册"
-        class="album-select"
-        @change="onAlbumChange"
-      >
-        <el-option
-          v-for="item in albumOptions"
-          :key="item.albumId"
-          :label="item.albumName"
-          :value="item.albumId"
+      <div class="track-toggle" :title="trackToggleTitle">
+        <span class="track-toggle-label">显示轨迹</span>
+        <el-switch
+          v-model="showTrackLine"
+          inline-prompt
+          active-text="开"
+          inactive-text="关"
+          :disabled="!canToggleTrack"
+          :loading="trackLoading"
+          @change="onTrackToggleChange"
         />
-      </el-select>
+      </div>
     </header>
     <div v-if="estimatedCount > 0 || correctMode" class="est-banner">
       <span class="dot" />
@@ -103,6 +100,12 @@
         :points="points"
         :empty-text="emptyText"
         :auto-fit="false"
+        :show-polyline="trackLineActive"
+        :polyline-points="trackLineActive ? trackPoints : null"
+        :polyline-color="trackColor"
+        :segment-by-travel-mode="trackLineActive"
+        :show-direction="trackLineActive"
+        :overlay-paths="trackLineActive ? trackGpxOverlays : []"
         :estimated-draggable="canEditEstimated && !aiPickMode && !correctMode"
         :location-correctable="canEditEstimated && correctMode && !aiPickMode"
         :ai-pick-mode="aiPickMode"
@@ -117,6 +120,7 @@
             <span class="name">{{ metaTitle }}</span>
             <span class="stat">定位 {{ points.length }}</span>
             <span v-if="estimatedCount" class="stat est">估计 {{ estimatedCount }}</span>
+            <span v-if="trackLineActive && trackName" class="stat track">轨迹 {{ trackName }}</span>
           </div>
         </template>
       </PhotoClusterMap>
@@ -232,7 +236,7 @@
 
 <script setup name="PhotosMap">
 import { ArrowLeft } from '@element-plus/icons-vue'
-import { listAlbum } from '@/api/photos/album'
+import { getAlbum } from '@/api/photos/album'
 import {
   aiLandmarkAlbum,
   confirmEstimatedBatch,
@@ -242,7 +246,7 @@ import {
   listPhotoMapPoints,
   updateEstimatedPosition
 } from '@/api/photos/photo'
-import { searchTrackPlace } from '@/api/album/track'
+import { searchTrackPlace, listTrack, getTrack } from '@/api/album/track'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 import {
   estimatedSourceLabel,
@@ -259,8 +263,8 @@ const { proxy } = getCurrentInstance()
 
 const loading = ref(false)
 const points = ref([])
-const albumOptions = ref([])
 const albumId = ref(undefined)
+const albumName = ref('')
 const mapRef = ref(null)
 const saving = ref(false)
 const aiLoading = ref(false)
@@ -278,17 +282,39 @@ const selectedPlace = ref(null)
 let placeSearchTimer = 0
 const canEditEstimated = computed(() => checkPermi(['album:photo:edit']))
 
+/** 照片地图本地开关：叠显示相册轨迹线（不改库里的 enabled） */
+const showTrackLine = ref(true)
+const trackLoading = ref(false)
+const trackPoints = ref([])
+const trackGpxOverlays = ref([])
+const trackColor = ref('#3B82F6')
+const trackName = ref('')
+/** 当前已加载轨迹所属相册，防止切换相册时串到别的轨迹 */
+const loadedTrackAlbumId = ref(undefined)
+let trackLoadSeq = 0
+
+function sameAlbumId(a, b) {
+  if (a == null || a === '' || b == null || b === '') return false
+  return String(a) === String(b)
+}
+
+const canToggleTrack = computed(() => albumId.value != null && albumId.value !== '')
+const trackLineActive = computed(() =>
+  !!showTrackLine.value
+  && canToggleTrack.value
+  && sameAlbumId(loadedTrackAlbumId.value, albumId.value)
+  && trackPoints.value.length > 1
+)
+const trackToggleTitle = computed(() => {
+  if (!canToggleTrack.value) return '需从相册进入后才能显示轨迹'
+  if (trackLoading.value) return '正在加载轨迹…'
+  if (showTrackLine.value && trackPoints.value.length <= 1) return '该相册暂无可用轨迹点'
+  return showTrackLine.value ? '关闭后仅显示照片定位点' : '开启后叠加本相册轨迹线与 GPX'
+})
+
 const canPreviewPlace = computed(() => {
   const p = selectedPlace.value
   return !!(p && p.wgsLat != null && p.wgsLng != null)
-})
-
-const albumNameMap = computed(() => {
-  const map = {}
-  albumOptions.value.forEach(a => {
-    map[a.albumId] = a.albumName
-  })
-  return map
 })
 
 const estimatedCount = computed(() => points.value.filter(isPendingEstimated).length)
@@ -335,11 +361,12 @@ const editSourceLabel = computed(() => {
 })
 
 const metaTitle = computed(() => {
-  if (albumId.value == null || albumId.value === '') return '全部相册'
-  return albumNameMap.value[albumId.value] || '相册'
+  if (albumId.value == null || albumId.value === '') return '未指定相册'
+  return albumName.value || '相册'
 })
 
 const headerSub = computed(() => {
+  if (albumId.value == null || albumId.value === '') return '请从相册进入照片地图'
   if (!points.value.length) return '暂无带定位的照片'
   if (estimatedCount.value) {
     return `共 ${points.value.length} 个定位点，其中 ${estimatedCount.value} 个为估计位置`
@@ -348,7 +375,7 @@ const headerSub = computed(() => {
 })
 
 const emptyText = computed(() => (
-  albumId.value ? '该相册暂无带定位的照片' : '暂无带定位的照片'
+  albumId.value ? '该相册暂无带定位的照片' : '请从相册进入照片地图'
 ))
 
 function goBack() {
@@ -359,19 +386,33 @@ function goBack() {
   proxy.$tab.navigatePage({ path: '/photos/index' })
 }
 
-function loadAlbums() {
-  return listAlbum({ pageNum: 1, pageSize: 500 }).then(res => {
-    albumOptions.value = res.rows || []
+function resolveAlbumIdFromRoute() {
+  const q = route.query.albumId
+  if (q == null || q === '') return undefined
+  const n = Number(q)
+  return Number.isNaN(n) ? undefined : n
+}
+
+function loadAlbumMeta() {
+  if (albumId.value == null || albumId.value === '') {
+    albumName.value = ''
+    return Promise.resolve()
+  }
+  return getAlbum(albumId.value).then(res => {
+    albumName.value = res.data?.albumName || ''
+  }).catch(() => {
+    albumName.value = ''
   })
 }
 
 function loadPoints() {
-  loading.value = true
-  const params = { includeEstimated: true }
-  if (albumId.value != null && albumId.value !== '') {
-    params.albumId = albumId.value
+  if (albumId.value == null || albumId.value === '') {
+    points.value = []
+    clearTrackData()
+    return
   }
-  listPhotoMapPoints(params).then(res => {
+  loading.value = true
+  listPhotoMapPoints({ includeEstimated: true, albumId: albumId.value }).then(res => {
     points.value = res.data || []
     // 仅首次/切换相册时自动适配视野，拖动微调不再 fitBounds
     nextTick(() => {
@@ -385,13 +426,82 @@ function loadPoints() {
   }).finally(() => {
     loading.value = false
   })
+  loadTrackIfNeeded()
 }
 
-function onAlbumChange() {
-  exitAiPickMode()
-  correctMode.value = false
-  editEst.value = null
-  loadPoints()
+function clearTrackData() {
+  trackPoints.value = []
+  trackGpxOverlays.value = []
+  trackColor.value = '#3B82F6'
+  trackName.value = ''
+  loadedTrackAlbumId.value = undefined
+}
+
+function pickAlbumTrack(rows, expectedAlbumId) {
+  // 只认当前相册的轨迹，避免列表未过滤时串到其他相册
+  const list = (Array.isArray(rows) ? rows : []).filter(t => sameAlbumId(t?.albumId, expectedAlbumId))
+  if (!list.length) return null
+  // 优先本相册照片轨（sourceType 空/photo），再按启用、点位数
+  const photoTracks = list.filter(t => {
+    const st = (t.sourceType || '').toLowerCase()
+    return !st || st === 'photo'
+  })
+  const base = photoTracks.length ? photoTracks : list
+  const enabled = base.filter(t => t && t.enabled !== 0)
+  const pool = enabled.length ? enabled : base
+  const withPoints = pool.filter(t => Number(t.pointCount) > 1)
+  return withPoints[0] || pool[0] || null
+}
+
+async function loadTrackIfNeeded() {
+  const seq = ++trackLoadSeq
+  const expectedAlbumId = albumId.value
+  if (!showTrackLine.value || expectedAlbumId == null || expectedAlbumId === '') {
+    clearTrackData()
+    if (seq === trackLoadSeq) trackLoading.value = false
+    return
+  }
+  // 切换相册时先清空，避免旧轨迹叠在新相册照片上
+  if (!sameAlbumId(loadedTrackAlbumId.value, expectedAlbumId)) {
+    clearTrackData()
+  }
+  trackLoading.value = true
+  try {
+    const listRes = await listTrack({
+      albumId: expectedAlbumId,
+      pageNum: 1,
+      pageSize: 50
+    })
+    if (seq !== trackLoadSeq || !sameAlbumId(albumId.value, expectedAlbumId)) return
+    const row = pickAlbumTrack(listRes.rows || [], expectedAlbumId)
+    if (!row?.trackId) {
+      clearTrackData()
+      return
+    }
+    const res = await getTrack(row.trackId)
+    if (seq !== trackLoadSeq || !sameAlbumId(albumId.value, expectedAlbumId)) return
+    const data = res.data || {}
+    const track = data.track || row
+    // 二次校验：轨迹必须属于当前相册
+    if (!sameAlbumId(track.albumId ?? row.albumId, expectedAlbumId)) {
+      clearTrackData()
+      return
+    }
+    trackPoints.value = data.points || []
+    trackGpxOverlays.value = data.gpxOverlays || []
+    trackColor.value = track.trackColor || '#3B82F6'
+    trackName.value = track.trackName || ''
+    loadedTrackAlbumId.value = expectedAlbumId
+  } catch (e) {
+    if (seq !== trackLoadSeq || !sameAlbumId(albumId.value, expectedAlbumId)) return
+    clearTrackData()
+  } finally {
+    if (seq === trackLoadSeq) trackLoading.value = false
+  }
+}
+
+function onTrackToggleChange() {
+  loadTrackIfNeeded()
 }
 
 function patchLocalPoint(photoId, patch) {
@@ -863,33 +973,28 @@ async function confirmAllToTrack() {
 }
 
 onMounted(() => {
-  const q = route.query.albumId
-  if (q != null && q !== '') {
-    const n = Number(q)
-    if (!Number.isNaN(n)) albumId.value = n
+  albumId.value = resolveAlbumIdFromRoute()
+  if (albumId.value == null) {
+    proxy.$modal.msgWarning('请从相册进入照片地图')
   }
-  loadAlbums().finally(() => loadPoints())
+  loadAlbumMeta().finally(() => loadPoints())
 })
 
 watch(() => route.query.albumId, (val) => {
-  if (val == null || val === '') {
-    if (albumId.value != null) {
-      albumId.value = undefined
-      editEst.value = null
-      correctMode.value = false
-      exitAiPickMode()
-      loadPoints()
-    }
+  const next = (val == null || val === '') ? undefined : Number(val)
+  const nextId = next != null && !Number.isNaN(next) ? next : undefined
+  if (sameAlbumId(albumId.value, nextId) || (albumId.value == null && nextId == null)) return
+  albumId.value = nextId
+  editEst.value = null
+  correctMode.value = false
+  exitAiPickMode()
+  clearTrackData()
+  if (nextId == null) {
+    albumName.value = ''
+    points.value = []
     return
   }
-  const n = Number(val)
-  if (!Number.isNaN(n) && albumId.value !== n) {
-    albumId.value = n
-    editEst.value = null
-    correctMode.value = false
-    exitAiPickMode()
-    loadPoints()
-  }
+  loadAlbumMeta().finally(() => loadPoints())
 })
 </script>
 
@@ -906,6 +1011,7 @@ watch(() => route.query.albumId, (val) => {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 10px 16px;
   background: #fff;
@@ -949,8 +1055,20 @@ watch(() => route.query.albumId, (val) => {
   color: #909399;
 }
 
-.album-select {
-  width: 200px;
+.track-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: #f5f7fa;
+}
+
+.track-toggle-label {
+  font-size: 13px;
+  color: #606266;
+  white-space: nowrap;
 }
 
 .est-banner {
@@ -1036,6 +1154,10 @@ watch(() => route.query.albumId, (val) => {
 .map-meta .stat.est {
   color: #e6a23c;
   font-weight: 600;
+}
+
+.map-meta .stat.track {
+  color: #3b82f6;
 }
 
 .est-edit-panel {

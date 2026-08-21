@@ -17,6 +17,11 @@ public interface IBizPhotoService extends IService<BizPhoto> {
     BizPhoto findByMd5(String md5);
 
     /**
+     * 按本地绝对路径查找未删除记录（磁盘扫描快速跳过用）
+     */
+    BizPhoto findByFilePath(String filePath);
+
+    /**
      * 匹配回收站中的同 MD5 记录（便于重新上传时复用）
      */
     BizPhoto findReusableByMd5(String md5);

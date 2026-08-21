@@ -490,7 +490,7 @@ function openRecycle() {
 }
 
 function openPhotoMap() {
-  proxy.$tab.navigatePage({ path: '/photos/map' })
+  proxy.$modal.msgWarning('请进入相册后再打开照片地图')
 }
 
 function handleDelete(item) {

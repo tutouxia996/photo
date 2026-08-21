@@ -306,10 +306,19 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             }
             counter.total++;
             int fileType = IMAGE_EXT.contains(ext) ? 1 : 2;
-            // 先写入「当前文件」，大视频 MD5/截帧前前端也能看到进度
+            // 先写入「当前文件」，大视频哈希/截帧前前端也能看到进度
             persistProgress(logId, counter, file.getName());
             try {
-                String md5 = md5Of(file);
+                File mediaFile = file;
+                String indexedPath = indexedFilePath(mediaFile);
+                // 同路径已入库：只更新/跳过，绝不因哈希算法变更再插一条
+                BizPhoto byPath = findPhotoByIndexedPath(indexedPath, mediaFile);
+                if (byPath != null) {
+                    handleExistingByPath(byPath, mediaFile, indexedPath, scanPath, fullScan, fileType, counter, logId);
+                    continue;
+                }
+                persistProgress(logId, counter, "哈希 " + mediaFile.getName());
+                String md5 = contentHash(mediaFile);
                 BizPhoto exists = photoService.findByMd5(md5);
                 if (exists != null) {
                     Long existsAlbumId = exists.getAlbumId();
@@ -323,32 +332,47 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                         if (fullScan && sameAlbum) {
                             try {
                                 if (fileType == 2) {
-                                    if (enrichExistingVideo(exists, file, scanPath)) {
+                                    if (enrichExistingVideo(exists, mediaFile, scanPath)) {
                                         counter.gpsUpdated++;
                                     }
                                 } else if (fileType == 1) {
-                                    enrichExistingImageThumb(exists, file, scanPath);
+                                    enrichExistingImageThumb(exists, mediaFile, scanPath);
                                 }
                             } catch (Exception enrichEx) {
-                                log.warn("补齐媒体元数据/缩略图失败 file={}", file.getAbsolutePath(), enrichEx);
+                                log.warn("补齐媒体元数据/缩略图失败 file={}", mediaFile.getAbsolutePath(), enrichEx);
                             }
                         }
+                        // 路径可能变更：回写当前路径/大小/哈希，便于下次路径跳过
+                        touchIndexedPath(exists, mediaFile, indexedPath, md5);
                         // 已在当前/其他有效相册中：按内容去重跳过
                         counter.skipped++;
                         continue;
                     }
                     // 所属相册已不在正常态：回收该记录到当前相册
-                    reclaimPhoto(exists, file, scanPath, md5, fileType);
+                    reclaimPhoto(exists, mediaFile, scanPath, md5, fileType);
                     counter.created++;
                     continue;
                 }
                 BizPhoto reusable = photoService.findReusableByMd5(md5);
                 if (reusable != null) {
-                    reclaimPhoto(reusable, file, scanPath, md5, fileType);
+                    reclaimPhoto(reusable, mediaFile, scanPath, md5, fileType);
                     counter.created++;
                     continue;
                 }
-                importFile(file, scanPath, md5, fileType);
+                // 哈希未命中后再查一次路径，防止并发/路径写法差异漏网
+                byPath = findPhotoByIndexedPath(indexedPath, mediaFile);
+                if (byPath != null) {
+                    handleExistingByPath(byPath, mediaFile, indexedPath, scanPath, fullScan, fileType, counter, logId);
+                    // 顺带把旧整文件 MD5 升级为当前哈希，避免以后再误判
+                    if (md5 != null && !md5.equals(byPath.getMd5())) {
+                        byPath.setMd5(md5);
+                        byPath.setUpdateTime(new Date());
+                        photoService.updateById(byPath);
+                    }
+                    continue;
+                }
+                persistProgress(logId, counter, "入库 " + mediaFile.getName());
+                importFile(mediaFile, scanPath, md5, fileType);
                 counter.created++;
             } catch (Exception ex) {
                 counter.failed++;
@@ -402,7 +426,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             } else if (fileType == 2) {
-                if (ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+                if (shouldCreateVideoThumb(file)
+                        && ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             }
@@ -414,7 +439,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         BizPhoto photo = new BizPhoto();
         photo.setAlbumId(scanPath.getDefaultAlbumId());
         photo.setFileName(relativeName);
-        photo.setFilePath(file.getAbsolutePath());
+        photo.setFilePath(indexedFilePath(file));
         photo.setFileUrl(fileUrl);
         photo.setThumbUrl(thumbUrl);
         photo.setFileSize(file.length());
@@ -448,7 +473,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             } else if (fileType == 2) {
-                if (ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+                if (shouldCreateVideoThumb(file)
+                        && ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             }
@@ -459,7 +485,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         Long oldAlbumId = photo.getAlbumId();
         photo.setAlbumId(scanPath.getDefaultAlbumId());
         photo.setFileName(relativeName);
-        photo.setFilePath(file.getAbsolutePath());
+        photo.setFilePath(indexedFilePath(file));
         photo.setFileUrl(fileUrl);
         photo.setThumbUrl(thumbUrl);
         photo.setFileSize(file.length());
@@ -565,7 +591,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 dirty = true;
             }
         }
-        if (!hasUsableThumb(photo)) {
+        if (!hasUsableThumb(photo) && shouldCreateVideoThumb(file)) {
             String relativeName = file.getName();
             File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
             String thumbName = "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg";
@@ -639,17 +665,189 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         return name.substring(idx + 1).toLowerCase(Locale.ROOT);
     }
 
+    /**
+     * 同路径已入库：路径+大小未变则跳过读盘；大小变了则就地更新，绝不新建重复行。
+     */
+    private void handleExistingByPath(BizPhoto exists, File file, String indexedPath,
+                                      BizScanPath scanPath, boolean fullScan, int fileType,
+                                      ScanCounter counter, Long logId) throws Exception {
+        Long existsAlbumId = exists.getAlbumId();
+        boolean sameAlbum = existsAlbumId != null
+                && existsAlbumId.equals(scanPath.getDefaultAlbumId());
+        BizAlbum owner = existsAlbumId == null ? null : albumService.getById(existsAlbumId);
+        boolean albumAlive = owner != null
+                && (owner.getDeleted() == null || owner.getDeleted() == AlbumDeleted.NORMAL);
+
+        // 相册已删：回收到当前相册（仍是同一条记录）
+        if (!(sameAlbum || albumAlive)) {
+            String md5 = contentHash(file);
+            reclaimPhoto(exists, file, scanPath, md5, fileType);
+            counter.created++;
+            return;
+        }
+
+        Long storedSize = exists.getFileSize();
+        boolean sizeSame = storedSize != null && storedSize.longValue() == file.length();
+        if (!sizeSame) {
+            // 同路径文件被替换：刷新元数据与哈希，不新增
+            persistProgress(logId, counter, "更新 " + file.getName());
+            String md5 = contentHash(file);
+            reclaimPhoto(exists, file, scanPath, md5, fileType);
+            counter.created++;
+            return;
+        }
+
+        // 统一路径写法，便于下次精确命中
+        if (indexedPath != null && !indexedPath.equals(exists.getFilePath())) {
+            exists.setFilePath(indexedPath);
+            exists.setUpdateTime(new Date());
+            photoService.updateById(exists);
+        }
+
+        if (fullScan && sameAlbum) {
+            try {
+                if (fileType == 2) {
+                    if (enrichExistingVideo(exists, file, scanPath)) {
+                        counter.gpsUpdated++;
+                    }
+                } else if (fileType == 1) {
+                    enrichExistingImageThumb(exists, file, scanPath);
+                }
+            } catch (Exception enrichEx) {
+                log.warn("路径命中后补齐元数据失败 file={}", file.getAbsolutePath(), enrichEx);
+            }
+        }
+        counter.skipped++;
+    }
+
+    private BizPhoto findPhotoByIndexedPath(String indexedPath, File file) {
+        if (indexedPath != null && !indexedPath.isEmpty()) {
+            BizPhoto hit = photoService.findByFilePath(indexedPath);
+            if (hit != null) {
+                return hit;
+            }
+        }
+        String abs = file.getAbsolutePath();
+        if (abs != null && !abs.equals(indexedPath)) {
+            return photoService.findByFilePath(abs);
+        }
+        return null;
+    }
+
+    /** 入库统一用规范路径，减少 Windows 路径写法不一致导致漏匹配 */
+    private static String indexedFilePath(File file) {
+        if (file == null) {
+            return null;
+        }
+        try {
+            return file.getCanonicalPath();
+        } catch (Exception e) {
+            return file.getAbsolutePath();
+        }
+    }
+
+    /** 内容去重命中后回写路径/大小/哈希，便于下次路径跳过 */
+    private void touchIndexedPath(BizPhoto photo, File file, String indexedPath, String md5) {
+        if (photo == null || file == null || photo.getPhotoId() == null) {
+            return;
+        }
+        String abs = indexedPath != null ? indexedPath : indexedFilePath(file);
+        Long size = file.length();
+        boolean pathChanged = photo.getFilePath() == null || !photo.getFilePath().equals(abs);
+        boolean sizeChanged = photo.getFileSize() == null || photo.getFileSize().longValue() != size;
+        boolean md5Changed = md5 != null && !md5.equals(photo.getMd5());
+        if (!pathChanged && !sizeChanged && !md5Changed) {
+            return;
+        }
+        photo.setFilePath(abs);
+        photo.setFileSize(size);
+        if (md5Changed) {
+            photo.setMd5(md5);
+        }
+        photo.setUpdateTime(new Date());
+        photoService.updateById(photo);
+    }
+
+    private boolean shouldCreateVideoThumb(File file) {
+        AlbumProperties.ScanConfig cfg = albumProperties.getScan();
+        if (cfg == null) {
+            return true;
+        }
+        long limit = cfg.getSkipVideoThumbAboveBytes();
+        if (limit <= 0) {
+            return true;
+        }
+        return file.length() <= limit;
+    }
+
+    /**
+     * 小文件整文件 MD5；大文件采样哈希（前缀 smd5:），避免 几十 GB 视频整盘读取。
+     */
+    private String contentHash(File file) throws Exception {
+        AlbumProperties.ScanConfig cfg = albumProperties.getScan();
+        long threshold = cfg == null ? 0L : cfg.getSampleHashThresholdBytes();
+        long size = file.length();
+        if (threshold <= 0 || size <= threshold) {
+            return md5Of(file);
+        }
+        long chunk = cfg.getSampleHashChunkBytes();
+        if (chunk <= 0) {
+            chunk = 4L * 1024 * 1024;
+        }
+        return sampleMd5(file, size, chunk);
+    }
+
+    private static String sampleMd5(File file, long size, long chunk) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("MD5");
+        // 纳入体积，降低「同头尾不同中间」碰撞
+        md.update(Long.toString(size).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            updateSample(md, raf, 0L, chunk, size);
+            if (size > chunk * 2) {
+                long mid = Math.max(0L, (size - chunk) / 2);
+                updateSample(md, raf, mid, chunk, size);
+            }
+            if (size > chunk) {
+                updateSample(md, raf, Math.max(0L, size - chunk), chunk, size);
+            }
+        }
+        return "smd5:" + toHex(md.digest());
+    }
+
+    private static void updateSample(MessageDigest md, java.io.RandomAccessFile raf,
+                                     long offset, long chunk, long size) throws Exception {
+        long len = Math.min(chunk, size - offset);
+        if (len <= 0) {
+            return;
+        }
+        raf.seek(offset);
+        byte[] buf = new byte[(int) Math.min(1024 * 1024, len)];
+        long remaining = len;
+        while (remaining > 0) {
+            int n = raf.read(buf, 0, (int) Math.min(buf.length, remaining));
+            if (n < 0) {
+                break;
+            }
+            md.update(buf, 0, n);
+            remaining -= n;
+        }
+    }
+
     private static String md5Of(File file) throws Exception {
         MessageDigest md = MessageDigest.getInstance("MD5");
         try (FileInputStream in = new FileInputStream(file)) {
-            byte[] buf = new byte[8192];
+            // 1MB 缓冲，大图/中等视频整文件哈希更快
+            byte[] buf = new byte[1024 * 1024];
             int len;
             while ((len = in.read(buf)) != -1) {
                 md.update(buf, 0, len);
             }
         }
-        byte[] digest = md.digest();
-        StringBuilder sb = new StringBuilder(32);
+        return toHex(md.digest());
+    }
+
+    private static String toHex(byte[] digest) {
+        StringBuilder sb = new StringBuilder(digest.length * 2);
         for (byte b : digest) {
             sb.append(String.format("%02x", b));
         }

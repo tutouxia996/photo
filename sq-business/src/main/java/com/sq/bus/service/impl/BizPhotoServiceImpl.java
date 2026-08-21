@@ -65,6 +65,18 @@ public class BizPhotoServiceImpl extends ServiceImpl<BizPhotoMapper, BizPhoto> i
     }
 
     @Override
+    public BizPhoto findByFilePath(String filePath) {
+        if (filePath == null || filePath.isEmpty()) {
+            return null;
+        }
+        return getOne(new LambdaQueryWrapper<BizPhoto>()
+                .eq(BizPhoto::getFilePath, filePath)
+                .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                .orderByDesc(BizPhoto::getPhotoId)
+                .last("limit 1"), false);
+    }
+
+    @Override
     public BizPhoto findReusableByMd5(String md5) {
         if (md5 == null || md5.isEmpty()) {
             return null;
