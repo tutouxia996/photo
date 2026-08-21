@@ -1,4 +1,4 @@
-import { createWebHistory, createRouter } from 'vue-router'
+import { createWebHashHistory, createRouter } from 'vue-router'
 /* Layout */
 import Layout from '@/layout'
 
@@ -195,7 +195,8 @@ export const dynamicRoutes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // 合并进后端 jar 单端口部署时用 hash，避免刷新 404、也免与 API 路径冲突
+  history: createWebHashHistory(),
   routes: constantRoutes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) {

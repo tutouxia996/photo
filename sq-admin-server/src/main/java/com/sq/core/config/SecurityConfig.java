@@ -110,8 +110,10 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .authorizeRequests()
                 // 对于登录login 注册register 验证码captchaImage 允许匿名访问
                 .antMatchers("/login", "/register", "/captchaImage", "/system/publicKey").permitAll()
-                // 静态资源，可匿名访问
-                .antMatchers(HttpMethod.GET, "/", "/*.html", "/**/*.html", "/**/*.css", "/**/*.js", "/profile/**").permitAll()
+                // 静态资源 / 前端入口，可匿名访问（合并部署）
+                .antMatchers(HttpMethod.GET, "/", "/index.html", "/assets/**", "/*.html", "/**/*.html",
+                        "/**/*.css", "/**/*.js", "/**/*.map", "/**/*.ico", "/**/*.png", "/**/*.svg",
+                        "/**/*.woff", "/**/*.woff2", "/**/*.ttf", "/profile/**").permitAll()
                 // 相册媒体预览（img 标签无法带 Token）
                 .antMatchers(HttpMethod.GET, "/album/photo/media/**", "/album/files/**").permitAll()
                 .antMatchers("/swagger-ui.html", "/swagger-resources/**", "/webjars/**", "/*/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/doc.html", "/druid/**").permitAll()
