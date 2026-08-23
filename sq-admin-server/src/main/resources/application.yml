@@ -147,6 +147,7 @@ album:
     minWidth: 1920
     minHeight: 1080
     minFps: 30
+    enqueueOnScan: true
   # 磁盘扫描：大视频优化（路径跳过 / 采样哈希 / 超大文件不截帧）
   scan:
     pathSizeSkip: true

@@ -105,6 +105,8 @@ public class AlbumProperties {
         private int minHeight = 1080;
         /** 源片帧率≥该值才可能转码（默认 30fps） */
         private int minFps = 30;
+        /** 磁盘扫描完成后，对本次扫描到的视频自动排队转码 */
+        private boolean enqueueOnScan = true;
         /**
          * 转码超时基准：每 GB 源文件允许的秒数（另有下限/上限）。
          * 大疆 4K120 软解很慢，默认偏宽松。

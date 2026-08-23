@@ -245,7 +245,13 @@ async function handleRun(row, fullScan) {
     if (Number(scanProgress.status) === 2) {
       proxy.$modal.msgError(scanProgress.message || '扫描失败')
     } else {
-      proxy.$modal.msgSuccess(`扫描完成，新增 ${scanProgress.newCount}，跳过 ${scanProgress.skipCount}`)
+      if (scanProgress.message && scanProgress.message.includes('视频转码')) {
+        videoProxyStore.startPolling()
+      }
+      const proxyHint = scanProgress.message && scanProgress.message.includes('视频转码')
+        ? '，转码进度见右下角'
+        : ''
+      proxy.$modal.msgSuccess(`扫描完成，新增 ${scanProgress.newCount}，跳过 ${scanProgress.skipCount}${proxyHint}`)
     }
     getList()
   } catch (e) {

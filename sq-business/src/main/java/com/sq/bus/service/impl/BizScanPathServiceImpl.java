@@ -39,7 +39,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -216,6 +216,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 log.warn("自动同步相册轨迹失败 albumId={}", scanPath.getDefaultAlbumId(), e);
             }
 
+            triggerScanVideoProxyEnqueue(scanPath, counter);
+
             try {
                 scanPath.setLastScanTime(new Date());
                 scanPath.setUpdateTime(new Date());
@@ -235,6 +237,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     String summary = failMsg.length() == 0
                             ? "扫描完成"
                             : ("扫描完成，部分失败：" + failMsg);
+                    if (counter.proxyEnqueued > 0) {
+                        summary = summary + "；已排队 " + counter.proxyEnqueued + " 个视频转码";
+                    }
                     finished.setMessage(trimScanMessage(summary));
                     finished.setEndTime(new Date());
                     try {
@@ -372,18 +377,21 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                         }
                         // 路径可能变更：回写当前路径/大小/哈希，便于下次路径跳过
                         touchIndexedPath(exists, mediaFile, indexedPath, md5);
+                        if (fileType == 2) {
+                            noteVideoForProxy(exists, counter);
+                        }
                         // 已在当前/其他有效相册中：按内容去重跳过
                         counter.skipped++;
                         continue;
                     }
                     // 所属相册已不在正常态：回收该记录到当前相册
-                    reclaimPhoto(exists, mediaFile, scanPath, md5, fileType);
+                    reclaimPhoto(exists, mediaFile, scanPath, md5, fileType, counter);
                     counter.created++;
                     continue;
                 }
                 BizPhoto reusable = photoService.findReusableByMd5(md5);
                 if (reusable != null) {
-                    reclaimPhoto(reusable, mediaFile, scanPath, md5, fileType);
+                    reclaimPhoto(reusable, mediaFile, scanPath, md5, fileType, counter);
                     counter.created++;
                     continue;
                 }
@@ -400,7 +408,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                     continue;
                 }
                 persistProgress(logId, counter, "入库 " + mediaFile.getName());
-                importFile(mediaFile, scanPath, md5, fileType);
+                importFile(mediaFile, scanPath, md5, fileType, counter);
                 counter.created++;
             } catch (Exception ex) {
                 counter.failed++;
@@ -435,7 +443,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         scanLogService.updateById(progress);
     }
 
-    private void importFile(File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
+    private void importFile(File file, BizScanPath scanPath, String md5, int fileType, ScanCounter counter) throws Exception {
         MediaMeta meta = parseMediaMeta(file, fileType);
         String relativeName = file.getName();
         String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
@@ -482,9 +490,11 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         photo.setCreateTime(new Date());
         PhotoFieldUtils.clamp(photo);
         photoService.save(photo);
+        noteVideoForProxy(photo, counter);
     }
 
-    private void reclaimPhoto(BizPhoto photo, File file, BizScanPath scanPath, String md5, int fileType) throws Exception {
+    private void reclaimPhoto(BizPhoto photo, File file, BizScanPath scanPath, String md5, int fileType,
+                              ScanCounter counter) throws Exception {
         MediaMeta meta = parseMediaMeta(file, fileType);
         String relativeName = file.getName();
         String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
@@ -530,6 +540,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (oldAlbumId != null && !oldAlbumId.equals(scanPath.getDefaultAlbumId())) {
             albumService.refreshAlbumStats(oldAlbumId);
         }
+        noteVideoForProxy(photo, counter);
     }
 
     /** 图片用 EXIF；视频用 ffprobe（避免 metadata-extractor 卡死） */
@@ -825,7 +836,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (eligible == 0 && totalVideos > 0) {
             result.put("message", "当前没有符合转码条件的视频，proxy 目录会保持为空");
         } else if (eligible > 0) {
-            result.put("message", "共 " + eligible + " 个视频可转码，请在扫描页点「一键转码」");
+            result.put("message", "共 " + eligible + " 个视频可转码（扫描完成后会自动排队，也可手动一键转码）");
         } else {
             result.put("message", "该目录下没有已入库视频");
         }
@@ -872,8 +883,6 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private void runEnqueueVideoProxies(List<BizScanPath> paths, boolean force) {
-        String[] qualities = new String[]{"720p", "1080p"};
-        int fps30 = 30;
         for (BizScanPath scanPath : paths) {
             if (scanPath.getDefaultAlbumId() == null) {
                 continue;
@@ -886,26 +895,86 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 continue;
             }
             for (BizPhoto photo : videos) {
-                if (!force && !videoProxyService.needsVideoProxy(photo.getPhotoId())) {
-                    videoProxyService.onBatchVideoSkipped();
-                    continue;
-                }
-                for (String quality : qualities) {
-                    try {
-                        if (!force) {
-                            VideoProxyStatus before = videoProxyService.status(photo.getPhotoId(), quality, fps30);
-                            if (before != null && "ready".equals(before.getStatus())) {
-                                continue;
-                            }
-                        }
-                        videoProxyService.ensure(photo.getPhotoId(), quality, fps30, force);
-                    } catch (Exception e) {
-                        log.warn("排队视频浏览档失败 photoId={} {}30 err={}",
-                                photo.getPhotoId(), quality, e.toString());
-                    }
-                }
+                enqueuePhotoVideoProxies(photo, force);
             }
         }
+    }
+
+    private void runEnqueueVideoProxiesForPhotoIds(List<Long> photoIds, boolean force) {
+        if (photoIds == null || photoIds.isEmpty()) {
+            return;
+        }
+        for (Long photoId : photoIds) {
+            if (photoId == null) {
+                continue;
+            }
+            enqueuePhotoVideoProxies(photoService.getById(photoId), force);
+        }
+    }
+
+    private void enqueuePhotoVideoProxies(BizPhoto photo, boolean force) {
+        if (photo == null || photo.getPhotoId() == null) {
+            return;
+        }
+        if (photo.getFileType() == null || photo.getFileType() != 2) {
+            return;
+        }
+        if (photo.getDeleted() != null && photo.getDeleted() != AlbumDeleted.NORMAL) {
+            return;
+        }
+        if (!force && !videoProxyService.needsVideoProxy(photo.getPhotoId())) {
+            videoProxyService.onBatchVideoSkipped();
+            return;
+        }
+        String[] qualities = new String[]{"720p", "1080p"};
+        int fps30 = 30;
+        for (String quality : qualities) {
+            try {
+                if (!force) {
+                    VideoProxyStatus before = videoProxyService.status(photo.getPhotoId(), quality, fps30);
+                    if (before != null && "ready".equals(before.getStatus())) {
+                        continue;
+                    }
+                }
+                videoProxyService.ensure(photo.getPhotoId(), quality, fps30, force);
+            } catch (Exception e) {
+                log.warn("排队视频浏览档失败 photoId={} {}30 err={}",
+                        photo.getPhotoId(), quality, e.toString());
+            }
+        }
+    }
+
+    private boolean isEnqueueOnScan() {
+        AlbumProperties.VideoProxy cfg = albumProperties.getVideoProxy();
+        return cfg == null || cfg.isEnqueueOnScan();
+    }
+
+    private void noteVideoForProxy(BizPhoto photo, ScanCounter counter) {
+        if (!isEnqueueOnScan() || photo == null || photo.getPhotoId() == null) {
+            return;
+        }
+        if (photo.getFileType() == null || photo.getFileType() != 2) {
+            return;
+        }
+        counter.scanVideoPhotoIds.add(photo.getPhotoId());
+    }
+
+    private void triggerScanVideoProxyEnqueue(BizScanPath scanPath, ScanCounter counter) {
+        if (!isEnqueueOnScan() || counter.scanVideoPhotoIds.isEmpty()) {
+            return;
+        }
+        int n = counter.scanVideoPhotoIds.size();
+        log.info("扫描后排队视频转码 pathId={} videos={}", scanPath.getPathId(), n);
+        videoProxyService.beginBatch();
+        List<Long> photoIds = new ArrayList<Long>(counter.scanVideoPhotoIds);
+        threadPoolTaskExecutor.execute(() -> {
+            try {
+                runEnqueueVideoProxiesForPhotoIds(photoIds, false);
+            } finally {
+                videoProxyService.endBatch();
+            }
+        });
+        counter.proxyEnqueued = n;
     }
 
     private boolean hasUsableThumb(BizPhoto photo) {
@@ -1013,7 +1082,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         // 相册已删：回收到当前相册（仍是同一条记录）
         if (!(sameAlbum || albumAlive)) {
             String md5 = contentHash(file);
-            reclaimPhoto(exists, file, scanPath, md5, fileType);
+            reclaimPhoto(exists, file, scanPath, md5, fileType, counter);
             counter.created++;
             return;
         }
@@ -1024,7 +1093,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             // 同路径文件被替换：刷新元数据与哈希，不新增
             persistProgress(logId, counter, "更新 " + file.getName());
             String md5 = contentHash(file);
-            reclaimPhoto(exists, file, scanPath, md5, fileType);
+            reclaimPhoto(exists, file, scanPath, md5, fileType, counter);
             counter.created++;
             return;
         }
@@ -1052,6 +1121,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             } catch (Exception enrichEx) {
                 log.warn("路径命中后补齐元数据失败 file={}", file.getAbsolutePath(), enrichEx);
             }
+        }
+        if (fileType == 2) {
+            noteVideoForProxy(exists, counter);
         }
         counter.skipped++;
     }
@@ -1198,6 +1270,10 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         private int failed;
         /** 全量扫描补齐视频 GPS 的数量 */
         private int gpsUpdated;
+        /** 扫描结束后排队转码的视频数 */
+        private int proxyEnqueued;
+        /** 本次扫描遍历到的视频 photoId（去重） */
+        private final Set<Long> scanVideoPhotoIds = new LinkedHashSet<Long>();
         private long lastPersistAt;
     }
 }
