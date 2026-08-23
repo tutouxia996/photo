@@ -60,14 +60,8 @@
                 alt=""
                 @error="markThumbBroken(scope.row)"
               />
-              <div v-else class="video-thumb-box">
-                <video
-                  class="video-thumb"
-                  :src="originalSrc(scope.row)"
-                  muted
-                  preload="metadata"
-                  playsinline
-                />
+              <div v-else class="video-thumb-box" title="无封面">
+                <span class="thumb-fallback">视频</span>
               </div>
               <span class="thumb-badge">视频</span>
             </template>
@@ -132,12 +126,23 @@
         >
           <div v-if="previewIsVideo" class="album-photo-viewer__video-wrap">
             <video
+              :key="videoPlayerKey"
               class="album-photo-viewer__video"
               :src="previewUrl"
               controls
               autoplay
               playsinline
             />
+            <div class="album-photo-viewer__video-toolbar" @click.stop>
+              <label>
+                清晰度
+                <select v-model="videoQuality" @change="onAdminVideoQualityChange">
+                  <option value="720p">720p</option>
+                  <option value="1080p">1080p</option>
+                  <option value="original">原片</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div v-else ref="previewLayerRef" class="album-photo-viewer__layer">
             <img
@@ -175,7 +180,8 @@
 import { Close, ZoomIn, ZoomOut, RefreshRight, FullScreen } from '@element-plus/icons-vue'
 import { isExternal } from '@/utils/validate'
 import { listAlbum } from '@/api/album/album'
-import { listPhoto, delPhoto, uploadPhoto } from '@/api/album/photo'
+import { listPhoto, delPhoto, uploadPhoto, getVideoProxyStatus } from '@/api/album/photo'
+import { videoPlaySrc } from '@/utils/videoProxy'
 
 const { proxy } = getCurrentInstance()
 const photoList = ref([])
@@ -192,6 +198,11 @@ const previewVisible = ref(false)
 const previewUrl = ref('')
 const previewName = ref('')
 const previewIsVideo = ref(false)
+const previewPhotoId = ref(null)
+const videoQuality = ref('1080p')
+const VIDEO_PLAY_FPS = 30
+const videoPlayerKey = ref('')
+let videoProxyReqSeq = 0
 const previewLayerRef = ref()
 const previewZoomLabelRef = ref()
 const previewTransform = { scale: 1, deg: 0 }
@@ -233,6 +244,35 @@ function thumbSrc(item) {
 function originalSrc(item) {
   if (!item?.photoId) return ''
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
+}
+
+async function reloadAdminVideoProxy() {
+  const photoId = previewPhotoId.value
+  if (!previewIsVideo.value || !photoId) return
+  const seq = ++videoProxyReqSeq
+  const quality = videoQuality.value
+  if (quality === 'original') {
+    previewUrl.value = videoPlaySrc(photoId, 'original')
+    videoPlayerKey.value = `${photoId}-original`
+    return
+  }
+  try {
+    const res = await getVideoProxyStatus(photoId, quality, VIDEO_PLAY_FPS)
+    if (seq !== videoProxyReqSeq) return
+    const data = res?.data || res || {}
+    if (data.status === 'ready') {
+      previewUrl.value = videoPlaySrc(photoId, quality, VIDEO_PLAY_FPS)
+      videoPlayerKey.value = `${photoId}-${quality}-30`
+      return
+    }
+  } catch (_) { /* fallback original */ }
+  if (seq !== videoProxyReqSeq) return
+  previewUrl.value = videoPlaySrc(photoId, 'original')
+  videoPlayerKey.value = `${photoId}-original-fallback`
+}
+
+function onAdminVideoQualityChange() {
+  reloadAdminVideoProxy()
 }
 
 function hasVideoThumb(item) {
@@ -321,11 +361,17 @@ function openPreview(item) {
   if (!item?.photoId) return
   const isVideo = item.fileType === 2
   previewIsVideo.value = isVideo
-  previewUrl.value = originalSrc(item)
+  previewPhotoId.value = item.photoId
   previewName.value = item.fileName || ''
   previewVisible.value = true
   setPreviewPageLock(true)
   resetPreviewTransform()
+  if (isVideo) {
+    videoQuality.value = '1080p'
+    reloadAdminVideoProxy()
+  } else {
+    previewUrl.value = originalSrc(item)
+  }
 }
 
 function closePreview() {
@@ -333,6 +379,7 @@ function closePreview() {
   previewUrl.value = ''
   previewName.value = ''
   previewIsVideo.value = false
+  previewPhotoId.value = null
   previewTransform.scale = 1
   previewTransform.deg = 0
   setPreviewPageLock(false)
@@ -453,14 +500,14 @@ loadAlbums().finally(() => getList())
   width: 56px;
   height: 56px;
   background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.video-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  pointer-events: none;
+.thumb-fallback {
+  color: #bbb;
+  font-size: 11px;
 }
 
 .thumb-badge {
@@ -541,6 +588,7 @@ loadAlbums().finally(() => getList())
 }
 
 .album-photo-viewer__video-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -550,11 +598,49 @@ loadAlbums().finally(() => getList())
 
 .album-photo-viewer__video {
   max-width: min(92%, 1400px);
-  max-height: min(86%, 86vh);
+  max-height: min(78%, 78vh);
   width: auto;
   height: auto;
   outline: none;
   background: #000;
+}
+
+.album-photo-viewer__video-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 22px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 13px;
+
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+
+    &.is-disabled {
+      opacity: 0.45;
+    }
+  }
+
+  select {
+    border: none;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+
+    option {
+      color: #111;
+    }
+  }
 }
 
 .album-photo-viewer__toolbar {

@@ -24,10 +24,18 @@ public class AlbumProperties {
     /** 缩略图缓存目录 */
     private String thumbPath = "D:/uploadPath/album/cache/thumb";
 
+    /**
+     * 视频浏览代理片缓存目录（与原片分离，不入库、不在相册列表展示）。
+     * 例如 1080p30.mp4，可随时删除后按需再生成。
+     */
+    private String proxyPath = "D:/uploadPath/album/cache/proxy";
+
     /** 本地文件访问根目录（资源映射） */
     private String localRoot = "D:/uploadPath/album";
 
     private Thumb thumb = new Thumb();
+
+    private VideoProxy videoProxy = new VideoProxy();
 
     private MapConfig map = new MapConfig();
 
@@ -76,6 +84,34 @@ public class AlbumProperties {
         private int smallWidth = 300;
         private int mediumWidth = 800;
         private int largeWidth = 1920;
+    }
+
+    @Data
+    public static class VideoProxy {
+        /** 同时转码任务数（家用机器建议 1） */
+        private int concurrency = 1;
+        /** 720p CRF，越大体积越小 */
+        private int crf720 = 26;
+        /** 1080p CRF */
+        private int crf1080 = 23;
+        /** x264 preset：ultrafast～veryslow */
+        private String preset = "veryfast";
+        /** 音频码率 */
+        private String audioBitrate = "128k";
+        /** 超过该大小（字节）才可能转码；0 表示不限制体积 */
+        private long minBytes = 0L;
+        /** 分辨率下限：宽≥minWidth 或 高≥minHeight（默认 1080p） */
+        private int minWidth = 1920;
+        private int minHeight = 1080;
+        /** 源片帧率≥该值才可能转码（默认 30fps） */
+        private int minFps = 30;
+        /**
+         * 转码超时基准：每 GB 源文件允许的秒数（另有下限/上限）。
+         * 大疆 4K120 软解很慢，默认偏宽松。
+         */
+        private long timeoutSecondsPerGb = 2400L;
+        private long timeoutMinSeconds = 1800L;
+        private long timeoutMaxSeconds = 43200L;
     }
 
     @Data

@@ -45,6 +45,33 @@ export function repairVideoThumbs(pathId, force = false) {
   })
 }
 
+/** 查询视频转码资格统计（不入队） */
+export function getVideoProxyStats(pathId) {
+  const params = {}
+  if (pathId != null) params.pathId = pathId
+  return request({
+    url: '/album/scan/videoProxyStats',
+    method: 'get',
+    params,
+    timeout: 120000,
+    showActionLoading: false
+  })
+}
+
+/** 一键排队生成视频浏览档（720p30/1080p30）；后台转码，立即返回 */
+export function generateVideoProxies(pathId, force = false) {
+  const params = {}
+  if (pathId != null) params.pathId = pathId
+  if (force) params.force = true
+  return request({
+    url: '/album/scan/generateVideoProxies',
+    method: 'post',
+    params,
+    timeout: 30000,
+    showActionLoading: false
+  })
+}
+
 export function listScanLog(query) {
   return request({ url: '/album/scan/log/list', method: 'get', params: query })
 }

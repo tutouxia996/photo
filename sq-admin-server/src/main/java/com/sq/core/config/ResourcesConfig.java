@@ -41,6 +41,10 @@ public class ResourcesConfig implements WebMvcConfigurer {
         registry.addResourceHandler("/album/files/thumb/**")
                 .addResourceLocations(toFileLocation(albumProperties.getThumbPath()))
                 .setCacheControl(albumCache);
+        // 视频浏览代理片（与原片分离；列表不扫此目录）
+        registry.addResourceHandler("/album/files/proxy/**")
+                .addResourceLocations(toFileLocation(albumProperties.getProxyPath()))
+                .setCacheControl(albumCache);
         registry.addResourceHandler("/album/files/upload/**")
                 .addResourceLocations(toFileLocation(albumProperties.getUploadPath()))
                 .setCacheControl(albumCache);

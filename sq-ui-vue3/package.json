@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:prod": "vite build",
+    "build:prod": "node --experimental-vm-modules ./node_modules/vite/bin/vite.js build",
     "build:stage": "vite build --mode staging",
     "preview": "vite preview"
   },

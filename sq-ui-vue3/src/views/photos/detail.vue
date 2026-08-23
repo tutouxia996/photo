@@ -490,14 +490,25 @@
           </div>
           <div v-else-if="currentMedia" class="media-video-wrap">
             <video
-              :key="currentMedia.photoId"
+              ref="mediaVideoRef"
+              :key="videoPlayerKey"
               class="media-video"
-              :src="originalSrc(currentMedia)"
+              :src="videoPlayUrl"
               controls
               autoplay
               playsinline
               @click.stop
             />
+            <div class="media-video-toolbar" @click.stop>
+              <label class="media-video-field">
+                <span>清晰度</span>
+                <select v-model="videoQuality" @change="onVideoQualityChange">
+                  <option value="720p">720p</option>
+                  <option value="1080p">1080p</option>
+                  <option value="original">原片</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           <div
@@ -728,7 +739,8 @@ import { getToken } from '@/utils/auth'
 import { saveAs } from 'file-saver'
 import axios from 'axios'
 import { getAlbum, updateAlbum, listAlbum, addAlbum } from '@/api/photos/album'
-import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch } from '@/api/photos/photo'
+import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch, getVideoProxyStatus } from '@/api/photos/photo'
+import { videoPlaySrc } from '@/utils/videoProxy'
 import usePhotoScoreStore from '@/store/modules/photoScore'
 
 const { proxy } = getCurrentInstance()
@@ -1053,6 +1065,80 @@ function thumbSrc(item) {
 function originalSrc(item) {
   if (!item) return ''
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
+}
+
+/** 视频浏览默认 1080p30；无浏览档则直接播原片 */
+const videoQuality = ref('1080p')
+const VIDEO_PLAY_FPS = 30
+const videoPlayUrl = ref('')
+const videoPlayerKey = ref('')
+const mediaVideoRef = ref()
+let videoProxyReqSeq = 0
+let pendingVideoSeek = null
+
+function captureVideoTime() {
+  const el = mediaVideoRef.value
+  if (el && Number.isFinite(el.currentTime) && el.currentTime > 0.2) {
+    pendingVideoSeek = el.currentTime
+  }
+}
+
+function applyPendingSeek() {
+  const el = mediaVideoRef.value
+  if (!el || pendingVideoSeek == null) return
+  const t = pendingVideoSeek
+  pendingVideoSeek = null
+  const onMeta = () => {
+    try {
+      el.currentTime = t
+    } catch (_) { /* ignore */ }
+  }
+  if (el.readyState >= 1) onMeta()
+  else el.addEventListener('loadedmetadata', onMeta, { once: true })
+}
+
+function playOriginalNow(photoId) {
+  videoPlayUrl.value = videoPlaySrc(photoId, 'original')
+  videoPlayerKey.value = `${photoId}-original-fallback`
+  nextTick(() => applyPendingSeek())
+}
+
+async function reloadVideoProxy() {
+  const item = currentMedia.value
+  if (!item || item.fileType !== 2 || !item.photoId) {
+    videoPlayUrl.value = ''
+    return
+  }
+  const seq = ++videoProxyReqSeq
+  const quality = videoQuality.value
+
+  if (quality === 'original') {
+    videoPlayUrl.value = videoPlaySrc(item.photoId, 'original')
+    videoPlayerKey.value = `${item.photoId}-original`
+    nextTick(() => applyPendingSeek())
+    return
+  }
+
+  try {
+    const res = await getVideoProxyStatus(item.photoId, quality, VIDEO_PLAY_FPS)
+    if (seq !== videoProxyReqSeq) return
+    const data = res?.data || res || {}
+    if (data.status === 'ready') {
+      videoPlayUrl.value = videoPlaySrc(item.photoId, quality, VIDEO_PLAY_FPS)
+      videoPlayerKey.value = `${item.photoId}-${quality}-30-${data.fileSize || 0}`
+      nextTick(() => applyPendingSeek())
+      return
+    }
+  } catch (_) {
+    /* 查状态失败则播原片 */
+  }
+  if (seq !== videoProxyReqSeq) return
+  playOriginalNow(item.photoId)
+}
+
+function onVideoQualityChange() {
+  captureVideoTime()
+  reloadVideoProxy()
 }
 
 /** 秒 -> 0:16 / 1:02:03 */
@@ -1907,12 +1993,16 @@ function openViewer(item) {
   const idx = photoList.value.findIndex(p => p.photoId === item.photoId)
   mediaIndex.value = idx >= 0 ? idx : 0
   resetImageTransform()
+  videoQuality.value = '1080p'
+  pendingVideoSeek = null
   mediaVisible.value = true
+  nextTick(() => reloadVideoProxy())
 }
 
 function closeMedia() {
   detailOpen.value = false
   mediaVisible.value = false
+  videoPlayUrl.value = ''
   resetImageTransform()
 }
 
@@ -1921,6 +2011,9 @@ function shiftMedia(step) {
   if (next < 0 || next >= photoList.value.length) return
   mediaIndex.value = next
   resetImageTransform()
+  videoQuality.value = '1080p'
+  pendingVideoSeek = null
+  nextTick(() => reloadVideoProxy())
 }
 
 function zoomImage(delta, animate = false) {
@@ -2294,6 +2387,9 @@ watch(
 watch(currentMedia, (item) => {
   if (detailOpen.value && item) {
     detailPhoto.value = item
+  }
+  if (mediaVisible.value && item?.fileType === 2) {
+    reloadVideoProxy()
   }
 })
 
@@ -2902,7 +2998,7 @@ init()
 
 .media-video {
   max-width: min(92%, 1400px);
-  max-height: min(86%, 86vh);
+  max-height: min(78%, 78vh);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -2911,6 +3007,55 @@ init()
   user-select: none;
   background: #000;
   transition: max-width 0.22s ease, max-height 0.22s ease;
+}
+
+.media-video-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 22px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+}
+
+.media-video-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 0;
+
+  span {
+    opacity: 0.85;
+  }
+
+  select {
+    border: none;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    outline: none;
+    cursor: pointer;
+
+    option {
+      color: #111;
+    }
+  }
+
+  &.is-disabled {
+    opacity: 0.45;
+
+    select {
+      cursor: not-allowed;
+    }
+  }
 }
 
 .media-toolbar {

@@ -448,6 +448,10 @@ function pointThumbUrl(point) {
 export function mediaSrc(point, original = false) {
   if (original) {
     if (point?.photoId) {
+      // 地图弹层默认播 1080p30 浏览档，避免直接拉原片
+      if (Number(point?.fileType) === 2) {
+        return resolveUrl('/album/photo/media/' + point.photoId + '?quality=1080p&fps=30')
+      }
       return resolveUrl('/album/photo/media/' + point.photoId + '?original=true')
     }
     if (point?.fileUrl) return resolveUrl(point.fileUrl)
@@ -626,7 +630,7 @@ export function buildPopupHtml(point) {
       </div>
     `
   }
-  // 弹层优先用缩略图，避免每次点击都拉原图导致很慢
+  // 弹层视频默认 1080p30；未生成时浏览器会 409，仅显示海报缩略图
   const media = isVideo
     ? `<video class="pmc-media" controls preload="none" poster="${thumb}" src="${original}"></video>`
     : `<img class="pmc-media" src="${thumb || original}" alt="${title}" loading="eager" decoding="async" />`

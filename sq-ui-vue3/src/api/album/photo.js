@@ -37,6 +37,35 @@ export function uploadPhoto(data) {
   })
 }
 
+/** 查询视频浏览档状态 */
+export function getVideoProxyStatus(photoId, quality = '1080p', fps = 30) {
+  return request({
+    url: '/album/photo/videoProxy/' + photoId,
+    method: 'get',
+    params: { quality, fps }
+  })
+}
+
+/** 确保浏览档就绪 */
+export function ensureVideoProxy(photoId, quality = '1080p', fps = 30) {
+  return request({
+    url: '/album/photo/videoProxy/' + photoId + '/ensure',
+    method: 'post',
+    params: { quality, fps },
+    timeout: 60000,
+    showActionLoading: false
+  })
+}
+
+/** 视频浏览档后台转码进度 */
+export function getVideoProxyProgress() {
+  return request({
+    url: '/album/photo/videoProxy/progress',
+    method: 'get',
+    headers: { repeatSubmit: false }
+  })
+}
+
 /** 按同相册权威 GPS 时间插值，为无坐标媒体补估计位置 */
 export function fallbackLocateAlbum(albumId) {
   return request({ url: '/album/photo/fallbackLocate/' + albumId, method: 'post' })

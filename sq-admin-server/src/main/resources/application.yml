@@ -134,7 +134,19 @@ xss:
 album:
   uploadPath: D:/uploadPath/album/upload
   thumbPath: D:/uploadPath/album/cache/thumb
+  # 视频浏览代理片（720p/1080p），与原片目录分离，不入库、不在相册列表显示
+  proxyPath: D:/uploadPath/album/cache/proxy
   localRoot: D:/uploadPath/album
+  videoProxy:
+    concurrency: 1
+    crf720: 26
+    crf1080: 23
+    preset: veryfast
+    audioBitrate: 128k
+    minBytes: 0
+    minWidth: 1920
+    minHeight: 1080
+    minFps: 30
   # 磁盘扫描：大视频优化（路径跳过 / 采样哈希 / 超大文件不截帧）
   scan:
     pathSizeSkip: true

@@ -115,6 +115,23 @@ public class BizScanPathController extends BaseController {
         return success(scanPathService.repairMissingVideoThumbs(pathId, Boolean.TRUE.equals(force)));
     }
 
+    @PreAuthorize("@ss.hasPermi('album:scan:run')")
+    @GetMapping("/videoProxyStats")
+    public AjaxResult videoProxyStats(@RequestParam(required = false) Long pathId) {
+        return success(scanPathService.videoProxyStats(pathId));
+    }
+
+    /**
+     * 一键排队生成视频浏览档（720p/1080p × 30）。写 cache/proxy，不改原片、不入库。
+     */
+    @PreAuthorize("@ss.hasPermi('album:scan:run')")
+    @Log(title = "一键转码浏览档", businessType = BusinessType.OTHER)
+    @PostMapping("/generateVideoProxies")
+    public AjaxResult generateVideoProxies(@RequestParam(required = false) Long pathId,
+                                           @RequestParam(required = false, defaultValue = "false") Boolean force) {
+        return success(scanPathService.enqueueVideoProxies(pathId, Boolean.TRUE.equals(force)));
+    }
+
     /**
      * 查询单条扫描日志（含进行中进度），供前端轮询
      */

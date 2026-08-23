@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 
 /**
- * 彻底删除时清理本地原图与缩略图。
+ * 彻底删除时清理本地原图、缩略图与视频浏览代理片。
  */
 public final class PhotoStorageCleanup {
 
@@ -24,6 +24,32 @@ public final class PhotoStorageCleanup {
         }
         deleteQuietly(resolveOriginFile(photo));
         deleteQuietly(resolveThumbFile(photo, albumProperties));
+        deleteProxyDir(photo, albumProperties);
+    }
+
+    /** 删除 cache/proxy/{photoId}/ 下全部浏览档（不碰原片目录） */
+    private static void deleteProxyDir(BizPhoto photo, AlbumProperties albumProperties) {
+        if (photo.getPhotoId() == null || albumProperties == null
+                || StringUtils.isEmpty(albumProperties.getProxyPath())) {
+            return;
+        }
+        File dir = new File(albumProperties.getProxyPath(), String.valueOf(photo.getPhotoId()));
+        if (!dir.exists()) {
+            return;
+        }
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File f : children) {
+                deleteQuietly(f);
+            }
+        }
+        try {
+            if (dir.exists() && dir.isDirectory() && !dir.delete()) {
+                log.warn("failed to delete proxy dir: {}", dir.getAbsolutePath());
+            }
+        } catch (Exception e) {
+            log.warn("delete proxy dir error {}: {}", dir.getAbsolutePath(), e.getMessage());
+        }
     }
 
     private static File resolveOriginFile(BizPhoto photo) {

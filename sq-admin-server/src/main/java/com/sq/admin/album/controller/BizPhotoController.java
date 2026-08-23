@@ -88,6 +88,9 @@ public class BizPhotoController extends BaseController {
     @Autowired
     private AlbumProperties albumProperties;
 
+    @Autowired
+    private com.sq.bus.service.IVideoProxyService videoProxyService;
+
     /**
      * 足迹图：已访问省/市/区县的行政区边界（GeoJSON，GCJ-02）
      */
@@ -112,11 +115,14 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 媒体访问：默认缩略图；original=true 返回原文件（支持 Range，便于视频播放）
+     * 媒体访问：默认缩略图；original=true 返回原文件；
+     * 视频浏览档 quality=720p|1080p + fps=30|60（文件在 cache/proxy，不入库）。
      */
     @GetMapping("/media/{photoId}")
     public void media(@PathVariable Long photoId,
                       @RequestParam(value = "original", defaultValue = "false") boolean original,
+                      @RequestParam(value = "quality", required = false) String quality,
+                      @RequestParam(value = "fps", required = false) Integer fps,
                       HttpServletRequest request,
                       HttpServletResponse response) throws Exception {
         BizPhoto photo = photoService.getById(photoId);
@@ -124,7 +130,20 @@ public class BizPhotoController extends BaseController {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;
         }
-        File file = resolveMediaFile(photo, original);
+        File file;
+        if (!original && photo.getFileType() != null && photo.getFileType() == 2
+                && StringUtils.isNotEmpty(quality)
+                && !"original".equalsIgnoreCase(quality)) {
+            file = videoProxyService.resolveReadyFile(photoId, quality, fps);
+            if (file == null) {
+                response.setStatus(HttpServletResponse.SC_CONFLICT);
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.getWriter().write("{\"msg\":\"浏览档未就绪，请先调用 videoProxy/ensure\"}");
+                return;
+            }
+        } else {
+            file = resolveMediaFile(photo, original);
+        }
         if (file == null || !file.exists() || !file.isFile()) {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;
@@ -139,6 +158,29 @@ public class BizPhotoController extends BaseController {
         response.setHeader("Accept-Ranges", "bytes");
         response.setHeader("Cache-Control", "public, max-age=86400");
         writeFileWithRange(file, contentType, request.getHeader("Range"), response);
+    }
+
+    /** 查询视频浏览档状态（不触发转码） */
+    @GetMapping("/videoProxy/{photoId}")
+    public AjaxResult videoProxyStatus(@PathVariable Long photoId,
+                                       @RequestParam(value = "quality", defaultValue = "1080p") String quality,
+                                       @RequestParam(value = "fps", defaultValue = "30") Integer fps) {
+        return success(videoProxyService.status(photoId, quality, fps));
+    }
+
+    /** 确保浏览档存在：缺失则异步 ffmpeg 转码（原片不改、不入库） */
+    @PostMapping("/videoProxy/{photoId}/ensure")
+    public AjaxResult ensureVideoProxy(@PathVariable Long photoId,
+                                       @RequestParam(value = "quality", defaultValue = "1080p") String quality,
+                                       @RequestParam(value = "fps", defaultValue = "30") Integer fps) {
+        return success(videoProxyService.ensure(photoId, quality, fps));
+    }
+
+    /** 视频浏览档后台转码全局进度（右下角浮层） */
+    @PreAuthorize("@ss.hasPermi('album:photo:list') or @ss.hasPermi('album:scan:list')")
+    @GetMapping("/videoProxy/progress")
+    public AjaxResult videoProxyProgress() {
+        return success(videoProxyService.getProgress());
     }
 
     @PreAuthorize("@ss.hasPermi('album:photo:list')")

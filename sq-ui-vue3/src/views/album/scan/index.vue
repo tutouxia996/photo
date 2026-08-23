@@ -16,30 +16,37 @@
       <el-table-column label="状态" prop="status" width="80">
         <template #default="scope">{{ scope.row.status === 1 ? '启用' : '禁用' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="360" fixed="right">
+      <el-table-column label="操作" width="460" fixed="right">
         <template #default="scope">
           <el-button link type="primary" @click="handleUpdate(scope.row)" v-hasPermi="['album:scan:edit']">修改</el-button>
           <el-button
             link
             type="primary"
-            :disabled="scanning || repairing"
+            :disabled="scanning || repairing || proxying"
             @click="handleRun(scope.row, false)"
             v-hasPermi="['album:scan:run']"
           >增量扫描</el-button>
           <el-button
             link
             type="warning"
-            :disabled="scanning || repairing"
+            :disabled="scanning || repairing || proxying"
             @click="handleRun(scope.row, true)"
             v-hasPermi="['album:scan:run']"
           >全量扫描</el-button>
           <el-button
             link
             type="success"
-            :disabled="scanning || repairing"
+            :disabled="scanning || repairing || proxying"
             @click="handleRepairThumbs(scope.row)"
             v-hasPermi="['album:scan:run']"
           >补视频缩略图</el-button>
+          <el-button
+            link
+            type="success"
+            :disabled="scanning || repairing || proxying"
+            @click="handleGenerateProxies(scope.row)"
+            v-hasPermi="['album:scan:run']"
+          >一键转码</el-button>
           <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:scan:remove']">删除</el-button>
         </template>
       </el-table-column>
@@ -119,9 +126,11 @@
 </template>
 
 <script setup name="AlbumScan">
-import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, pollScanProgress, repairVideoThumbs } from '@/api/album/scan'
+import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, pollScanProgress, repairVideoThumbs, getVideoProxyStats } from '@/api/album/scan'
+import useVideoProxyStore from '@/store/modules/videoProxy'
 
 const { proxy } = getCurrentInstance()
+const videoProxyStore = useVideoProxyStore()
 const pathList = ref([])
 const logList = ref([])
 const loading = ref(true)
@@ -130,6 +139,7 @@ const title = ref('')
 const form = ref({})
 const scanning = ref(false)
 const repairing = ref(false)
+const proxying = ref(false)
 const scanDialogVisible = ref(false)
 const scanProgress = reactive({
   status: 0,
@@ -246,7 +256,7 @@ async function handleRun(row, fullScan) {
 }
 
 async function handleRepairThumbs(row) {
-  if (repairing.value || scanning.value) {
+  if (repairing.value || scanning.value || proxying.value) {
     proxy.$modal.msgWarning('请等待当前任务完成')
     return
   }
@@ -291,6 +301,79 @@ async function handleRepairThumbs(row) {
     // 全局拦截器已提示
   } finally {
     repairing.value = false
+  }
+}
+
+async function handleGenerateProxies(row) {
+  if (repairing.value || scanning.value || proxying.value) {
+    proxy.$modal.msgWarning('请等待当前任务完成')
+    return
+  }
+  let stats = null
+  proxying.value = true
+  proxy.$modal.loading('正在分析视频转码条件，请稍候…')
+  try {
+    const res = await getVideoProxyStats(row.pathId)
+    stats = res.data || {}
+  } catch (e) {
+    return
+  } finally {
+    proxy.$modal.closeLoading()
+    proxying.value = false
+  }
+  const total = Number(stats.totalVideos) || 0
+  const eligible = Number(stats.eligible) || 0
+  const skipped = Number(stats.skipped) || 0
+  const reasons = stats.skipReasons || {}
+  const reasonText = Object.keys(reasons).length
+    ? '\n跳过原因：' + Object.entries(reasons).map(([k, v]) => `${k}=${v}`).join('，')
+    : ''
+  const sampleText = (stats.ineligibleSamples || []).slice(0, 2)
+    .map(s => `· ${s.fileName}（${s.reason}）`)
+    .join('\n')
+  let force = false
+  try {
+    await proxy.$modal.confirm(
+      `为「${row.pathName || row.pathId}」排队生成视频浏览档？\n\n` +
+      `已入库视频 ${total} 个，符合转码条件 ${eligible} 个，不符合 ${skipped} 个。\n` +
+      `条件：1080p 及以上 且 ≥30fps` +
+      reasonText +
+      (sampleText ? `\n\n示例：\n${sampleText}` : '') +
+      `\n\n生成 720p30 / 1080p30，输出到 cache/proxy。`
+    )
+  } catch (e) {
+    return
+  }
+  if (eligible === 0) {
+    proxy.$modal.msgWarning(stats.message || '没有符合转码条件的视频，proxy 目录会保持为空')
+    return
+  }
+  try {
+    await proxy.$modal.confirm('是否强制重转已有浏览档？（一般选「取消」只补缺失）')
+    force = true
+  } catch (e) {
+    force = false
+  }
+  proxying.value = true
+  proxy.$modal.loading('正在启动后台转码，请稍候…')
+  try {
+    const p = await videoProxyStore.enqueue(row.pathId, force)
+    const totalJobs = Number(p.total) || 0
+    const skippedVideos = Number(p.skippedVideos) || 0
+    if (totalJobs === 0 && !p.running) {
+      proxy.$modal.msgWarning(
+        skippedVideos > 0
+          ? `没有需要转码的视频（已跳过 ${skippedVideos} 个：需1080p+、≥30fps，或浏览档已存在）`
+          : '没有需要转码的视频'
+      )
+    } else {
+      proxy.$modal.msgSuccess('已开始后台转码，可在右下角查看进度')
+    }
+  } catch (e) {
+    // 全局拦截器已提示
+  } finally {
+    proxy.$modal.closeLoading()
+    proxying.value = false
   }
 }
 

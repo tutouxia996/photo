@@ -38,6 +38,7 @@ D:\cloudflared\cloudflared.exe        # 客户端
 ```yaml
 tunnel: f99d35ee-71e1-4f3c-9b01-4b5851de0cc7
 credentials-file: C:\Users\guoxinpeng\.cloudflared\f99d35ee-71e1-4f3c-9b01-4b5851de0cc7.json
+protocol: http2
 
 ingress:
   - hostname: album.pengorbit.top
@@ -71,11 +72,26 @@ D:\cloudflared\cloudflared.exe tunnel run album-home
 1. 启动 MySQL、Redis
 2. 启动相册（桌面「相册网站-部署包\bin\start.bat」或 IDE）
 3. 确认 http://127.0.0.1:18080/#/login
-4. 启动隧道：cloudflared.exe tunnel run album-home
+4. 启动隧道：cloudflared.exe tunnel --protocol http2 run album-home
 5. 访问 https://album.pengorbit.top/#/login
 ```
 
+也可双击桌面包内 `bin\start-tunnel.bat`（若已生成）。
+
 停止外网：关掉 cloudflared 窗口，或 `Ctrl+C`。
+
+## 隧道连不上（QUIC / UDP 7844 失败）
+
+日志里若出现 `QUIC connection failed`、`Allow outbound QUIC traffic on port 7844 or use HTTP2`，说明本机或路由器**拦了 UDP 7844**（国内宽带/光猫较常见）。
+
+**处理：** 改用 HTTP/2（走 TCP 7844，一般能通）：
+
+1. 在 `%USERPROFILE%\.cloudflared\config.yml` 增加一行：`protocol: http2`
+2. 或启动时加参数：`cloudflared.exe tunnel --protocol http2 run album-home`
+
+成功时日志会出现 `Switching to fallback protocol http2` 或直接 `Registered tunnel connection`（protocol http2）。
+
+若 HTTP/2 也超时，需在路由器/防火墙放行**出站 TCP 7844** 到 Cloudflare（见 [官方端口说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)）。
 
 ## 备用：临时隧道
 

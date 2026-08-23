@@ -16,10 +16,13 @@ import com.sq.bus.service.IBizScanLogService;
 import com.sq.bus.service.IBizScanPathService;
 import com.sq.bus.service.IBizTrackService;
 import com.sq.bus.service.IPhotoFallbackLocationService;
+import com.sq.bus.service.IVideoProxyService;
+import com.sq.bus.domain.vo.VideoProxyStatus;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
 import com.sq.bus.utils.VideoMetaUtils;
+import com.sq.bus.utils.VideoStreamProbe;
 import com.sq.common.exception.ServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +81,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     @Autowired
     private AlbumProperties albumProperties;
+
+    @Autowired
+    private IVideoProxyService videoProxyService;
 
     @Autowired
     @Qualifier("threadPoolTaskExecutor")
@@ -277,6 +283,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private int countMediaFiles(File dir) {
+        if (shouldSkipScanDir(dir)) {
+            return 0;
+        }
         File[] children = dir.listFiles();
         if (children == null) {
             return 0;
@@ -285,6 +294,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         for (File file : children) {
             if (file.isDirectory()) {
                 count += countMediaFiles(file);
+                continue;
+            }
+            if (shouldSkipScanFile(file)) {
                 continue;
             }
             String ext = extension(file.getName());
@@ -297,6 +309,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     private void doWalk(File dir, BizScanPath scanPath, boolean fullScan, ScanCounter counter,
                         StringBuilder failMsg, Long logId) {
+        if (shouldSkipScanDir(dir)) {
+            return;
+        }
         File[] children = dir.listFiles();
         if (children == null) {
             return;
@@ -304,6 +319,9 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         for (File file : children) {
             if (file.isDirectory()) {
                 doWalk(file, scanPath, fullScan, counter, failMsg, logId);
+                continue;
+            }
+            if (shouldSkipScanFile(file)) {
                 continue;
             }
             String ext = extension(file.getName());
@@ -734,6 +752,162 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         return result;
     }
 
+    @Override
+    public Map<String, Object> videoProxyStats(Long pathId) {
+        List<BizScanPath> paths = resolveScanPaths(pathId);
+        AlbumProperties.VideoProxy cfg = albumProperties.getVideoProxy();
+        if (cfg == null) {
+            cfg = new AlbumProperties.VideoProxy();
+        }
+        int totalVideos = 0;
+        int eligible = 0;
+        Map<String, Integer> skipReasons = new LinkedHashMap<String, Integer>();
+        List<Map<String, Object>> eligibleSamples = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> ineligibleSamples = new ArrayList<Map<String, Object>>();
+
+        for (BizScanPath scanPath : paths) {
+            if (scanPath.getDefaultAlbumId() == null) {
+                continue;
+            }
+            List<BizPhoto> videos = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                    .eq(BizPhoto::getAlbumId, scanPath.getDefaultAlbumId())
+                    .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                    .eq(BizPhoto::getFileType, 2));
+            if (videos == null || videos.isEmpty()) {
+                continue;
+            }
+            for (BizPhoto photo : videos) {
+                totalVideos++;
+                File file = new File(photo.getFilePath() == null ? "" : photo.getFilePath());
+                long size = photo.getFileSize() != null ? photo.getFileSize() : (file.exists() ? file.length() : 0L);
+                VideoStreamProbe.Eligibility el = VideoStreamProbe.checkEligibility(file, size, cfg);
+                if (el.eligible) {
+                    eligible++;
+                    if (eligibleSamples.size() < 8) {
+                        Map<String, Object> sample = new LinkedHashMap<String, Object>();
+                        sample.put("photoId", photo.getPhotoId());
+                        sample.put("fileName", photo.getFileName());
+                        sample.put("sizeGb", String.format(Locale.ROOT, "%.2f", size / (1024d * 1024d * 1024d)));
+                        sample.put("stream", el.detail);
+                        eligibleSamples.add(sample);
+                    }
+                } else {
+                    String code = el.code == null ? "unknown" : el.code;
+                    skipReasons.put(code, skipReasons.containsKey(code) ? skipReasons.get(code) + 1 : 1);
+                    if (ineligibleSamples.size() < 5) {
+                        Map<String, Object> sample = new LinkedHashMap<String, Object>();
+                        sample.put("photoId", photo.getPhotoId());
+                        sample.put("fileName", photo.getFileName());
+                        sample.put("reason", el.detail);
+                        ineligibleSamples.add(sample);
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> rules = new LinkedHashMap<String, Object>();
+        rules.put("minBytes", cfg.getMinBytes());
+        rules.put("minWidth", cfg.getMinWidth());
+        rules.put("minHeight", cfg.getMinHeight());
+        rules.put("minFps", cfg.getMinFps());
+        rules.put("proxyPath", albumProperties.getProxyPath());
+        rules.put("hint", "须同时满足：1080p+、≥30fps");
+
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("pathCount", paths.size());
+        result.put("totalVideos", totalVideos);
+        result.put("eligible", eligible);
+        result.put("skipped", totalVideos - eligible);
+        result.put("skipReasons", skipReasons);
+        result.put("eligibleSamples", eligibleSamples);
+        result.put("ineligibleSamples", ineligibleSamples);
+        result.put("rules", rules);
+        if (eligible == 0 && totalVideos > 0) {
+            result.put("message", "当前没有符合转码条件的视频，proxy 目录会保持为空");
+        } else if (eligible > 0) {
+            result.put("message", "共 " + eligible + " 个视频可转码，请在扫描页点「一键转码」");
+        } else {
+            result.put("message", "该目录下没有已入库视频");
+        }
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> enqueueVideoProxies(Long pathId, boolean force) {
+        List<BizScanPath> paths = resolveScanPaths(pathId);
+        videoProxyService.beginBatch();
+        threadPoolTaskExecutor.execute(() -> {
+            try {
+                runEnqueueVideoProxies(paths, force);
+            } finally {
+                videoProxyService.endBatch();
+            }
+        });
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("async", true);
+        result.put("force", force);
+        result.put("pathCount", paths.size());
+        result.put("hint", "已开始后台排队转码，可在右下角查看进度；仅处理 1080p+、≥30fps 的视频。");
+        result.put("message", "已开始后台转码");
+        return result;
+    }
+
+    private List<BizScanPath> resolveScanPaths(Long pathId) {
+        if (pathId != null) {
+            BizScanPath one = getById(pathId);
+            if (one == null || (one.getDeleted() != null && one.getDeleted() == 1)) {
+                throw new ServiceException("扫描目录不存在或已删除");
+            }
+            List<BizScanPath> paths = new ArrayList<BizScanPath>();
+            paths.add(one);
+            return paths;
+        }
+        List<BizScanPath> paths = list(new LambdaQueryWrapper<BizScanPath>()
+                .eq(BizScanPath::getDeleted, 0)
+                .eq(BizScanPath::getStatus, 1));
+        if (paths == null) {
+            return new ArrayList<BizScanPath>();
+        }
+        return paths;
+    }
+
+    private void runEnqueueVideoProxies(List<BizScanPath> paths, boolean force) {
+        String[] qualities = new String[]{"720p", "1080p"};
+        int fps30 = 30;
+        for (BizScanPath scanPath : paths) {
+            if (scanPath.getDefaultAlbumId() == null) {
+                continue;
+            }
+            List<BizPhoto> videos = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                    .eq(BizPhoto::getAlbumId, scanPath.getDefaultAlbumId())
+                    .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
+                    .eq(BizPhoto::getFileType, 2));
+            if (videos == null || videos.isEmpty()) {
+                continue;
+            }
+            for (BizPhoto photo : videos) {
+                if (!force && !videoProxyService.needsVideoProxy(photo.getPhotoId())) {
+                    videoProxyService.onBatchVideoSkipped();
+                    continue;
+                }
+                for (String quality : qualities) {
+                    try {
+                        if (!force) {
+                            VideoProxyStatus before = videoProxyService.status(photo.getPhotoId(), quality, fps30);
+                            if (before != null && "ready".equals(before.getStatus())) {
+                                continue;
+                            }
+                        }
+                        videoProxyService.ensure(photo.getPhotoId(), quality, fps30, force);
+                    } catch (Exception e) {
+                        log.warn("排队视频浏览档失败 photoId={} {}30 err={}",
+                                photo.getPhotoId(), quality, e.toString());
+                    }
+                }
+            }
+        }
+    }
+
     private boolean hasUsableThumb(BizPhoto photo) {
         if (photo.getThumbUrl() == null || photo.getThumbUrl().isEmpty()) {
             return false;
@@ -789,6 +963,38 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             return "";
         }
         return name.substring(idx + 1).toLowerCase(Locale.ROOT);
+    }
+
+    /** 跳过缩略图/代理缓存目录，避免浏览档被再次扫进相册列表 */
+    private boolean shouldSkipScanDir(File dir) {
+        return isUnderConfiguredRoot(dir, albumProperties.getProxyPath())
+                || isUnderConfiguredRoot(dir, albumProperties.getThumbPath());
+    }
+
+    private boolean shouldSkipScanFile(File file) {
+        return isUnderConfiguredRoot(file, albumProperties.getProxyPath())
+                || isUnderConfiguredRoot(file, albumProperties.getThumbPath());
+    }
+
+    private static boolean isUnderConfiguredRoot(File file, String root) {
+        if (file == null || root == null || root.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            File rootFile = new File(root).getCanonicalFile();
+            File cur = file.getCanonicalFile();
+            String rootPath = rootFile.getAbsolutePath();
+            String curPath = cur.getAbsolutePath();
+            if (curPath.equals(rootPath)) {
+                return true;
+            }
+            if (!rootPath.endsWith(File.separator)) {
+                rootPath = rootPath + File.separator;
+            }
+            return curPath.startsWith(rootPath);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**

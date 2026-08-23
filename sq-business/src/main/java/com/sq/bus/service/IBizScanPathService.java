@@ -25,4 +25,17 @@ public interface IBizScanPathService extends IService<BizScanPath> {
      * @return repaired/failed/skipped/total
      */
     java.util.Map<String, Object> repairMissingVideoThumbs(Long pathId, boolean force);
+
+    /**
+     * 一键排队生成视频浏览档（720p/1080p × 30/60），写入 cache/proxy，不改原片、不入库。
+     * @param pathId 扫描目录；空则全部启用目录
+     * @param force true 时已有浏览档也重新转码
+     * @return queued/ready/skipped/failed/total 等统计（转码在后台进行）
+     */
+    java.util.Map<String, Object> enqueueVideoProxies(Long pathId, boolean force);
+
+    /**
+     * 统计扫描目录下视频的转码资格（不入队、不写盘）。
+     */
+    java.util.Map<String, Object> videoProxyStats(Long pathId);
 }
