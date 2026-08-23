@@ -238,14 +238,50 @@ try {
         }
         Test-DeployBusinessJar $deployLib
 
+        $templateRoot = Join-Path $root "scripts\deploy-template"
         if (Test-Path $templateBin) {
             New-Item -ItemType Directory -Force -Path $deployBin | Out-Null
-            Get-ChildItem -LiteralPath $templateBin -Filter "*.bat" -File | ForEach-Object {
-                $destBat = Join-Path $deployBin $_.Name
-                if (-not (Test-Path $destBat)) {
-                    Copy-Item -LiteralPath $_.FullName -Destination $destBat -Force
-                    Write-Host "    Created $destBat"
+        Get-ChildItem -LiteralPath $templateBin -Filter "*.bat" -File | ForEach-Object {
+            $destBat = Join-Path $deployBin $_.Name
+            Copy-Item -LiteralPath $_.FullName -Destination $destBat -Force
+            Write-Host "    Synced $destBat"
+        }
+        }
+        $deployResources = Join-Path $DeployDir "resources"
+        $templateResources = Join-Path $templateRoot "resources"
+        $serverResources = Join-Path $serverDir "src\main\resources"
+        if (Test-Path $templateResources) {
+            New-Item -ItemType Directory -Force -Path $deployResources | Out-Null
+            # 每次打包同步部署用 yml（不覆盖本机 application-local.yml）
+            $syncYml = @(
+                "application.yml",
+                "application-mysql-deploy.yml",
+                "application-local.yml.example"
+            )
+            foreach ($name in $syncYml) {
+                $src = Join-Path $serverResources $name
+                if (-not (Test-Path $src)) {
+                    $src = Join-Path $templateResources $name
                 }
+                if (Test-Path $src) {
+                    Copy-Item -LiteralPath $src -Destination (Join-Path $deployResources $name) -Force
+                    Write-Host "    Synced resources\$name"
+                }
+            }
+            Get-ChildItem -LiteralPath $templateResources -File | ForEach-Object {
+                if ($_.Name -in $syncYml) { return }
+                $destRes = Join-Path $deployResources $_.Name
+                if (-not (Test-Path $destRes)) {
+                    Copy-Item -LiteralPath $_.FullName -Destination $destRes -Force
+                    Write-Host "    Created $destRes"
+                }
+            }
+        }
+        Get-ChildItem -LiteralPath $templateRoot -Filter "*.md" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $destMd = Join-Path $DeployDir $_.Name
+            if (-not (Test-Path $destMd)) {
+                Copy-Item -LiteralPath $_.FullName -Destination $destMd -Force
+                Write-Host "    Created $destMd"
             }
         }
 

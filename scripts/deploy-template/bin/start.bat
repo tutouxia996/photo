@@ -1,39 +1,43 @@
-@echo off & setlocal enabledelayedexpansion
+@echo off
+setlocal
+chcp 65001 >nul
+cd /d "%~dp0.."
+set "BIN_DIR=%cd%"
 
-rem 相册网站家用启动脚本（mysql-dev + local，端口 18080）
-rem 如需指定 JDK，取消下一行注释并改成你的路径：
-rem set JAVA_HOME=D:\App\Java\jdk1.8.0_172
+rem === Java ===
+set "JAVA_CMD="
+if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" set "JAVA_CMD=%JAVA_HOME%\bin\java.exe"
+if not defined JAVA_CMD where java >nul 2>&1 && set "JAVA_CMD=java"
+if not defined JAVA_CMD echo [ERROR] Java not found. Install JDK 8+ and set JAVA_HOME. && goto fail
 
-if "%JAVA_HOME%"=="" (
-    echo 未找到 JAVA_HOME，请安装 JDK 8+ 并配置环境变量，或在本文件顶部指定 JAVA_HOME
-    pause
-    exit /b 1
-)
+if not exist "%BIN_DIR%\lib\sq-admin-server.jar" echo [ERROR] Missing lib\sq-admin-server.jar && goto fail
 
-cd /d %~dp0..
-set BIN_DIR=%cd%
+netstat -ano | findstr ":18080" | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 echo [ERROR] Port 18080 in use. Close old server first. && goto fail
 
-cd %BIN_DIR%\lib
-for /f "delims=" %%i in ('dir /a-d /b /on sq-admin-server*.jar 2^>nul') do set BOOT_JAR=%%i
-if not defined BOOT_JAR (
-    echo 未找到 sq-admin-server*.jar，请先运行仓库根目录 pack-album.bat 打包
-    pause
-    exit /b 1
-)
+if not exist "%BIN_DIR%\resources" mkdir "%BIN_DIR%\resources"
 
-set LIB_JARS=
-for %%i in ("*") do (
-    if /I not "%%~nxi"=="%BOOT_JAR%" (
-        set LIB_JARS=!LIB_JARS!%BIN_DIR%\lib\%%~nxi;
-    )
-)
+set "EXTRA_CONFIG="
+if exist "%BIN_DIR%\resources\application-local.yml" set "EXTRA_CONFIG=--spring.config.additional-location=file:%BIN_DIR%/resources/"
 
-cd %BIN_DIR%\bin
-set JAVA_OPTS=-server -Xms2g -Xmx2g -Xmn256m -XX:PermSize=128m -Xss256k
-
-echo 启动相册网站 http://127.0.0.1:18080/#/login
-echo 停止：本窗口 Ctrl+C
+echo.
+echo Starting album site...
+echo URL: http://127.0.0.1:18080/#/login
+echo Profile: mysql-deploy,local
+echo Config: %BIN_DIR%\resources\
+echo Wait 30-60s for Started AdminApplication
 echo.
 
-"%JAVA_HOME%\bin\java" %JAVA_OPTS% -Xbootclasspath/a:%LIB_JARS% -jar %BIN_DIR%\lib\%BOOT_JAR% --spring.profiles.active=mysql-dev,local
+cd /d "%BIN_DIR%\lib"
+"%JAVA_CMD%" -server -Xms512m -Xmx1024m -Dloader.path=. -jar sq-admin-server.jar --spring.profiles.active=mysql-deploy,local %EXTRA_CONFIG%
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" echo [FAILED] exit code %EXIT_CODE%
+goto end
+
+:fail
+set "EXIT_CODE=1"
+
+:end
+echo.
 pause
+exit /b %EXIT_CODE%

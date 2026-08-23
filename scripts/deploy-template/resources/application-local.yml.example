@@ -1,0 +1,26 @@
+# 复制为 application-local.yml 后按部署机环境修改（不要提交真实密钥到 Git）
+# MySQL 见 application-mysql-deploy.yml（root / photo）；Redis 密码若与默认不同，在下方填写
+
+spring:
+  redis:
+    password: 123456
+
+sq:
+  profile: D:/uploadPath
+
+album:
+  uploadPath: D:/uploadPath/album/upload
+  thumbPath: D:/uploadPath/album/cache/thumb
+  proxyPath: D:/uploadPath/album/cache/proxy
+  localRoot: D:/uploadPath/album
+  map:
+    type: amap
+    webKey: 请填写高德Web服务Key
+  aiLandmark:
+    enabled: true
+    apiKey: 请填写通义DashScope-API-Key
+  photoDraw:
+    enabled: true
+    apiKey: 请填写通义DashScope-API-Key
+  videoProxy:
+    enqueueOnScan: true

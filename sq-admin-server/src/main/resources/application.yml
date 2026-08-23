@@ -37,7 +37,7 @@ spring:
     # 国际化资源文件路径
     basename: i18n/messages
   profiles:
-    # local：加载 gitignore 的 application-local.yml（高德 webKey 等）；无该文件也不影响启动
+    # 本地开发：mysql-dev,local；家用部署包 start.bat：mysql-deploy,local
     active: mysql-dev,local
   # 自动加载本地密钥文件（若不存在则忽略）；勿把 application-local.yml 提交到 Git
   config:

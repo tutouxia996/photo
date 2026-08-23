@@ -1,0 +1,66 @@
+# 部署机 MySQL/Redis 配置（家用部署包 start.bat 使用 profile: mysql-deploy,local）
+# 库名 photo；默认账号 root（与开发机 mysql-dev 的 sq-dev 区分）
+spring:
+    config:
+        import: optional:classpath:application-local.yml
+    datasource:
+        type: com.alibaba.druid.pool.DruidDataSource
+        driverClassName: com.mysql.cj.jdbc.Driver
+        druid:
+            master:
+                url: jdbc:mysql://127.0.0.1:3306/photo?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8
+                username: root
+                password: sq123456
+            slave:
+                enabled: false
+                url:
+                username:
+                password:
+            initialSize: 5
+            minIdle: 10
+            maxActive: 20
+            maxWait: 60000
+            timeBetweenEvictionRunsMillis: 60000
+            minEvictableIdleTimeMillis: 300000
+            maxEvictableIdleTimeMillis: 900000
+            validationQuery: SELECT 1 FROM DUAL
+            testWhileIdle: true
+            testOnBorrow: false
+            testOnReturn: false
+            webStatFilter:
+                enabled: true
+            statViewServlet:
+                enabled: true
+                allow:
+                url-pattern: /druid/*
+                login-username: sq
+                login-password: 123456
+            filter:
+                stat:
+                    enabled: true
+                    log-slow-sql: true
+                    slow-sql-millis: 1000
+                    merge-sql: true
+                wall:
+                    config:
+                        multi-statement-allow: true
+
+    devtools:
+        restart:
+            enabled: false
+    redis:
+        host: localhost
+        port: 6388
+        database: 7
+        # 部署机 Redis 密码；也可用 application-local.yml 或环境变量 REDIS_PASSWORD 覆盖
+        password: ${REDIS_PASSWORD:123456}
+        timeout: 10s
+        lettuce:
+            pool:
+                min-idle: 0
+                max-idle: 8
+                max-active: 8
+                max-wait: -1ms
+
+knife4j:
+    enable: false
