@@ -2,6 +2,7 @@ package com.sq.bus.service.cloud;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.sq.bus.domain.vo.RemoteAlbumItem;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.domain.BizScanPath;
@@ -185,30 +186,80 @@ public class AliyunDriveSyncService {
         try {
             markProgress(0, "listing", "正在登录并列举云盘文件…");
             persistProgressQuiet();
-            SyncResult result = doSync(cfg);
-            if (result.paused) {
+
+            List<RemoteAlbumItem> albums = aliyunDriveSettingService.listRemoteAlbumsFromConfig(cfg);
+            if (albums.isEmpty()) {
+                throw new ServiceException("未配置云盘相册，请先在云盘同步页选择并保存");
+            }
+            String basePath = cfg.getLocalPath();
+            int albumCount = albums.size();
+            int sumRemote = 0;
+            int sumDownloaded = 0;
+            int sumSkipped = 0;
+            int sumFailed = 0;
+            boolean anyPaused = false;
+            StringBuilder scanMsg = new StringBuilder();
+
+            for (int i = 0; i < albumCount; i++) {
+                if (paused.get()) {
+                    anyPaused = true;
+                    break;
+                }
+                RemoteAlbumItem album = albums.get(i);
+                markProgress(0, "listing", String.format(Locale.ROOT,
+                        "正在同步相册 %d/%d：%s", i + 1, albumCount, album.getName()));
+                persistProgressQuiet();
+
+                AlbumProperties.AliyunDriveConfig oneCfg = copyDriveCfg(cfg);
+                oneCfg.setRemoteAlbumId(album.getAlbumId());
+                oneCfg.setRemoteAlbumName(album.getName());
+                oneCfg.setLocalPath(aliyunDriveSettingService.composeAlbumLocalPath(basePath, album.getName()));
+
+                SyncResult result = doSync(oneCfg);
+                sumRemote += result.remoteMedia;
+                sumDownloaded += result.downloaded;
+                sumSkipped += result.skipped;
+                sumFailed += result.failed;
+
+                if (result.paused) {
+                    anyPaused = true;
+                    break;
+                }
+
+                if (cfg.isTriggerScan()) {
+                    try {
+                        Long bindId = aliyunDriveSettingService.resolveOrCreateLocalAlbumId(album.getName(), "system");
+                        Long pathId = scanPathService.upsertScanPathForSync(
+                                oneCfg.getLocalPath(), bindId, album.getName());
+                        if (pathId == null) {
+                            scanMsg.append("；").append(album.getName()).append("未触发扫描");
+                        } else {
+                            markProgress(0, "scanning",
+                                    "相册「" + album.getName() + "」下载完成，正在触发磁盘扫描…");
+                            Long logId = scanPathService.startScanAsync(pathId, cfg.isFullScan());
+                            scanMsg.append("；").append(album.getName()).append("→扫描logId=").append(logId);
+                        }
+                    } catch (Exception scanEx) {
+                        scanMsg.append("；").append(album.getName()).append("扫描失败:").append(scanEx.getMessage());
+                        log.warn("云盘相册 {} 触发扫描失败: {}", album.getName(), scanEx.getMessage());
+                    }
+                }
+            }
+
+            if (anyPaused) {
                 String msg = String.format(Locale.ROOT,
-                        "已暂停：已下载=%d，跳过=%d，失败=%d，剩余=%d",
-                        result.downloaded, result.skipped, result.failed, progressRemaining.get());
+                        "已暂停：相册=%d，已下载=%d，跳过=%d，失败=%d，剩余=%d",
+                        albumCount, sumDownloaded, sumSkipped, sumFailed, progressRemaining.get());
+                msg += scanMsg.toString();
                 markProgress(3, "paused", msg);
                 persistProgressQuiet();
                 log.info(msg);
                 return msg;
             }
             String msg = String.format(Locale.ROOT,
-                    "同步完成：相册=%s，远程媒体=%d，下载=%d，跳过(已存在)=%d，失败=%d",
-                    result.albumId, result.remoteMedia, result.downloaded, result.skipped, result.failed);
-            if (cfg.isTriggerScan()) {
-                Long pathId = resolveScanPathId(cfg);
-                if (pathId == null) {
-                    msg += "；未触发扫描：请配置 scanPathId，或新增 localPath 对应的磁盘扫描目录并绑定相册";
-                } else {
-                    markProgress(0, "scanning", "下载完成，正在触发磁盘扫描…");
-                    Long logId = scanPathService.startScanAsync(pathId, cfg.isFullScan());
-                    msg += "；已触发扫描 pathId=" + pathId + " logId=" + logId
-                            + (cfg.isFullScan() ? "（全量）" : "（增量）");
-                }
-            }
+                    "同步完成：%d 个相册，远程媒体=%d，下载=%d，跳过(已存在)=%d，失败=%d",
+                    albumCount, sumRemote, sumDownloaded, sumSkipped, sumFailed);
+            msg += scanMsg.toString();
             log.info(msg);
             progressRemaining.set(0);
             finishProgress(1, msg);
@@ -735,6 +786,13 @@ public class AliyunDriveSyncService {
             log.warn("读取云盘页面配置失败，回落 yml：{}", e.getMessage());
         }
         return albumProperties.getAliyunDrive();
+    }
+
+    private static AlbumProperties.AliyunDriveConfig copyDriveCfg(AlbumProperties.AliyunDriveConfig src) {
+        if (src == null) {
+            return new AlbumProperties.AliyunDriveConfig();
+        }
+        return JSON.parseObject(JSON.toJSONString(src), AlbumProperties.AliyunDriveConfig.class);
     }
 
     private Long resolveScanPathId(AlbumProperties.AliyunDriveConfig cfg) {

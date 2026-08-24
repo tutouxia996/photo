@@ -88,49 +88,17 @@
         <el-button @click="open = false">取消</el-button>
       </template>
     </el-dialog>
-
-    <el-dialog
-      v-model="scanDialogVisible"
-      title="扫描进度"
-      width="480px"
-      append-to-body
-      :close-on-click-modal="false"
-      :close-on-press-escape="!scanning"
-      :show-close="!scanning"
-      :before-close="beforeScanClose"
-    >
-      <div class="scan-dialog-body">
-        <div class="scan-dialog-summary">
-          <span>{{ scanProcessedText }}</span>
-          <span>{{ scanPercent }}%</span>
-        </div>
-        <el-progress
-          :percentage="scanPercent"
-          :stroke-width="12"
-          striped
-          striped-flow
-          :status="scanProgress.status === 2 ? 'exception' : (scanProgress.status === 1 ? 'success' : undefined)"
-        />
-        <div class="scan-dialog-stats">
-          <span>新增 {{ scanProgress.newCount }}</span>
-          <span>跳过 {{ scanProgress.skipCount }}</span>
-          <span>失败 {{ scanProgress.failCount }}</span>
-        </div>
-        <div class="scan-dialog-msg" :title="scanProgress.message">{{ scanProgress.message || '准备中…' }}</div>
-      </div>
-      <template #footer>
-        <el-button :disabled="scanning" type="primary" @click="scanDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup name="AlbumScan">
-import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, pollScanProgress, repairVideoThumbs, getVideoProxyStats } from '@/api/album/scan'
+import { listScanPath, addScanPath, updateScanPath, delScanPath, runScan, listScanLog, repairVideoThumbs, getVideoProxyStats } from '@/api/album/scan'
 import useVideoProxyStore from '@/store/modules/videoProxy'
+import useDiskScanStore from '@/store/modules/diskScan'
 
 const { proxy } = getCurrentInstance()
 const videoProxyStore = useVideoProxyStore()
+const diskScanStore = useDiskScanStore()
 const pathList = ref([])
 const logList = ref([])
 const loading = ref(true)
@@ -140,54 +108,14 @@ const form = ref({})
 const scanning = ref(false)
 const repairing = ref(false)
 const proxying = ref(false)
-const scanDialogVisible = ref(false)
-const scanProgress = reactive({
-  status: 0,
-  totalCount: 0,
-  newCount: 0,
-  skipCount: 0,
-  failCount: 0,
-  message: ''
-})
 const rules = {
   pathName: [{ required: true, message: '名称不能为空', trigger: 'blur' }],
   localPath: [{ required: true, message: '路径不能为空', trigger: 'blur' }],
   defaultAlbumId: [{ required: true, message: '相册不能为空', trigger: 'blur' }]
 }
 
-const scanPercent = computed(() => {
-  const total = Number(scanProgress.totalCount) || 0
-  if (total <= 0) return scanProgress.status === 0 ? 0 : 100
-  const processed = (Number(scanProgress.newCount) || 0) + (Number(scanProgress.skipCount) || 0) + (Number(scanProgress.failCount) || 0)
-  return Math.min(100, Math.max(0, Math.round((processed / total) * 100)))
-})
-
-const scanProcessedText = computed(() => {
-  const total = Number(scanProgress.totalCount) || 0
-  const processed = (Number(scanProgress.newCount) || 0) + (Number(scanProgress.skipCount) || 0) + (Number(scanProgress.failCount) || 0)
-  if (!total && scanProgress.status === 0) return '统计文件中…'
-  return `已处理 ${processed}/${total || processed}`
-})
-
 function statusText(s) {
   return s === 1 ? '成功' : s === 2 ? '失败' : '进行中'
-}
-
-function applyProgress(log) {
-  scanProgress.status = Number(log.status ?? 0)
-  scanProgress.totalCount = Number(log.totalCount) || 0
-  scanProgress.newCount = Number(log.newCount) || 0
-  scanProgress.skipCount = Number(log.skipCount) || 0
-  scanProgress.failCount = Number(log.failCount) || 0
-  scanProgress.message = log.message || ''
-}
-
-function beforeScanClose(done) {
-  if (scanning.value) {
-    proxy.$modal.msgWarning('扫描进行中，请稍候')
-    return
-  }
-  done()
 }
 
 function getList() {
@@ -219,13 +147,11 @@ function handleDelete(row) {
 }
 
 async function handleRun(row, fullScan) {
-  if (scanning.value) {
-    proxy.$modal.msgWarning('已有扫描任务进行中')
+  if (scanning.value || diskScanStore.progress.running) {
+    proxy.$modal.msgWarning('已有扫描任务进行中，请查看右下角进度')
     return
   }
   scanning.value = true
-  scanDialogVisible.value = true
-  applyProgress({ status: 0, totalCount: 0, newCount: 0, skipCount: 0, failCount: 0, message: '正在启动扫描…' })
   try {
     const res = await runScan(row.pathId, fullScan)
     const log = res.data || {}
@@ -234,25 +160,8 @@ async function handleRun(row, fullScan) {
       proxy.$modal.msgError('未能获取扫描任务')
       return
     }
-    applyProgress(log)
-    if (Number(log.status) === 0) {
-      const finalLog = await pollScanProgress(logId, {
-        interval: 800,
-        onProgress: applyProgress
-      })
-      applyProgress(finalLog)
-    }
-    if (Number(scanProgress.status) === 2) {
-      proxy.$modal.msgError(scanProgress.message || '扫描失败')
-    } else {
-      if (scanProgress.message && scanProgress.message.includes('视频转码')) {
-        videoProxyStore.startPolling()
-      }
-      const proxyHint = scanProgress.message && scanProgress.message.includes('视频转码')
-        ? '，转码进度见右下角'
-        : ''
-      proxy.$modal.msgSuccess(`扫描完成，新增 ${scanProgress.newCount}，跳过 ${scanProgress.skipCount}${proxyHint}`)
-    }
+    diskScanStore.track(logId, { pathId: row.pathId, pathName: row.pathName || `ID ${row.pathId}` })
+    proxy.$modal.msgSuccess('已开始扫描，进度在右下角，可继续浏览其他页面')
     getList()
   } catch (e) {
     // 全局拦截器已提示
@@ -384,35 +293,18 @@ async function handleGenerateProxies(row) {
 }
 
 getList()
+
+watch(
+  () => diskScanStore.progress.status,
+  (status, prev) => {
+    if (prev === 0 && status !== 0) {
+      getList()
+      const msg = diskScanStore.progress.message || ''
+      if (msg.includes('视频转码')) {
+        videoProxyStore.startPolling()
+      }
+    }
+  }
+)
 </script>
 
-<style scoped>
-.scan-dialog-body {
-  padding: 4px 0 8px;
-}
-
-.scan-dialog-summary {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 13px;
-  color: #666;
-}
-
-.scan-dialog-stats {
-  display: flex;
-  gap: 16px;
-  margin-top: 14px;
-  font-size: 12px;
-  color: #888;
-}
-
-.scan-dialog-msg {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #333;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-</style>

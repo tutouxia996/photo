@@ -145,6 +145,15 @@ public class BizScanPathController extends BaseController {
         return success(scanLog);
     }
 
+    /**
+     * 当前进行中的扫描任务（供右下角浮层轮询）
+     */
+    @PreAuthorize("@ss.hasPermi('album:scan:query') or @ss.hasPermi('album:scan:list') or @ss.hasPermi('album:scan:run')")
+    @GetMapping("/active")
+    public AjaxResult activeProgress() {
+        return success(scanPathService.getActiveScanLog());
+    }
+
     @PreAuthorize("@ss.hasPermi('album:scan:list')")
     @GetMapping("/log/list")
     public TableDataInfo logList(BizScanLog query) {

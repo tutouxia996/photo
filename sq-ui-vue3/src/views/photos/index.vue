@@ -164,35 +164,7 @@
       </template>
     </el-dialog>
 
-    <!-- 磁盘扫描进度 -->
-    <teleport to="body">
-      <transition name="scan-fade">
-        <div v-if="scanUi.visible" class="scan-progress-mask" @click.stop @contextmenu.prevent>
-          <div class="scan-progress-panel" role="dialog" aria-label="扫描进度">
-            <div class="scan-progress-title">正在扫描磁盘</div>
-            <div class="scan-progress-summary">
-              <span>{{ scanProcessedText }}</span>
-              <span>{{ scanPercent }}%</span>
-            </div>
-            <el-progress
-              :percentage="scanPercent"
-              :stroke-width="10"
-              :show-text="false"
-              striped
-              striped-flow
-              :status="scanUi.status === 2 ? 'exception' : undefined"
-            />
-            <div class="scan-progress-stats">
-              <span>新增 {{ scanUi.newCount }}</span>
-              <span>跳过 {{ scanUi.skipCount }}</span>
-              <span>失败 {{ scanUi.failCount }}</span>
-            </div>
-            <div class="scan-progress-current" :title="scanUi.message">{{ scanUi.message || '准备中…' }}</div>
-            <div class="scan-progress-tip">扫描在后台进行，完成后会自动刷新相册；请勿关闭或刷新页面</div>
-          </div>
-        </div>
-      </transition>
-    </teleport>
+    <!-- 磁盘扫描进度见右下角浮层 -->
 
     <el-dialog v-model="editOpen" title="编辑相册" width="460px" append-to-body :close-on-click-modal="!editing" @closed="resetEditForm">
       <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-width="88px">
@@ -224,9 +196,10 @@
 import { ClickOutside as vClickOutside } from 'element-plus'
 import { isExternal } from '@/utils/validate'
 import { listAlbum, addAlbum, importAlbumFromDisk, updateAlbum, delAlbum } from '@/api/photos/album'
-import { pollScanProgress } from '@/api/album/scan'
+import useDiskScanStore from '@/store/modules/diskScan'
 
 const { proxy } = getCurrentInstance()
+const diskScanStore = useDiskScanStore()
 
 const loading = ref(false)
 const albumList = ref([])
@@ -241,17 +214,6 @@ const menuAlbumId = ref(null)
 const editOpen = ref(false)
 const editing = ref(false)
 const scanningAlbumIds = ref([])
-const scanAbortController = ref(null)
-const scanUi = reactive({
-  visible: false,
-  albumId: null,
-  status: 0,
-  totalCount: 0,
-  newCount: 0,
-  skipCount: 0,
-  failCount: 0,
-  message: ''
-})
 const createFormRef = ref()
 const editFormRef = ref()
 const createForm = reactive({
@@ -285,44 +247,12 @@ const editRules = {
 
 const createDialogTitle = computed(() => (preferImport.value || createForm.localPath ? '导入文件夹创建相册' : '创建相册'))
 
-const scanPercent = computed(() => {
-  const total = Number(scanUi.totalCount) || 0
-  if (total <= 0) {
-    return scanUi.status === 0 ? 0 : 100
-  }
-  const processed = (Number(scanUi.newCount) || 0) + (Number(scanUi.skipCount) || 0) + (Number(scanUi.failCount) || 0)
-  return Math.min(100, Math.max(0, Math.round((processed / total) * 100)))
-})
-
-const scanProcessedText = computed(() => {
-  const total = Number(scanUi.totalCount) || 0
-  const processed = (Number(scanUi.newCount) || 0) + (Number(scanUi.skipCount) || 0) + (Number(scanUi.failCount) || 0)
-  if (!total && scanUi.status === 0) return '统计文件中…'
-  return `${processed}/${total || processed}`
-})
-
 function isAlbumScanning(albumId) {
-  return scanningAlbumIds.value.some(id => String(id) === String(albumId))
-}
-
-function applyScanProgress(log) {
-  scanUi.status = Number(log.status ?? 0)
-  scanUi.totalCount = Number(log.totalCount) || 0
-  scanUi.newCount = Number(log.newCount) || 0
-  scanUi.skipCount = Number(log.skipCount) || 0
-  scanUi.failCount = Number(log.failCount) || 0
-  scanUi.message = log.message || ''
-}
-
-function resetScanUi() {
-  scanUi.visible = false
-  scanUi.albumId = null
-  scanUi.status = 0
-  scanUi.totalCount = 0
-  scanUi.newCount = 0
-  scanUi.skipCount = 0
-  scanUi.failCount = 0
-  scanUi.message = ''
+  if (scanningAlbumIds.value.some(id => String(id) === String(albumId))) {
+    return true
+  }
+  const p = diskScanStore.progress
+  return (p.running || Number(p.status) === 0) && p.albumId != null && String(p.albumId) === String(albumId)
 }
 
 const filterLabel = computed(() => {
@@ -551,48 +481,35 @@ function onUploadPhotos() {
   proxy.$modal.msg('上传照片/视频：请在图片管理中使用上传功能')
 }
 
-async function trackDiskScan(scanLogId, albumId) {
+async function trackDiskScan(scanLogId, albumId, albumName) {
   if (!scanLogId) return
-  scanAbortController.value?.abort?.()
-  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null
-  scanAbortController.value = ac
-  scanUi.visible = true
-  scanUi.albumId = albumId
-  applyScanProgress({ status: 0, totalCount: 0, newCount: 0, skipCount: 0, failCount: 0, message: '正在启动扫描…' })
   if (albumId != null) {
     scanningAlbumIds.value = [...new Set([...scanningAlbumIds.value, albumId])]
   }
-  try {
-    const finalLog = await pollScanProgress(scanLogId, {
-      interval: 800,
-      onProgress: applyScanProgress,
-      signal: ac?.signal
-    })
-    applyScanProgress(finalLog)
-    const added = Number(finalLog.newCount) || 0
-    if (Number(finalLog.status) === 2) {
-      proxy.$modal.msgError(finalLog.message || '扫描失败')
-    } else {
-      proxy.$modal.msgSuccess(`扫描完成，新增 ${added} 项`)
-    }
-  } catch (e) {
-    if (e?.message !== 'aborted') {
-      proxy.$modal.msgError('扫描进度获取失败，请稍后刷新相册列表')
-    }
-  } finally {
-    if (scanAbortController.value === ac) {
-      scanAbortController.value = null
-    }
-    if (albumId != null) {
-      scanningAlbumIds.value = scanningAlbumIds.value.filter(id => String(id) !== String(albumId))
-    }
-    await getList()
-    // 稍留完成态再关闭，避免进度条瞬间消失
-    setTimeout(() => {
-      if (!scanningAlbumIds.value.length) resetScanUi()
-    }, 600)
-  }
+  diskScanStore.track(scanLogId, {
+    albumId,
+    pathName: albumName || `相册 ${albumId}`
+  })
 }
+
+watch(
+  () => diskScanStore.progress.status,
+  (status, prev) => {
+    if (prev === 0 && status !== 0) {
+      const albumId = diskScanStore.progress.albumId
+      if (albumId != null) {
+        scanningAlbumIds.value = scanningAlbumIds.value.filter(id => String(id) !== String(albumId))
+      }
+      getList()
+      if (Number(status) === 2) {
+        proxy.$modal.msgError(diskScanStore.progress.message || '扫描失败')
+      } else if (Number(status) === 1) {
+        const added = Number(diskScanStore.progress.newCount) || 0
+        proxy.$modal.msgSuccess(`扫描完成，新增 ${added} 项`)
+      }
+    }
+  }
+)
 
 function submitCreate() {
   createFormRef.value.validate(valid => {
@@ -628,7 +545,7 @@ function submitCreate() {
         creating.value = false
         await getList()
         if (scanLogId) {
-          await trackDiskScan(scanLogId, album?.albumId)
+          await trackDiskScan(scanLogId, album?.albumId, album?.albumName)
         } else {
           proxy.$modal.msgSuccess('创建成功')
         }
@@ -655,10 +572,6 @@ function getList() {
 
 onActivated(() => {
   getList()
-})
-
-onBeforeUnmount(() => {
-  scanAbortController.value?.abort?.()
 })
 
 getList()
@@ -1014,76 +927,5 @@ getList()
     right: 20px;
     bottom: 24px;
   }
-}
-</style>
-
-<style lang="scss">
-.scan-progress-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 5000;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.scan-progress-panel {
-  width: min(440px, 100%);
-  background: #fff;
-  border-radius: 12px;
-  padding: 22px 24px 18px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
-}
-
-.scan-progress-title {
-  font-size: 17px;
-  font-weight: 650;
-  color: #1a1a1a;
-  margin-bottom: 14px;
-}
-
-.scan-progress-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 13px;
-  color: #666;
-}
-
-.scan-progress-stats {
-  display: flex;
-  gap: 16px;
-  margin-top: 12px;
-  font-size: 12px;
-  color: #888;
-}
-
-.scan-progress-current {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #333;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.scan-progress-tip {
-  margin-top: 14px;
-  font-size: 12px;
-  color: #999;
-  line-height: 1.4;
-}
-
-.scan-fade-enter-active,
-.scan-fade-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.scan-fade-enter-from,
-.scan-fade-leave-to {
-  opacity: 0;
 }
 </style>

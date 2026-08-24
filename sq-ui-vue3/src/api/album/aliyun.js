@@ -28,3 +28,15 @@ export function getAliyunProgress() {
     silent: true
   })
 }
+
+export function listAliyunAlbums(refreshToken) {
+  const params = {}
+  if (refreshToken) params.refreshToken = refreshToken
+  return request({
+    url: '/album/aliyun/albums',
+    method: 'get',
+    params,
+    timeout: 60000,
+    actionLoadingText: '正在获取云盘相册…'
+  })
+}

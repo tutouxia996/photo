@@ -91,6 +91,34 @@ public class BizPhotoController extends BaseController {
     @Autowired
     private com.sq.bus.service.IVideoProxyService videoProxyService;
 
+    @Autowired
+    private com.sq.bus.service.IBizScanPathService scanPathService;
+
+    /**
+     * 缩略图：优先静态文件；视频无封面时按需 ffmpeg 截帧并缓存。
+     */
+    @GetMapping("/thumb/{photoId}")
+    public void thumb(@PathVariable Long photoId, HttpServletResponse response) throws Exception {
+        BizPhoto photo = photoService.getById(photoId);
+        if (photo == null || photo.getDeleted() != null && photo.getDeleted() == AlbumDeleted.PURGED) {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
+        File file = resolveMediaFile(photo, false);
+        if (file == null || !file.exists() || !file.isFile()) {
+            scanPathService.ensurePhotoThumb(photoId);
+            photo = photoService.getById(photoId);
+            file = resolveMediaFile(photo, false);
+        }
+        if (file == null || !file.exists() || !file.isFile()) {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
+        response.setHeader("Cache-Control", "public, max-age=86400");
+        response.setContentType(MediaType.IMAGE_JPEG_VALUE);
+        Files.copy(file.toPath(), response.getOutputStream());
+    }
+
     /**
      * 足迹图：已访问省/市/区县的行政区边界（GeoJSON，GCJ-02）
      */

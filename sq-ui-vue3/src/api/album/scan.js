@@ -81,7 +81,18 @@ export function getScanProgress(logId) {
   return request({
     url: '/album/scan/progress/' + logId,
     method: 'get',
-    headers: { repeatSubmit: false }
+    headers: { repeatSubmit: false },
+    silent: true
+  })
+}
+
+/** 当前进行中的扫描任务 */
+export function getActiveScanProgress() {
+  return request({
+    url: '/album/scan/active',
+    method: 'get',
+    headers: { repeatSubmit: false },
+    silent: true
   })
 }
 

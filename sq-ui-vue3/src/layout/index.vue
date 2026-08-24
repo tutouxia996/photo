@@ -10,6 +10,7 @@
       <app-main />
       <settings ref="settingRef" />
       <aliyun-sync-float />
+      <disk-scan-float />
       <video-proxy-float />
       <photo-score-float />
     </div>
@@ -21,6 +22,7 @@ import { useWindowSize } from '@vueuse/core'
 import Sidebar from './components/Sidebar/index.vue'
 import { AppMain, Navbar, Settings, TagsView } from './components'
 import AliyunSyncFloat from './components/AliyunSyncFloat.vue'
+import DiskScanFloat from './components/DiskScanFloat.vue'
 import VideoProxyFloat from './components/VideoProxyFloat.vue'
 import PhotoScoreFloat from './components/PhotoScoreFloat.vue'
 import defaultSettings from '@/settings'

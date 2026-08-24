@@ -58,10 +58,12 @@
 <script setup>
 import useVideoProxyStore from '@/store/modules/videoProxy'
 import useAliyunSyncStore from '@/store/modules/aliyunSync'
+import useDiskScanStore from '@/store/modules/diskScan'
 import usePhotoScoreStore from '@/store/modules/photoScore'
 
 const store = useVideoProxyStore()
 const aliyunStore = useAliyunSyncStore()
+const diskScanStore = useDiskScanStore()
 const photoScoreStore = usePhotoScoreStore()
 const progress = computed(() => store.progress)
 const visible = computed(() => store.visible)
@@ -74,8 +76,10 @@ const failedJobs = computed(() => (progress.value.failedJobs || []).slice(0, 5))
 const canDismiss = computed(() => !progress.value.running && Number(progress.value.status) !== 0)
 
 const floatBottom = computed(() => {
-  if (aliyunStore.visible) return '190px'
-  return '20px'
+  let bottom = 20
+  if (aliyunStore.visible) bottom += 170
+  if (diskScanStore.visible) bottom += 170
+  return `${bottom}px`
 })
 const floatRight = computed(() => {
   if (photoScoreStore.visible && aliyunStore.visible) return '350px'

@@ -24,6 +24,7 @@ import com.sq.bus.utils.ThumbUtils;
 import com.sq.bus.utils.VideoMetaUtils;
 import com.sq.bus.utils.VideoStreamProbe;
 import com.sq.common.exception.ServiceException;
+import com.sq.common.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -362,12 +363,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                         if (sameAlbum) {
                             try {
                                 if (fileType == 2) {
-                                    if (fullScan) {
-                                        if (enrichExistingVideo(exists, mediaFile, scanPath)) {
-                                            counter.gpsUpdated++;
-                                        }
-                                    } else {
-                                        repairOneVideoThumb(exists, mediaFile, scanPath);
+                                    if (enrichExistingVideo(exists, mediaFile, scanPath)) {
+                                        counter.gpsUpdated++;
                                     }
                                 } else if (fileType == 1) {
                                     enrichExistingImageThumb(exists, mediaFile, scanPath);
@@ -991,6 +988,201 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         return thumb.exists() && thumb.isFile() && thumb.length() >= 1024L;
     }
 
+    @Override
+    public String ensurePhotoThumb(Long photoId) {
+        if (photoId == null) {
+            return null;
+        }
+        BizPhoto photo = photoService.getById(photoId);
+        if (photo == null || photo.getDeleted() != null && photo.getDeleted() != AlbumDeleted.NORMAL) {
+            return null;
+        }
+        if (hasUsableThumb(photo)) {
+            return photo.getThumbUrl();
+        }
+        File file = resolvePhotoFile(photo);
+        if (file == null || !file.isFile()) {
+            return null;
+        }
+        int fileType = photo.getFileType() != null ? photo.getFileType() : 1;
+        Long pathId = resolvePathIdForPhoto(photo);
+        BizScanPath scanPath = pathId != null ? getById(pathId) : null;
+        if (fileType == 2) {
+            if (scanPath != null) {
+                if (repairOneVideoThumb(photo, file, scanPath)) {
+                    return photo.getThumbUrl();
+                }
+            } else {
+                String thumbUrl = createUploadStyleVideoThumb(photo, file);
+                if (thumbUrl != null) {
+                    photo.setThumbUrl(thumbUrl);
+                    photo.setUpdateTime(new Date());
+                    PhotoFieldUtils.clamp(photo);
+                    photoService.updateById(photo);
+                    return thumbUrl;
+                }
+            }
+            return null;
+        }
+        File thumbDir = new File(albumProperties.getThumbPath(),
+                pathId != null ? String.valueOf(pathId) : uploadThumbDateDir());
+        String thumbName = "s_" + file.getName();
+        File thumbFile = new File(thumbDir, thumbName);
+        try {
+            ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
+            if (thumbFile.exists() && thumbFile.length() > 0) {
+                String rel = (pathId != null ? String.valueOf(pathId) : uploadThumbDateDir()) + "/" + thumbName;
+                String thumbUrl = "/album/files/thumb/" + rel;
+                photo.setThumbUrl(thumbUrl);
+                photo.setUpdateTime(new Date());
+                PhotoFieldUtils.clamp(photo);
+                photoService.updateById(photo);
+                return thumbUrl;
+            }
+        } catch (Exception ex) {
+            log.warn("按需生成图片缩略图失败 photoId={} err={}", photoId, ex.toString());
+        }
+        return null;
+    }
+
+    @Override
+    public BizScanLog getActiveScanLog() {
+        return scanLogService.getOne(new LambdaQueryWrapper<BizScanLog>()
+                .eq(BizScanLog::getStatus, 0)
+                .orderByDesc(BizScanLog::getLogId)
+                .last("LIMIT 1"), false);
+    }
+
+    @Override
+    public Long upsertScanPathForSync(String localPath, Long albumId, String pathName) {
+        if (StringUtils.isEmpty(localPath) || albumId == null) {
+            return null;
+        }
+        String normalized = normalizeSyncPath(localPath);
+        BizScanPath existing = getOne(new LambdaQueryWrapper<BizScanPath>()
+                .eq(BizScanPath::getDeleted, 0)
+                .eq(BizScanPath::getLocalPath, normalized)
+                .last("LIMIT 1"), false);
+        if (existing == null) {
+            existing = getOne(new LambdaQueryWrapper<BizScanPath>()
+                    .eq(BizScanPath::getDeleted, 0)
+                    .eq(BizScanPath::getDefaultAlbumId, albumId)
+                    .last("LIMIT 1"), false);
+        }
+        String name = StringUtils.isNotEmpty(pathName) ? pathName.trim() : ("云盘-" + albumId);
+        if (existing != null) {
+            existing.setLocalPath(normalized);
+            existing.setDefaultAlbumId(albumId);
+            existing.setPathName(name);
+            existing.setStatus(1);
+            existing.setUpdateTime(new Date());
+            updateById(existing);
+            return existing.getPathId();
+        }
+        BizScanPath created = new BizScanPath();
+        created.setPathName(name);
+        created.setLocalPath(normalized);
+        created.setDefaultAlbumId(albumId);
+        created.setStatus(1);
+        created.setDeleted(0);
+        created.setCreateTime(new Date());
+        save(created);
+        return created.getPathId();
+    }
+
+    private String createUploadStyleVideoThumb(BizPhoto photo, File file) {
+        String dateDir = uploadThumbDateDir();
+        File thumbDir = new File(albumProperties.getThumbPath(), dateDir);
+        String thumbName = "s_" + file.getName().replaceAll("\\.[^.]+$", "") + ".jpg";
+        File thumbFile = new File(thumbDir, thumbName);
+        if (!ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
+            return null;
+        }
+        return "/album/files/thumb/" + dateDir + "/" + thumbName;
+    }
+
+    private static String uploadThumbDateDir() {
+        return new java.text.SimpleDateFormat("yyyy/MM/dd").format(new Date());
+    }
+
+    private File resolvePhotoFile(BizPhoto photo) {
+        if (photo == null) {
+            return null;
+        }
+        if (StringUtils.isNotEmpty(photo.getFilePath())) {
+            File f = new File(photo.getFilePath());
+            if (f.exists() && f.isFile()) {
+                return f;
+            }
+        }
+        if (StringUtils.isNotEmpty(photo.getFileUrl()) && photo.getFileUrl().startsWith("/album/files/scan/")) {
+            String rel = photo.getFileUrl().substring("/album/files/scan/".length());
+            int slash = rel.indexOf('/');
+            if (slash > 0) {
+                Long pathId = Long.parseLong(rel.substring(0, slash));
+                BizScanPath sp = getById(pathId);
+                if (sp != null && StringUtils.isNotEmpty(sp.getLocalPath())) {
+                    File f = new File(sp.getLocalPath(), rel.substring(slash + 1));
+                    if (f.exists() && f.isFile()) {
+                        return f;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private Long resolvePathIdForPhoto(BizPhoto photo) {
+        if (photo == null) {
+            return null;
+        }
+        if (StringUtils.isNotEmpty(photo.getThumbUrl()) && photo.getThumbUrl().startsWith("/album/files/thumb/")) {
+            String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
+            int slash = rel.indexOf('/');
+            if (slash > 0) {
+                try {
+                    return Long.parseLong(rel.substring(0, slash));
+                } catch (NumberFormatException ignored) {
+                    // 上传目录 yyyy/MM/dd 等非数字
+                }
+            }
+        }
+        if (StringUtils.isNotEmpty(photo.getFileUrl()) && photo.getFileUrl().startsWith("/album/files/scan/")) {
+            String rel = photo.getFileUrl().substring("/album/files/scan/".length());
+            int slash = rel.indexOf('/');
+            if (slash > 0) {
+                try {
+                    return Long.parseLong(rel.substring(0, slash));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        if (StringUtils.isNotEmpty(photo.getFilePath())) {
+            List<BizScanPath> paths = list(new LambdaQueryWrapper<BizScanPath>()
+                    .eq(BizScanPath::getDeleted, 0)
+                    .eq(BizScanPath::getStatus, 1));
+            File file = new File(photo.getFilePath());
+            for (BizScanPath sp : paths) {
+                if (sp.getLocalPath() != null && isUnderConfiguredRoot(file, sp.getLocalPath())) {
+                    return sp.getPathId();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String normalizeSyncPath(String path) {
+        if (path == null) {
+            return "";
+        }
+        String p = path.trim().replace('/', File.separatorChar).replace('\\', File.separatorChar);
+        while (p.endsWith(File.separator)) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p;
+    }
+
     private static final class MediaMeta {
         private Date shootTime;
         private BigDecimal latitude;
@@ -1109,12 +1301,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (sameAlbum) {
             try {
                 if (fileType == 2) {
-                    if (fullScan) {
-                        if (enrichExistingVideo(exists, file, scanPath)) {
-                            counter.gpsUpdated++;
-                        }
-                    } else {
-                        repairOneVideoThumb(exists, file, scanPath);
+                    if (enrichExistingVideo(exists, file, scanPath)) {
+                        counter.gpsUpdated++;
                     }
                 } else if (fileType == 1) {
                     enrichExistingImageThumb(exists, file, scanPath);

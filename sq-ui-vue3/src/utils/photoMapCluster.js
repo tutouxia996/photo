@@ -458,11 +458,9 @@ export function mediaSrc(point, original = false) {
     return ''
   }
   const thumb = pointThumbUrl(point)
-  // 视频无 thumbUrl 时不要请求 media：服务端对无截帧视频会 404，地图 <img> 会空白
-  if (Number(point?.fileType) === 2 && !thumb) {
-    return ''
+  if (Number(point?.fileType) === 2 && !thumb && point?.photoId) {
+    return resolveUrl('/album/photo/thumb/' + point.photoId)
   }
-  // 网格/地图标记优先静态缩略图
   if (thumb) return resolveUrl(thumb)
   if (point?.photoId) {
     return resolveUrl('/album/photo/media/' + point.photoId)

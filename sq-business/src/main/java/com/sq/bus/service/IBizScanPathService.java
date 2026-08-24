@@ -38,4 +38,21 @@ public interface IBizScanPathService extends IService<BizScanPath> {
      * 统计扫描目录下视频的转码资格（不入队、不写盘）。
      */
     java.util.Map<String, Object> videoProxyStats(Long pathId);
+
+    /**
+     * 确保照片/视频有可用的缩略图；视频无封面时尝试 ffmpeg 截帧并写库。
+     *
+     * @return thumbUrl，失败返回 null
+     */
+    String ensurePhotoThumb(Long photoId);
+
+    /**
+     * 当前进行中的扫描日志（无则 null）。
+     */
+    com.sq.bus.domain.BizScanLog getActiveScanLog();
+
+    /**
+     * 按本机路径与绑定相册自动创建或更新扫描目录，返回 pathId。
+     */
+    Long upsertScanPathForSync(String localPath, Long albumId, String pathName);
 }

@@ -1052,14 +1052,18 @@ function resolveUrl(url) {
 
 function canShowThumb(item) {
   if (!item || brokenThumbs.value.has(item.photoId)) return false
-  // 网格只吃静态缩略图；无 thumbUrl 不占请求
-  if (!item.thumbUrl) return false
-  return true
+  if (item.thumbUrl) return true
+  // 视频无静态封面时走按需截帧接口
+  return item.fileType === 2 && !!item.photoId
 }
 
 function thumbSrc(item) {
-  if (!canShowThumb(item)) return ''
-  return resolveUrl(item.thumbUrl)
+  if (!item) return ''
+  if (item.thumbUrl) return resolveUrl(item.thumbUrl)
+  if (item.fileType === 2 && item.photoId) {
+    return resolveUrl('/album/photo/thumb/' + item.photoId)
+  }
+  return ''
 }
 
 function originalSrc(item) {
