@@ -1,12 +1,17 @@
 -- =====================================================================
 -- 相册网站数据库导出（仅若依 sys 配置数据，不含业务数据）
 -- 库名: photo
--- 导出时间: 2026-08-23 17:20:13
+-- 导出时间: 2026-08-25
 -- 说明:
 --   - 含全部表结构（biz_* 为空表）
 --   - 含 sys_* 配置数据（用户/角色/菜单/字典等）
 --   - 不含 sys_oper_log / sys_logininfor / sys_job_log 日志
 --   - 不含 biz_* 业务数据
+-- 变更（2026-08-25）:
+--   - biz_aliyun_drive_setting.remark 改为 TEXT（多选云盘相册 JSON）
+--   - 修正 biz_photo / biz_photo_draw / biz_photo_draw_preset 乱码注释
+--   - biz 表 AUTO_INCREMENT 重置为 1（新库初始化）
+-- 已有库升级多相册: 执行 doc/db/album_aliyun_remark_text.sql
 -- 用法: mysql -u用户 -p < photo_sys_only_export.sql
 -- =====================================================================
 
@@ -55,7 +60,7 @@ CREATE TABLE `biz_album` (
   `deleted` tinyint(4) NOT NULL DEFAULT '0' COMMENT '0未删除 1已删除 2回收站',
   PRIMARY KEY (`album_id`),
   KEY `idx_deleted` (`deleted`)
-) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4 COMMENT='相册表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='相册表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -69,10 +74,10 @@ CREATE TABLE `biz_aliyun_drive_setting` (
   `id` bigint(20) NOT NULL COMMENT '固定为 1',
   `enabled` tinyint(4) NOT NULL DEFAULT '0' COMMENT '是否启用',
   `refresh_token` varchar(1024) DEFAULT '' COMMENT '网页版 refresh_token',
-  `remote_album_name` varchar(200) DEFAULT '' COMMENT '云盘相册名称',
-  `remote_album_id` varchar(100) DEFAULT '' COMMENT '云盘相册ID（优先）',
-  `local_path` varchar(500) DEFAULT '' COMMENT '本机下载目录',
-  `scan_path_id` bigint(20) DEFAULT NULL COMMENT '磁盘扫描目录 path_id',
+  `remote_album_name` varchar(200) DEFAULT '' COMMENT '云盘相册名称（兼容：首个）',
+  `remote_album_id` varchar(100) DEFAULT '' COMMENT '云盘相册ID（兼容：首个）',
+  `local_path` varchar(500) DEFAULT '' COMMENT '本机父目录（多相册时各下载到 父目录/相册名）',
+  `scan_path_id` bigint(20) DEFAULT NULL COMMENT '磁盘扫描目录 path_id（多相册时由程序按相册维护）',
   `trigger_scan` tinyint(4) NOT NULL DEFAULT '1' COMMENT '下载后是否触发扫描',
   `full_scan` tinyint(4) NOT NULL DEFAULT '0' COMMENT '1全量 0增量',
   `token_file` varchar(500) DEFAULT '' COMMENT 'token 与已下文件状态文件',
@@ -86,7 +91,7 @@ CREATE TABLE `biz_aliyun_drive_setting` (
   `multipart_min_bytes` bigint(20) DEFAULT '2097152',
   `update_by` varchar(64) DEFAULT '',
   `update_time` datetime DEFAULT NULL,
-  `remark` varchar(500) DEFAULT NULL,
+  `remark` text COMMENT '多选云盘相册 JSON（remoteAlbums）',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='阿里云盘相册同步配置';
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -134,15 +139,15 @@ CREATE TABLE `biz_photo` (
   `score_pass` tinyint(4) DEFAULT NULL COMMENT '是否达到图生图门槛：0否 1是 空未打分',
   `score_reason` varchar(200) DEFAULT NULL COMMENT '打分摘要',
   `scored_at` datetime DEFAULT NULL COMMENT '最近打分时间',
-  `origin_type` varchar(20) DEFAULT 'original' COMMENT '鏉ユ簮锛歰riginal鍘熺墖 ai_draw AI鍑哄浘',
-  `source_photo_id` bigint(20) DEFAULT NULL COMMENT 'AI鍑哄浘鏃剁殑婧愮収鐗嘔D',
+  `origin_type` varchar(20) DEFAULT 'original' COMMENT '来源：original原片 ai_draw AI出图',
+  `source_photo_id` bigint(20) DEFAULT NULL COMMENT 'AI出图时的源照片ID',
   `deleted` tinyint(4) NOT NULL DEFAULT '0' COMMENT '0未删除 1已删除 2回收站',
   PRIMARY KEY (`photo_id`),
   KEY `idx_album_id` (`album_id`),
   KEY `idx_shoot_time` (`shoot_time`),
   KEY `idx_md5` (`md5`),
   KEY `idx_deleted` (`deleted`)
-) ENGINE=InnoDB AUTO_INCREMENT=7202 DEFAULT CHARSET=utf8mb4 COMMENT='图片表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='图片表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -153,21 +158,21 @@ DROP TABLE IF EXISTS `biz_photo_draw`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;
 CREATE TABLE `biz_photo_draw` (
-  `draw_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '鍑哄浘璁板綍ID',
-  `album_id` bigint(20) NOT NULL COMMENT '鐩稿唽ID',
-  `source_photo_id` bigint(20) NOT NULL COMMENT '婧愮収鐗嘔D',
-  `result_photo_id` bigint(20) DEFAULT NULL COMMENT '鐢熸垚鍚庡叆搴撶殑鐓х墖ID',
-  `preset` varchar(64) NOT NULL COMMENT '棰勮?鏍囪瘑',
+  `draw_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '出图记录ID',
+  `album_id` bigint(20) NOT NULL COMMENT '相册ID',
+  `source_photo_id` bigint(20) NOT NULL COMMENT '源照片ID',
+  `result_photo_id` bigint(20) DEFAULT NULL COMMENT '生成后入库的照片ID',
+  `preset` varchar(64) NOT NULL COMMENT '预设标识',
   `status` varchar(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/running/success/failed',
-  `task_id` varchar(64) DEFAULT NULL COMMENT '涓囩浉寮傛?浠诲姟ID',
-  `error_msg` varchar(500) DEFAULT NULL COMMENT '澶辫触鍘熷洜',
-  `create_by` varchar(64) DEFAULT '' COMMENT '鍒涘缓鑰',
-  `create_time` datetime DEFAULT NULL COMMENT '鍒涘缓鏃堕棿',
-  `update_time` datetime DEFAULT NULL COMMENT '鏇存柊鏃堕棿',
+  `task_id` varchar(64) DEFAULT NULL COMMENT '万相异步任务ID',
+  `error_msg` varchar(500) DEFAULT NULL COMMENT '失败原因',
+  `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   PRIMARY KEY (`draw_id`),
   KEY `idx_source_photo` (`source_photo_id`),
   KEY `idx_album` (`album_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COMMENT='鐓х墖AI鍑哄浘璁板綍';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='照片AI出图记录';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -178,26 +183,26 @@ DROP TABLE IF EXISTS `biz_photo_draw_preset`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;
 CREATE TABLE `biz_photo_draw_preset` (
-  `preset_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '??ID',
-  `preset_key` varchar(64) NOT NULL COMMENT '???????????',
-  `label` varchar(100) NOT NULL COMMENT '????',
-  `panel_prompt` text NOT NULL COMMENT '?????????/prompt',
-  `panel_size` varchar(32) NOT NULL DEFAULT '960*1280' COMMENT '??????',
-  `layout` varchar(64) NOT NULL DEFAULT 'FULL_CANVAS' COMMENT '???? PhotoDrawLayout',
-  `grade_photo` tinyint(4) NOT NULL DEFAULT '1' COMMENT '??????????????0? 1?',
-  `sort_order` int(11) NOT NULL DEFAULT '0' COMMENT '??????',
-  `enabled` tinyint(4) NOT NULL DEFAULT '1' COMMENT '?????0?? 1??',
-  `source` varchar(32) NOT NULL DEFAULT 'manual' COMMENT '???builtin/manual/skill_import',
-  `skill_raw` mediumtext COMMENT '??? skill ??????',
-  `create_by` varchar(64) DEFAULT '' COMMENT '???',
-  `create_time` datetime DEFAULT NULL COMMENT '????',
-  `update_by` varchar(64) DEFAULT '' COMMENT '???',
-  `update_time` datetime DEFAULT NULL COMMENT '????',
-  `remark` varchar(500) DEFAULT NULL COMMENT '??',
+  `preset_id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '预设ID',
+  `preset_key` varchar(64) NOT NULL COMMENT '预设标识（出图请求 preset）',
+  `label` varchar(100) NOT NULL COMMENT '显示名称',
+  `panel_prompt` text NOT NULL COMMENT '万相图生图风格描述/prompt',
+  `panel_size` varchar(32) NOT NULL DEFAULT '960*1280' COMMENT '出图尺寸',
+  `layout` varchar(64) NOT NULL DEFAULT 'FULL_CANVAS' COMMENT '布局 PhotoDrawLayout',
+  `grade_photo` tinyint(4) NOT NULL DEFAULT '1' COMMENT '上下双联时是否对原图轻调色：0否 1是',
+  `sort_order` int(11) NOT NULL DEFAULT '0' COMMENT '排序号',
+  `enabled` tinyint(4) NOT NULL DEFAULT '1' COMMENT '是否启用：0禁用 1启用',
+  `source` varchar(32) NOT NULL DEFAULT 'manual' COMMENT '来源：builtin/manual/skill_import',
+  `skill_raw` mediumtext COMMENT '导入的 skill 原文',
+  `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` varchar(64) DEFAULT '' COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
   PRIMARY KEY (`preset_id`),
   UNIQUE KEY `uk_preset_key` (`preset_key`),
   KEY `idx_enabled_sort` (`enabled`,`sort_order`)
-) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COMMENT='AI??????';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='AI出图预设风格';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -222,7 +227,7 @@ CREATE TABLE `biz_scan_log` (
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',
   PRIMARY KEY (`log_id`),
   KEY `idx_scan_log_path_id` (`path_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=62 DEFAULT CHARSET=utf8mb4 COMMENT='扫描记录表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='扫描记录表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -248,7 +253,7 @@ CREATE TABLE `biz_scan_path` (
   `deleted` tinyint(4) NOT NULL DEFAULT '0' COMMENT '0未删除 1已删除',
   PRIMARY KEY (`path_id`),
   KEY `idx_scan_path_deleted` (`deleted`)
-) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4 COMMENT='扫描目录配置表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='扫描目录配置表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -281,7 +286,7 @@ CREATE TABLE `biz_track` (
   PRIMARY KEY (`track_id`),
   KEY `idx_track_album_id` (`album_id`),
   KEY `idx_track_deleted` (`deleted`)
-) ENGINE=InnoDB AUTO_INCREMENT=51 DEFAULT CHARSET=utf8mb4 COMMENT='轨迹表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='轨迹表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -334,7 +339,7 @@ CREATE TABLE `biz_track_point` (
   PRIMARY KEY (`point_id`),
   KEY `idx_point_track_id` (`track_id`),
   KEY `idx_point_photo_id` (`photo_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=19361 DEFAULT CHARSET=utf8mb4 COMMENT='轨迹点表';
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='轨迹点表';
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
