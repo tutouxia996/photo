@@ -23,6 +23,21 @@ public class AliyunSyncProgress {
     private int remaining;
     private int percent;
     private String message;
+    /** 多相册：总数（1 表示单相册） */
+    private int albumCount;
+    /** 多相册：当前正在处理的相册序号，从 1 开始 */
+    private int albumIndex;
+    /** 多相册：当前相册名称 */
+    private String currentAlbumName;
+    /** 多相册累计：已列举出的待下载总数（后续相册会继续增加） */
+    private int overallNeed;
+    /** 多相册累计：尚未完成下载的文件数（含当前相册队列） */
+    private int overallRemaining;
+    private int overallDownloaded;
+    private int overallSkipped;
+    private int overallFailed;
+    /** 多相册：尚未开始列举的相册数量 */
+    private int albumsPending;
     private boolean paused;
     private boolean running;
     private boolean canPause;

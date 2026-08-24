@@ -67,6 +67,17 @@ public class AliyunDriveSyncService {
     private volatile String progressPhase = "done";
     private volatile String progressMessage = "";
     private volatile String activeTokenFile = "";
+    /** 多相册批次：相册总数 */
+    private volatile int batchAlbumCount;
+    /** 多相册批次：当前相册序号（1-based） */
+    private volatile int batchAlbumIndex;
+    private volatile String batchCurrentAlbumName = "";
+    /** 已完成相册累计 */
+    private final AtomicInteger batchCompletedNeed = new AtomicInteger();
+    private final AtomicInteger batchCompletedDownloaded = new AtomicInteger();
+    private final AtomicInteger batchCompletedSkipped = new AtomicInteger();
+    private final AtomicInteger batchCompletedFailed = new AtomicInteger();
+    private final AtomicInteger batchCompletedRemaining = new AtomicInteger();
     private final ConcurrentHashMap<String, AliyunSyncProgress.CurrentFile> currentFiles =
             new ConcurrentHashMap<String, AliyunSyncProgress.CurrentFile>();
     private final CopyOnWriteArrayList<AliyunSyncProgress.FailedFile> failedFiles =
@@ -193,6 +204,7 @@ public class AliyunDriveSyncService {
             }
             String basePath = cfg.getLocalPath();
             int albumCount = albums.size();
+            resetBatchProgress(albumCount);
             int sumRemote = 0;
             int sumDownloaded = 0;
             int sumSkipped = 0;
@@ -206,8 +218,10 @@ public class AliyunDriveSyncService {
                     break;
                 }
                 RemoteAlbumItem album = albums.get(i);
+                batchAlbumIndex = i + 1;
+                batchCurrentAlbumName = album.getName() == null ? "" : album.getName();
                 markProgress(0, "listing", String.format(Locale.ROOT,
-                        "正在同步相册 %d/%d：%s", i + 1, albumCount, album.getName()));
+                        "正在同步相册 %d/%d：%s", batchAlbumIndex, albumCount, batchCurrentAlbumName));
                 persistProgressQuiet();
 
                 AlbumProperties.AliyunDriveConfig oneCfg = copyDriveCfg(cfg);
@@ -220,6 +234,10 @@ public class AliyunDriveSyncService {
                 sumDownloaded += result.downloaded;
                 sumSkipped += result.skipped;
                 sumFailed += result.failed;
+
+                if (!result.paused && progressRemaining.get() <= 0) {
+                    accumulateCompletedAlbumProgress();
+                }
 
                 if (result.paused) {
                     anyPaused = true;
@@ -365,6 +383,7 @@ public class AliyunDriveSyncService {
         failedFiles.clear();
         progressRemaining.set(needDownload.size());
         persistStore = store;
+        updateBatchProgressMessage();
         if (paused.get()) {
             markProgress(3, "paused", "已暂停，剩余 " + needDownload.size() + " 个未下载");
             persistProgress(store, cfg.getTokenFile());
@@ -375,9 +394,10 @@ public class AliyunDriveSyncService {
             return result;
         }
         if (needDownload.isEmpty()) {
-            markProgress(0, "downloading", "没有需要下载的新文件");
+            markProgress(0, "downloading", buildBatchProgressMessage("没有需要下载的新文件"));
         } else {
-            markProgress(0, "downloading", "开始下载 " + needDownload.size() + " 个文件，剩余 " + needDownload.size());
+            markProgress(0, "downloading", buildBatchProgressMessage(
+                    "开始下载 " + needDownload.size() + " 个文件"));
         }
         persistProgress(store, cfg.getTokenFile());
 
@@ -594,6 +614,7 @@ public class AliyunDriveSyncService {
         p.setFailed(progressFailed.get());
         p.setRemaining(Math.max(0, progressRemaining.get()));
         p.setMessage(progressMessage == null ? "" : progressMessage);
+        fillBatchFields(p);
         p.setCurrentFiles(new ArrayList<AliyunSyncProgress.CurrentFile>(currentFiles.values()));
         p.setFailedFiles(new ArrayList<AliyunSyncProgress.FailedFile>(failedFiles));
         return p;
@@ -663,6 +684,14 @@ public class AliyunDriveSyncService {
         o.put("remaining", progressRemaining.get());
         o.put("message", progressMessage);
         o.put("paused", paused.get() || progressStatus.get() == 3);
+        o.put("albumCount", batchAlbumCount);
+        o.put("albumIndex", batchAlbumIndex);
+        o.put("currentAlbumName", batchCurrentAlbumName);
+        o.put("batchCompletedNeed", batchCompletedNeed.get());
+        o.put("batchCompletedDownloaded", batchCompletedDownloaded.get());
+        o.put("batchCompletedSkipped", batchCompletedSkipped.get());
+        o.put("batchCompletedFailed", batchCompletedFailed.get());
+        o.put("batchCompletedRemaining", batchCompletedRemaining.get());
         if (!failedFiles.isEmpty()) {
             o.put("failedFiles", JSON.parseArray(JSON.toJSONString(failedFiles)));
         }
@@ -687,6 +716,14 @@ public class AliyunDriveSyncService {
         progressFailed.set(o.getIntValue("failed"));
         progressRemaining.set(remaining);
         progressMessage = o.getString("message");
+        batchAlbumCount = o.getIntValue("albumCount");
+        batchAlbumIndex = o.getIntValue("albumIndex");
+        batchCurrentAlbumName = nvl(o.getString("currentAlbumName"));
+        batchCompletedNeed.set(o.getIntValue("batchCompletedNeed"));
+        batchCompletedDownloaded.set(o.getIntValue("batchCompletedDownloaded"));
+        batchCompletedSkipped.set(o.getIntValue("batchCompletedSkipped"));
+        batchCompletedFailed.set(o.getIntValue("batchCompletedFailed"));
+        batchCompletedRemaining.set(o.getIntValue("batchCompletedRemaining"));
         paused.set(status == 3 || Boolean.TRUE.equals(o.getBoolean("paused")));
         if (status == 3 && remaining > 0 && StringUtils.isEmpty(progressMessage)) {
             progressMessage = "已暂停，剩余 " + remaining + " 个未下载";
@@ -711,6 +748,97 @@ public class AliyunDriveSyncService {
     private void refreshRemaining() {
         progressRemaining.set(Math.max(0,
                 progressNeed.get() - progressDownloaded.get() - progressGone.get()));
+        updateBatchProgressMessage();
+    }
+
+    private void resetBatchProgress(int albumCount) {
+        batchAlbumCount = Math.max(1, albumCount);
+        batchAlbumIndex = 0;
+        batchCurrentAlbumName = "";
+        batchCompletedNeed.set(0);
+        batchCompletedDownloaded.set(0);
+        batchCompletedSkipped.set(0);
+        batchCompletedFailed.set(0);
+        batchCompletedRemaining.set(0);
+    }
+
+    private void accumulateCompletedAlbumProgress() {
+        batchCompletedNeed.addAndGet(progressNeed.get());
+        batchCompletedDownloaded.addAndGet(progressDownloaded.get());
+        batchCompletedSkipped.addAndGet(progressSkipped.get());
+        batchCompletedFailed.addAndGet(progressFailed.get());
+        batchCompletedRemaining.addAndGet(progressRemaining.get());
+    }
+
+    private void fillBatchFields(AliyunSyncProgress p) {
+        int count = batchAlbumCount > 0 ? batchAlbumCount : 1;
+        p.setAlbumCount(count);
+        p.setAlbumIndex(batchAlbumIndex);
+        p.setCurrentAlbumName(batchCurrentAlbumName);
+        int currentNeed = progressNeed.get();
+        int overallNeed = batchCompletedNeed.get() + currentNeed;
+        int overallDownloaded = batchCompletedDownloaded.get() + progressDownloaded.get();
+        int overallSkipped = batchCompletedSkipped.get() + progressSkipped.get();
+        int overallFailed = batchCompletedFailed.get() + progressFailed.get();
+        int overallRemaining = batchCompletedRemaining.get() + progressRemaining.get();
+        p.setOverallNeed(overallNeed);
+        p.setOverallDownloaded(overallDownloaded);
+        p.setOverallSkipped(overallSkipped);
+        p.setOverallFailed(overallFailed);
+        p.setOverallRemaining(Math.max(0, overallRemaining));
+        int pending = count - batchAlbumIndex;
+        if (batchAlbumIndex <= 0) {
+            pending = count;
+        } else if (progressStatus.get() == 1) {
+            pending = 0;
+        } else {
+            pending = Math.max(0, pending);
+        }
+        p.setAlbumsPending(pending);
+    }
+
+    private String buildBatchProgressMessage(String detail) {
+        if (batchAlbumCount <= 1) {
+            return detail == null ? "" : detail;
+        }
+        String albumPart = String.format(Locale.ROOT, "相册 %d/%d", batchAlbumIndex, batchAlbumCount);
+        if (StringUtils.isNotEmpty(batchCurrentAlbumName)) {
+            albumPart += "：" + batchCurrentAlbumName;
+        }
+        int overallNeed = batchCompletedNeed.get() + progressNeed.get();
+        int overallRemaining = batchCompletedRemaining.get() + progressRemaining.get();
+        String overallPart = String.format(Locale.ROOT,
+                "累计待下 %d，剩余 %d", overallNeed, Math.max(0, overallRemaining));
+        if (batchAlbumIndex < batchAlbumCount) {
+            overallPart += String.format(Locale.ROOT, "（另有 %d 个相册待列举）",
+                    Math.max(0, batchAlbumCount - batchAlbumIndex));
+        }
+        if (StringUtils.isEmpty(detail)) {
+            return albumPart + " · " + overallPart;
+        }
+        return albumPart + " · " + detail + " · " + overallPart;
+    }
+
+    private void updateBatchProgressMessage() {
+        if (batchAlbumCount <= 1 || progressStatus.get() != 0) {
+            return;
+        }
+        if (!"downloading".equals(progressPhase) && !"listing".equals(progressPhase)) {
+            return;
+        }
+        String detail;
+        if ("listing".equals(progressPhase)) {
+            detail = "正在列举文件";
+        } else if (progressRemaining.get() > 0) {
+            detail = String.format(Locale.ROOT, "本相册剩余 %d", progressRemaining.get());
+        } else {
+            detail = "本相册下载中";
+        }
+        progressMessage = buildBatchProgressMessage(detail);
+    }
+
+    private static String nvl(String s) {
+        return s == null ? "" : s.trim();
     }
 
     private void markFileFailed(DriveFile file, Throwable e, AtomicInteger failed) {
@@ -734,7 +862,7 @@ public class AliyunDriveSyncService {
         f.setWritten(0L);
         f.setPercent(0);
         currentFiles.put(key, f);
-        progressMessage = "正在下载 " + (name == null ? "" : name);
+        progressMessage = buildBatchProgressMessage("正在下载 " + (name == null ? "" : name));
     }
 
     private void updateCurrentFile(String key, String name, long written, long expected) {
@@ -760,11 +888,13 @@ public class AliyunDriveSyncService {
         if (p.getStatus() == 1) {
             return 100;
         }
-        int need = p.getNeedDownload();
+        int need = p.getOverallNeed() > 0 ? p.getOverallNeed() : p.getNeedDownload();
+        int downloaded = p.getOverallNeed() > 0 ? p.getOverallDownloaded() : p.getDownloaded();
+        int failed = p.getOverallNeed() > 0 ? p.getOverallFailed() : p.getFailed();
         if (need <= 0) {
             return "listing".equals(p.getPhase()) ? 0 : ((p.getStatus() == 2 || p.getRemaining() <= 0) ? 100 : 0);
         }
-        double done = p.getDownloaded() + p.getFailed();
+        double done = downloaded + failed;
         for (AliyunSyncProgress.CurrentFile f : p.getCurrentFiles()) {
             if (f.getExpected() > 0) {
                 done += Math.min(0.99d, (double) f.getWritten() / (double) f.getExpected());
