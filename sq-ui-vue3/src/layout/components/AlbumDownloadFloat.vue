@@ -126,7 +126,8 @@ onUnmounted(() => {
 <style scoped>
 .album-download-float {
   position: fixed;
-  z-index: 3000;
+  /* 高于媒体预览层(3000)，下载进度在全屏预览时仍可见 */
+  z-index: 3500;
   width: 320px;
   padding: 12px 14px;
   background: #fff;

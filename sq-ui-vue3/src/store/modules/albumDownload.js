@@ -248,6 +248,7 @@ const useAlbumDownloadStore = defineStore('albumDownload', {
         albumName: '',
         fileName: ''
       })
+      ElMessage.success(total === 1 ? '开始下载原文件' : `开始下载 ${total} 项原文件`)
       let done = 0
       let failed = 0
       try {
@@ -266,7 +267,28 @@ const useAlbumDownloadStore = defineStore('albumDownload', {
               url,
               responseType: 'blob',
               timeout: 0,
-              headers: { Authorization: 'Bearer ' + getToken() }
+              headers: { Authorization: 'Bearer ' + getToken() },
+              onDownloadProgress: (evt) => {
+                const base = (done + failed) / total
+                const fileShare = 1 / total
+                let filePct = 0
+                if (evt.total > 0) {
+                  filePct = Math.min(1, (evt.loaded || 0) / evt.total)
+                }
+                const pct = Math.min(99, Math.round((base + fileShare * filePct) * 100))
+                const loaded = evt.loaded || 0
+                const totalBytes = evt.total || 0
+                this.progress = {
+                  ...this.progress,
+                  currentFile: name,
+                  percent: pct,
+                  bytesWritten: loaded,
+                  bytesTotal: totalBytes,
+                  message: totalBytes > 0
+                    ? `正在下载 ${done + 1}/${total}：${name}（${formatBytes(loaded)} / ${formatBytes(totalBytes)}）`
+                    : `正在下载 ${done + 1}/${total}：${name}`
+                }
+              }
             })
             saveAs(res.data, name)
             done++

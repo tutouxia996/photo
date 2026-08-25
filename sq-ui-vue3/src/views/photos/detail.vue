@@ -244,8 +244,18 @@
           <button type="button" class="sel-btn" title="AI 出图" @click="openDrawDialogFromSelection">
             <el-icon :size="20"><Brush /></el-icon>
           </button>
-          <button type="button" class="sel-btn" title="下载" @click="downloadSelected">
-            <el-icon :size="20"><Download /></el-icon>
+          <button
+            type="button"
+            class="sel-btn"
+            :class="{ 'is-downloading': mediaDownloading }"
+            :title="mediaDownloading ? '下载中…' : '下载'"
+            :disabled="mediaDownloading"
+            @click="downloadSelected"
+          >
+            <el-icon :size="20" :class="{ 'is-loading': mediaDownloading }">
+              <Loading v-if="mediaDownloading" />
+              <Download v-else />
+            </el-icon>
           </button>
           <button type="button" class="sel-btn" title="添加到..." @click="openAddToAlbum">
             <el-icon :size="20"><FolderAdd /></el-icon>
@@ -550,8 +560,18 @@
           <el-icon :size="22"><ArrowLeft /></el-icon>
         </button>
         <div class="media-actions">
-          <button type="button" class="media-action-btn" title="下载" @click.stop="onMediaDownload">
-            <el-icon :size="20"><Download /></el-icon>
+          <button
+            type="button"
+            class="media-action-btn"
+            :class="{ 'is-downloading': mediaDownloading }"
+            :title="mediaDownloading ? '下载中…' : '下载'"
+            :disabled="mediaDownloading"
+            @click.stop="onMediaDownload"
+          >
+            <el-icon :size="20" :class="{ 'is-loading': mediaDownloading }">
+              <Loading v-if="mediaDownloading" />
+              <Download v-else />
+            </el-icon>
           </button>
           <button
             v-if="currentMedia && currentMedia.fileType !== 2 && !isAiDraw(currentMedia) && currentMedia.scorePass === 1"
@@ -751,6 +771,11 @@ const { proxy } = getCurrentInstance()
 const route = useRoute()
 const photoScoreStore = usePhotoScoreStore()
 const albumDownloadStore = useAlbumDownloadStore()
+/** 预览/多选下载进行中：按钮转圈，避免长时间无反馈 */
+const mediaDownloading = computed(() => {
+  const p = albumDownloadStore.progress
+  return !!(albumDownloadStore.transferring || p.running || Number(p.status) === 0)
+})
 
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -2913,6 +2938,15 @@ init()
   &:hover {
     background: rgba(255, 255, 255, 0.14);
   }
+
+  &.is-downloading {
+    color: #9ecbff;
+    cursor: wait;
+  }
+
+  .is-loading {
+    animation: media-download-spin 0.8s linear infinite;
+  }
 }
 
 .sel-bar-enter-active,
@@ -3017,6 +3051,24 @@ init()
     background: rgba(0, 0, 0, 0.06);
     color: #111;
   }
+
+  &.is-downloading {
+    color: var(--el-color-primary);
+    cursor: wait;
+  }
+
+  &:disabled {
+    opacity: 1;
+  }
+
+  .is-loading {
+    animation: media-download-spin 0.8s linear infinite;
+  }
+}
+
+@keyframes media-download-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .media-canvas {
