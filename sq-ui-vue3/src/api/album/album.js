@@ -31,3 +31,26 @@ export function purgeAlbum(albumId) {
 export function refreshAlbumStats(albumId) {
   return request({ url: '/album/album/refreshStats/' + albumId, method: 'put' })
 }
+
+/** 启动相册后台打包下载 */
+export function startAlbumDownload(albumId) {
+  return request({
+    url: '/album/album/' + albumId + '/download',
+    method: 'post',
+    timeout: 60000,
+    showActionLoading: false
+  })
+}
+
+export function getAlbumDownloadProgress() {
+  return request({
+    url: '/album/album/download/progress',
+    method: 'get',
+    headers: { repeatSubmit: false },
+    silent: true
+  })
+}
+
+export function albumDownloadFileUrl(taskId) {
+  return '/album/album/download/file?taskId=' + encodeURIComponent(taskId)
+}

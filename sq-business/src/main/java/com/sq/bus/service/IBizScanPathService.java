@@ -20,16 +20,16 @@ public interface IBizScanPathService extends IService<BizScanPath> {
     Long startScanAsync(Long pathId, boolean fullScan);
 
     /**
-     * 为已入库但缺少缩略图的视频补截帧（按扫描目录关联相册；pathId 空则全部）。
+     * 为已入库视频补封面，并补齐缺失的 GPS；补到 GPS 后会自动刷新相册轨迹。
      * @param force true 时即使已有封面也强制重截（大疆 Action 等可重试）
-     * @return repaired/failed/skipped/total
+     * @return repaired/gpsFilled/tracksSynced/failed/skipped/total
      */
     java.util.Map<String, Object> repairMissingVideoThumbs(Long pathId, boolean force);
 
     /**
-     * 一键排队生成视频浏览档（720p/1080p × 30/60），写入 cache/proxy，不改原片、不入库。
+     * 一键排队生成视频浏览档（480p/720p/1080p × 30），写入 cache/proxy，不改原片、不入库。
      * @param pathId 扫描目录；空则全部启用目录
-     * @param force true 时已有浏览档也重新转码
+     * @param force true 时已有浏览档也重新转码（覆盖）；false 时已就绪的档位跳过
      * @return queued/ready/skipped/failed/total 等统计（转码在后台进行）
      */
     java.util.Map<String, Object> enqueueVideoProxies(Long pathId, boolean force);

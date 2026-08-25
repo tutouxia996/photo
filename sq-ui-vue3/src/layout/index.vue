@@ -12,6 +12,7 @@
       <aliyun-sync-float />
       <disk-scan-float />
       <video-proxy-float />
+      <album-download-float />
       <photo-score-float />
     </div>
   </div>
@@ -24,6 +25,7 @@ import { AppMain, Navbar, Settings, TagsView } from './components'
 import AliyunSyncFloat from './components/AliyunSyncFloat.vue'
 import DiskScanFloat from './components/DiskScanFloat.vue'
 import VideoProxyFloat from './components/VideoProxyFloat.vue'
+import AlbumDownloadFloat from './components/AlbumDownloadFloat.vue'
 import PhotoScoreFloat from './components/PhotoScoreFloat.vue'
 import defaultSettings from '@/settings'
 

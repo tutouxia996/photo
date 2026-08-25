@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizScanPath;
+import com.sq.bus.domain.vo.AlbumDownloadProgress;
+import com.sq.bus.service.IAlbumDownloadService;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizScanPathService;
 import com.sq.common.annotation.Log;
@@ -16,7 +18,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
@@ -36,6 +44,9 @@ public class BizAlbumController extends BaseController {
     @Autowired
     private IBizScanPathService scanPathService;
 
+    @Autowired
+    private IAlbumDownloadService albumDownloadService;
+
     @PreAuthorize("@ss.hasPermi('album:album:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizAlbum query) {
@@ -49,6 +60,58 @@ public class BizAlbumController extends BaseController {
                 .orderByDesc(BizAlbum::getAlbumId);
         List<BizAlbum> list = albumService.list(wrapper);
         return getDataTable(list);
+    }
+
+    /**
+     * 启动相册后台打包（原图/原视频 → zip），进度见 /download/progress，完成后取 /download/file
+     */
+    @PreAuthorize("@ss.hasPermi('album:album:query') or @ss.hasPermi('album:photo:list')")
+    @Log(title = "相册下载", businessType = BusinessType.EXPORT)
+    @PostMapping("/{albumId}/download")
+    public AjaxResult startDownload(@PathVariable Long albumId) {
+        AlbumDownloadProgress p = albumDownloadService.start(albumId);
+        return success(p);
+    }
+
+    /** 相册打包/下载进度（右下角浮层轮询） */
+    @PreAuthorize("@ss.hasPermi('album:album:query') or @ss.hasPermi('album:photo:list') or @ss.hasPermi('album:album:list')")
+    @GetMapping("/download/progress")
+    public AjaxResult downloadProgress() {
+        return success(albumDownloadService.getProgress());
+    }
+
+    /** 下载已打包好的 zip（文件名为相册名称） */
+    @PreAuthorize("@ss.hasPermi('album:album:query') or @ss.hasPermi('album:photo:list')")
+    @GetMapping("/download/file")
+    public void downloadFile(@RequestParam("taskId") String taskId, HttpServletResponse response) throws IOException {
+        File file = albumDownloadService.resolveReadyFile(taskId);
+        if (file == null) {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write("{\"msg\":\"打包文件未就绪或已过期\",\"code\":404}");
+            return;
+        }
+        AlbumDownloadProgress p = albumDownloadService.getProgress();
+        String zipName = p != null && StringUtils.isNotEmpty(p.getFileName()) ? p.getFileName() : file.getName();
+        String asciiFallback = zipName.replaceAll("[^\\x20-\\x7E]", "_");
+        String encoded = URLEncoder.encode(zipName, StandardCharsets.UTF_8.name()).replace("+", "%20");
+        response.reset();
+        response.setContentType("application/zip");
+        response.setHeader("Cache-Control", "no-store");
+        response.addHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        response.setHeader("Content-Disposition",
+                "attachment; filename=\"" + asciiFallback + "\"; filename*=UTF-8''" + encoded);
+        response.setHeader("Content-Length", String.valueOf(file.length()));
+        byte[] buffer = new byte[1024 * 64];
+        try (FileInputStream in = new FileInputStream(file); OutputStream out = response.getOutputStream()) {
+            int n;
+            while ((n = in.read(buffer)) > 0) {
+                out.write(buffer, 0, n);
+            }
+            out.flush();
+        } finally {
+            albumDownloadService.markConsumed(taskId);
+        }
     }
 
     @PreAuthorize("@ss.hasPermi('album:album:query')")

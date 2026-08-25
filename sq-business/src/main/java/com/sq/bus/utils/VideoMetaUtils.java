@@ -1,19 +1,20 @@
 package com.sq.bus.utils;
 
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import lombok.Data;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
-import java.nio.charset.Charset;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.Map;
 import java.util.TimeZone;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,8 +23,15 @@ import java.util.regex.Pattern;
  */
 public final class VideoMetaUtils {
 
+    private static final Logger log = LoggerFactory.getLogger(VideoMetaUtils.class);
+
+    /** ISO6709：+39.9042+116.4074/ 或带海拔 */
     private static final Pattern ISO6709 = Pattern.compile(
             "([+-]\\d+(?:\\.\\d+)?)([+-]\\d+(?:\\.\\d+)?)(?:[+-]\\d+(?:\\.\\d+)?)?/?"
+    );
+    /** 逗号/空格分隔：39.9042,116.4074 */
+    private static final Pattern LAT_LNG_COMMA = Pattern.compile(
+            "(-?\\d+(?:\\.\\d+)?)\\s*[,\\s]\\s*(-?\\d+(?:\\.\\d+)?)"
     );
 
     private VideoMetaUtils() {
@@ -35,27 +43,74 @@ public final class VideoMetaUtils {
             return info;
         }
         try {
-            ProcessResult result = runProcess(new String[]{
-                    "ffprobe", "-v", "error",
-                    "-show_entries",
-                    "format_tags=location,location-eng,com.apple.quicktime.location.ISO6709,creation_time:"
-                            + "stream_tags=location,location-eng,com.apple.quicktime.location.ISO6709,creation_time",
-                    "-of", "default",
+            String ffprobe = ExternalMediaTools.ffprobe();
+            // JSON 更稳：覆盖 format/stream tags（安卓/苹果/大疆常见 location）
+            ExternalMediaTools.ProcessResult jsonResult = ExternalMediaTools.run(new String[]{
+                    ffprobe, "-v", "error",
+                    "-print_format", "json",
+                    "-show_format",
+                    "-show_streams",
                     file.getAbsolutePath()
-            }, 30);
-            if (!result.finished || result.exitCode != 0 || result.output.isEmpty()) {
-                return info;
+            }, 45);
+            if (jsonResult.ok() && jsonResult.output != null && !jsonResult.output.trim().isEmpty()) {
+                applyJson(info, jsonResult.output);
             }
-            applyTags(info, result.output);
-        } catch (Exception ignored) {
-            // 未安装 ffprobe 或解析失败不影响主流程
+            // 回退：旧式 TAG 文本（部分封装仅在此露出）
+            if (info.getLatitude() == null || info.getLongitude() == null || info.getShootTime() == null) {
+                ExternalMediaTools.ProcessResult tagResult = ExternalMediaTools.run(new String[]{
+                        ffprobe, "-v", "error",
+                        "-show_entries",
+                        "format_tags:stream_tags",
+                        "-of", "default",
+                        file.getAbsolutePath()
+                }, 45);
+                if (tagResult.ok() && tagResult.output != null && !tagResult.output.isEmpty()) {
+                    applyTags(info, tagResult.output);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("视频元数据解析失败 file={} err={}", file.getAbsolutePath(), e.toString());
         }
         return info;
     }
 
+    private static void applyJson(MetaInfo info, String jsonText) {
+        try {
+            JSONObject root = JSON.parseObject(jsonText);
+            if (root == null) {
+                return;
+            }
+            JSONObject format = root.getJSONObject("format");
+            if (format != null) {
+                applyTagMap(info, format.getJSONObject("tags"));
+            }
+            JSONArray streams = root.getJSONArray("streams");
+            if (streams != null) {
+                for (int i = 0; i < streams.size(); i++) {
+                    JSONObject stream = streams.getJSONObject(i);
+                    if (stream != null) {
+                        applyTagMap(info, stream.getJSONObject("tags"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("ffprobe JSON 解析失败：{}", e.toString());
+        }
+    }
+
+    private static void applyTagMap(MetaInfo info, JSONObject tags) {
+        if (tags == null || tags.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, Object> entry : tags.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            applyOneTag(info, entry.getKey(), String.valueOf(entry.getValue()));
+        }
+    }
+
     private static void applyTags(MetaInfo info, String output) {
-        String location = null;
-        String creationTime = null;
         for (String rawLine : output.split("\\R")) {
             String line = rawLine.trim();
             if (line.isEmpty()) {
@@ -81,36 +136,68 @@ public final class VideoMetaUtils {
             if (value.isEmpty()) {
                 continue;
             }
-            String keyLower = key.toLowerCase(Locale.ROOT);
-            if (location == null && (
-                    "location".equals(keyLower)
-                            || "location-eng".equals(keyLower)
-                            || "com.apple.quicktime.location.iso6709".equals(keyLower))) {
-                location = value;
-            } else if (creationTime == null && "creation_time".equals(keyLower)) {
-                creationTime = value;
-            }
+            applyOneTag(info, key, value);
         }
-        fillLocation(info, location);
-        if (creationTime != null) {
-            Date shootTime = parseCreationTime(creationTime);
+    }
+
+    private static void applyOneTag(MetaInfo info, String key, String value) {
+        if (key == null || value == null) {
+            return;
+        }
+        String keyLower = key.toLowerCase(Locale.ROOT).trim();
+        String text = value.trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        if (info.getLatitude() == null && isLocationKey(keyLower)) {
+            fillLocation(info, text);
+        }
+        if (info.getShootTime() == null && isTimeKey(keyLower)) {
+            Date shootTime = parseCreationTime(text);
             if (shootTime != null) {
                 info.setShootTime(shootTime);
             }
         }
     }
 
+    private static boolean isLocationKey(String keyLower) {
+        return "location".equals(keyLower)
+                || "location-eng".equals(keyLower)
+                || "com.apple.quicktime.location.iso6709".equals(keyLower)
+                || keyLower.contains("location")
+                || keyLower.endsWith("iso6709")
+                || "©xyz".equals(keyLower)
+                || "xyz".equals(keyLower);
+    }
+
+    private static boolean isTimeKey(String keyLower) {
+        return "creation_time".equals(keyLower)
+                || "com.apple.quicktime.creationdate".equals(keyLower)
+                || "date".equals(keyLower)
+                || "datetime".equals(keyLower)
+                || "datetimeoriginal".equals(keyLower);
+    }
+
     private static void fillLocation(MetaInfo info, String raw) {
-        if (raw == null || raw.isEmpty()) {
+        if (raw == null || raw.isEmpty() || info.getLatitude() != null) {
             return;
         }
-        Matcher matcher = ISO6709.matcher(raw.trim());
-        if (!matcher.find()) {
+        String text = raw.trim();
+        Matcher iso = ISO6709.matcher(text);
+        if (iso.find()) {
+            setLatLng(info, iso.group(1), iso.group(2));
             return;
         }
+        Matcher comma = LAT_LNG_COMMA.matcher(text);
+        if (comma.find()) {
+            setLatLng(info, comma.group(1), comma.group(2));
+        }
+    }
+
+    private static void setLatLng(MetaInfo info, String latText, String lngText) {
         try {
-            double lat = Double.parseDouble(matcher.group(1));
-            double lng = Double.parseDouble(matcher.group(2));
+            double lat = Double.parseDouble(latText);
+            double lng = Double.parseDouble(lngText);
             if (lat == 0D && lng == 0D) {
                 return;
             }
@@ -129,18 +216,19 @@ public final class VideoMetaUtils {
         if (text.isEmpty()) {
             return null;
         }
-        // 常见：2024-01-01T12:00:00.000000Z / 2024-01-01 12:00:00
         String[] patterns = {
                 "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
                 "yyyy-MM-dd'T'HH:mm:ss'Z'",
                 "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",
                 "yyyy-MM-dd HH:mm:ss",
-                "yyyy-MM-dd'T'HH:mm:ss"
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy:MM:dd HH:mm:ss"
         };
         for (String pattern : patterns) {
             try {
                 SimpleDateFormat sdf = new SimpleDateFormat(pattern, Locale.ROOT);
-                if (pattern.endsWith("'Z'")) {
+                if (pattern.contains("'Z'") || pattern.endsWith("XXX")) {
                     sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
                 }
                 return sdf.parse(normalizeFractionalSeconds(text, pattern));
@@ -160,6 +248,13 @@ public final class VideoMetaUtils {
         int zone = text.indexOf('Z', dot);
         if (zone < 0) {
             zone = text.length();
+            for (int i = dot + 1; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == '+' || c == '-') {
+                    zone = i;
+                    break;
+                }
+            }
         }
         String frac = text.substring(dot + 1, zone).replaceAll("\\D", "");
         if (frac.length() <= 3) {
@@ -168,59 +263,10 @@ public final class VideoMetaUtils {
         return text.substring(0, dot + 1) + frac.substring(0, 3) + text.substring(zone);
     }
 
-    private static ProcessResult runProcess(String[] command, long timeoutSeconds)
-            throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
-        ByteArrayOutputStream collected = new ByteArrayOutputStream();
-        Thread drain = new Thread(() -> {
-            try (InputStream in = process.getInputStream()) {
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    if (collected.size() < 32768) {
-                        collected.write(buf, 0, Math.min(n, 32768 - collected.size()));
-                    }
-                }
-            } catch (IOException ignored) {
-                // 进程被杀掉时读流失败属正常
-            }
-        }, "video-meta-drain");
-        drain.setDaemon(true);
-        drain.start();
-
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
-        }
-        try {
-            drain.join(2000L);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        int exitCode = finished ? process.exitValue() : -1;
-        String output = new String(collected.toByteArray(), Charset.defaultCharset());
-        return new ProcessResult(finished, exitCode, output);
-    }
-
     @Data
     public static class MetaInfo {
         private Date shootTime;
         private BigDecimal latitude;
         private BigDecimal longitude;
-    }
-
-    private static final class ProcessResult {
-        private final boolean finished;
-        private final int exitCode;
-        private final String output;
-
-        private ProcessResult(boolean finished, int exitCode, String output) {
-            this.finished = finished;
-            this.exitCode = exitCode;
-            this.output = output == null ? "" : output;
-        }
     }
 }

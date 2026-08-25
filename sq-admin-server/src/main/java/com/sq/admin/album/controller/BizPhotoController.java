@@ -96,6 +96,7 @@ public class BizPhotoController extends BaseController {
 
     /**
      * 缩略图：优先静态文件；视频无封面时按需 ffmpeg 截帧并缓存。
+     * 需 SecurityConfig 对该路径 GET 放行（img 标签无法带 Authorization）。
      */
     @GetMapping("/thumb/{photoId}")
     public void thumb(@PathVariable Long photoId, HttpServletResponse response) throws Exception {
@@ -105,8 +106,13 @@ public class BizPhotoController extends BaseController {
             return;
         }
         File file = resolveMediaFile(photo, false);
+        // 无可用缩略图时按需生成（视频 ffmpeg 截帧）
         if (file == null || !file.exists() || !file.isFile()) {
-            scanPathService.ensurePhotoThumb(photoId);
+            try {
+                scanPathService.ensurePhotoThumb(photoId);
+            } catch (Exception e) {
+                // 截帧失败仍返回 404，由前端占位
+            }
             photo = photoService.getById(photoId);
             file = resolveMediaFile(photo, false);
         }
@@ -144,11 +150,13 @@ public class BizPhotoController extends BaseController {
 
     /**
      * 媒体访问：默认缩略图；original=true 返回原文件；
-     * 视频浏览档 quality=720p|1080p + fps=30|60（文件在 cache/proxy，不入库）。
+     * download=true 强制原文件并以附件方式下载；
+     * 视频浏览档 quality=480p|720p|1080p + fps=30（文件在 cache/proxy，不入库）。
      */
     @GetMapping("/media/{photoId}")
     public void media(@PathVariable Long photoId,
                       @RequestParam(value = "original", defaultValue = "false") boolean original,
+                      @RequestParam(value = "download", defaultValue = "false") boolean download,
                       @RequestParam(value = "quality", required = false) String quality,
                       @RequestParam(value = "fps", required = false) Integer fps,
                       HttpServletRequest request,
@@ -158,16 +166,23 @@ public class BizPhotoController extends BaseController {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;
         }
+        // 下载一律走磁盘原图/原视频，不走缩略图或浏览档
+        if (download) {
+            original = true;
+        }
         File file;
         if (!original && photo.getFileType() != null && photo.getFileType() == 2
                 && StringUtils.isNotEmpty(quality)
                 && !"original".equalsIgnoreCase(quality)) {
             file = videoProxyService.resolveReadyFile(photoId, quality, fps);
             if (file == null) {
-                response.setStatus(HttpServletResponse.SC_CONFLICT);
-                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                response.getWriter().write("{\"msg\":\"浏览档未就绪，请先调用 videoProxy/ensure\"}");
-                return;
+                // 浏览档未就绪时回退原片：地图 <video src> 无法处理 409，否则只能显示海报不能播
+                file = resolveMediaFile(photo, true);
+                if (file != null) {
+                    response.setHeader("X-Album-Video-Variant", "original-fallback");
+                }
+            } else {
+                response.setHeader("X-Album-Video-Variant", quality);
             }
         } else {
             file = resolveMediaFile(photo, original);
@@ -183,15 +198,27 @@ public class BizPhotoController extends BaseController {
         if (contentType == null) {
             contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
         }
-        response.setHeader("Accept-Ranges", "bytes");
-        response.setHeader("Cache-Control", "public, max-age=86400");
-        writeFileWithRange(file, contentType, request.getHeader("Range"), response);
+        if (download) {
+            String rawName = StringUtils.isNotEmpty(photo.getFileName()) ? photo.getFileName() : file.getName();
+            String downloadName = PhotoFieldUtils.safeFileName(rawName, 180);
+            String asciiFallback = downloadName.replaceAll("[^\\x20-\\x7E]", "_");
+            String encoded = java.net.URLEncoder.encode(downloadName, java.nio.charset.StandardCharsets.UTF_8.name())
+                    .replace("+", "%20");
+            response.setHeader("Cache-Control", "no-store");
+            response.addHeader("Access-Control-Expose-Headers", "Content-Disposition");
+            response.setHeader("Content-Disposition",
+                    "attachment; filename=\"" + asciiFallback + "\"; filename*=UTF-8''" + encoded);
+        } else {
+            response.setHeader("Accept-Ranges", "bytes");
+            response.setHeader("Cache-Control", "public, max-age=86400");
+        }
+        writeFileWithRange(file, contentType, download ? null : request.getHeader("Range"), response);
     }
 
     /** 查询视频浏览档状态（不触发转码） */
     @GetMapping("/videoProxy/{photoId}")
     public AjaxResult videoProxyStatus(@PathVariable Long photoId,
-                                       @RequestParam(value = "quality", defaultValue = "1080p") String quality,
+                                       @RequestParam(value = "quality", defaultValue = "480p") String quality,
                                        @RequestParam(value = "fps", defaultValue = "30") Integer fps) {
         return success(videoProxyService.status(photoId, quality, fps));
     }
@@ -199,7 +226,7 @@ public class BizPhotoController extends BaseController {
     /** 确保浏览档存在：缺失则异步 ffmpeg 转码（原片不改、不入库） */
     @PostMapping("/videoProxy/{photoId}/ensure")
     public AjaxResult ensureVideoProxy(@PathVariable Long photoId,
-                                       @RequestParam(value = "quality", defaultValue = "1080p") String quality,
+                                       @RequestParam(value = "quality", defaultValue = "480p") String quality,
                                        @RequestParam(value = "fps", defaultValue = "30") Integer fps) {
         return success(videoProxyService.ensure(photoId, quality, fps));
     }

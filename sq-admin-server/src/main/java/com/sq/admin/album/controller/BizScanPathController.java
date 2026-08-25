@@ -103,12 +103,12 @@ public class BizScanPathController extends BaseController {
     }
 
     /**
-     * 为已入库但缺少封面的视频补截帧（大疆 HEVC 等）。
+     * 为已入库视频补封面/GPS（大疆 HEVC 等）。有 GPS 时自动刷新轨迹。
      * pathId 可空：空则处理全部启用中的扫描目录。
      * force=true：即使已有封面也强制重截。
      */
     @PreAuthorize("@ss.hasPermi('album:scan:run')")
-    @Log(title = "补视频缩略图", businessType = BusinessType.UPDATE)
+    @Log(title = "补视频封面与GPS", businessType = BusinessType.UPDATE)
     @PostMapping("/repairVideoThumbs")
     public AjaxResult repairVideoThumbs(@RequestParam(required = false) Long pathId,
                                         @RequestParam(required = false, defaultValue = "false") Boolean force) {
@@ -122,7 +122,8 @@ public class BizScanPathController extends BaseController {
     }
 
     /**
-     * 一键排队生成视频浏览档（720p/1080p × 30）。写 cache/proxy，不改原片、不入库。
+     * 一键排队生成视频浏览档（480p/720p/1080p × 30）。写 cache/proxy，不改原片、不入库。
+     * force=false：已就绪档位跳过；force=true：删除后重转（覆盖）。
      */
     @PreAuthorize("@ss.hasPermi('album:scan:run')")
     @Log(title = "一键转码浏览档", businessType = BusinessType.OTHER)

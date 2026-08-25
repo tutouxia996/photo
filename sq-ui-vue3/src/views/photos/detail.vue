@@ -35,6 +35,10 @@
         </div>
       </div>
       <div class="header-right">
+        <el-button round plain @click="downloadAlbumZip">
+          <el-icon class="mr4"><Download /></el-icon>
+          下载相册
+        </el-button>
         <el-button round plain @click="openPhotoMap">
           <el-icon class="mr4"><Location /></el-icon>
           照片地图
@@ -503,11 +507,13 @@
               <label class="media-video-field">
                 <span>清晰度</span>
                 <select v-model="videoQuality" @change="onVideoQualityChange">
+                  <option value="480p">480p</option>
                   <option value="720p">720p</option>
                   <option value="1080p">1080p</option>
-                  <option value="original">原片</option>
+                  <option value="original">{{ originalQualityLabel }}</option>
                 </select>
               </label>
+              <span v-if="videoPlayHint" class="media-video-hint">{{ videoPlayHint }}</span>
             </div>
           </div>
 
@@ -735,17 +741,16 @@
 <script setup name="PhotosAlbumDetail">
 import { ElMessageBox } from 'element-plus'
 import { isExternal } from '@/utils/validate'
-import { getToken } from '@/utils/auth'
-import { saveAs } from 'file-saver'
-import axios from 'axios'
 import { getAlbum, updateAlbum, listAlbum, addAlbum } from '@/api/photos/album'
-import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch, getVideoProxyStatus } from '@/api/photos/photo'
+import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch, getVideoProxyStatus, ensureVideoProxy } from '@/api/photos/photo'
 import { videoPlaySrc } from '@/utils/videoProxy'
 import usePhotoScoreStore from '@/store/modules/photoScore'
+import useAlbumDownloadStore from '@/store/modules/albumDownload'
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
 const photoScoreStore = usePhotoScoreStore()
+const albumDownloadStore = useAlbumDownloadStore()
 
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -872,11 +877,12 @@ const uploadItemsVisible = computed(() => {
 })
 const clickTimer = ref(null)
 const brokenThumbs = ref(new Set())
+const thumbRetryCount = ref(new Map())
+const thumbBustMap = ref(new Map())
 const addToOpen = ref(false)
 const albumOptions = ref([])
 const targetAlbumId = ref(null)
 const addingTo = ref(false)
-const downloading = ref(false)
 const albumLoading = ref(false)
 const creatingAlbum = ref(false)
 const creatingAlbumBusy = ref(false)
@@ -1059,9 +1065,14 @@ function canShowThumb(item) {
 
 function thumbSrc(item) {
   if (!item) return ''
-  if (item.thumbUrl) return resolveUrl(item.thumbUrl)
+  const bust = thumbBustMap.value.get(item.photoId)
+  if (item.thumbUrl) {
+    const base = resolveUrl(item.thumbUrl)
+    return bust ? `${base}${base.includes('?') ? '&' : '?'}_=${bust}` : base
+  }
   if (item.fileType === 2 && item.photoId) {
-    return resolveUrl('/album/photo/thumb/' + item.photoId)
+    const base = resolveUrl('/album/photo/thumb/' + item.photoId)
+    return bust ? `${base}?_=${bust}` : base
   }
   return ''
 }
@@ -1071,14 +1082,49 @@ function originalSrc(item) {
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
 }
 
-/** 视频浏览默认 1080p30；无浏览档则直接播原片 */
-const videoQuality = ref('1080p')
+/** 下载用：强制原图/原视频 + attachment */
+function downloadSrc(item) {
+  if (!item) return ''
+  return resolveUrl('/album/photo/media/' + item.photoId + '?original=true&download=true')
+}
+
+/** 视频浏览默认 480p30（外网更稳）；无浏览档则直接播原片 */
+const videoQuality = ref('480p')
 const VIDEO_PLAY_FPS = 30
 const videoPlayUrl = ref('')
 const videoPlayerKey = ref('')
 const mediaVideoRef = ref()
+/** 原片分辨率/帧率（来自 videoProxy status 的 source* 字段） */
+const videoSourceMeta = ref(null)
+/** 当前实际是否在播原片（含浏览档未就绪回退） */
+const videoUsingOriginal = ref(false)
 let videoProxyReqSeq = 0
 let pendingVideoSeek = null
+
+const originalQualityLabel = computed(() => {
+  const m = videoSourceMeta.value
+  if (!m?.width || !m?.height) return '原片'
+  const fpsPart = m.fps > 0 ? ` · ${m.fps}fps` : ''
+  return `原片 ${m.width}×${m.height}${fpsPart}`
+})
+
+const videoPlayHint = computed(() => {
+  if (!videoUsingOriginal.value) return ''
+  const label = originalQualityLabel.value
+  if (videoQuality.value === 'original') {
+    return label.startsWith('原片') ? `正在播放 ${label}` : '正在播放原片'
+  }
+  return `浏览档未就绪，实际播放 ${label}`
+})
+
+function applySourceMeta(data) {
+  const w = Number(data?.sourceWidth) || 0
+  const h = Number(data?.sourceHeight) || 0
+  const fps = Number(data?.sourceFps) || 0
+  if (w > 0 && h > 0) {
+    videoSourceMeta.value = { width: w, height: h, fps, label: data?.sourceLabel || '' }
+  }
+}
 
 function captureVideoTime() {
   const el = mediaVideoRef.value
@@ -1102,6 +1148,7 @@ function applyPendingSeek() {
 }
 
 function playOriginalNow(photoId) {
+  videoUsingOriginal.value = true
   videoPlayUrl.value = videoPlaySrc(photoId, 'original')
   videoPlayerKey.value = `${photoId}-original-fallback`
   nextTick(() => applyPendingSeek())
@@ -1111,12 +1158,22 @@ async function reloadVideoProxy() {
   const item = currentMedia.value
   if (!item || item.fileType !== 2 || !item.photoId) {
     videoPlayUrl.value = ''
+    videoSourceMeta.value = null
+    videoUsingOriginal.value = false
     return
   }
   const seq = ++videoProxyReqSeq
   const quality = videoQuality.value
 
   if (quality === 'original') {
+    // 仍查一次 status 以拿到原片分辨率/帧率
+    try {
+      const res = await getVideoProxyStatus(item.photoId, 'original', VIDEO_PLAY_FPS)
+      if (seq !== videoProxyReqSeq) return
+      applySourceMeta(res?.data || res || {})
+    } catch (_) { /* ignore */ }
+    if (seq !== videoProxyReqSeq) return
+    videoUsingOriginal.value = true
     videoPlayUrl.value = videoPlaySrc(item.photoId, 'original')
     videoPlayerKey.value = `${item.photoId}-original`
     nextTick(() => applyPendingSeek())
@@ -1127,11 +1184,19 @@ async function reloadVideoProxy() {
     const res = await getVideoProxyStatus(item.photoId, quality, VIDEO_PLAY_FPS)
     if (seq !== videoProxyReqSeq) return
     const data = res?.data || res || {}
+    applySourceMeta(data)
     if (data.status === 'ready') {
+      videoUsingOriginal.value = false
       videoPlayUrl.value = videoPlaySrc(item.photoId, quality, VIDEO_PLAY_FPS)
       videoPlayerKey.value = `${item.photoId}-${quality}-30-${data.fileSize || 0}`
       nextTick(() => applyPendingSeek())
       return
+    }
+    // 缺失则触发后台转码；未就绪前先播原片（符合条件的大视频才会真正入队）
+    if (data.status === 'missing' || data.status === 'failed') {
+      try {
+        await ensureVideoProxy(item.photoId, quality, VIDEO_PLAY_FPS)
+      } catch (_) { /* ignore */ }
     }
   } catch (_) {
     /* 查状态失败则播原片 */
@@ -1159,6 +1224,20 @@ function formatDuration(seconds) {
 
 function onThumbError(item) {
   if (!item?.photoId || brokenThumbs.value.has(item.photoId)) return
+  // 视频按需截帧可能较慢或首次失败：允许短时重试（截帧排队时常见）
+  const retries = thumbRetryCount.value.get(item.photoId) || 0
+  if (Number(item.fileType) === 2 && retries < 3) {
+    const nextRetry = new Map(thumbRetryCount.value)
+    nextRetry.set(item.photoId, retries + 1)
+    thumbRetryCount.value = nextRetry
+    const delayMs = 1200 * (retries + 1)
+    setTimeout(() => {
+      const nextBust = new Map(thumbBustMap.value)
+      nextBust.set(item.photoId, Date.now())
+      thumbBustMap.value = nextBust
+    }, delayMs)
+    return
+  }
   // 失败只占位，绝不回退原图
   const next = new Set(brokenThumbs.value)
   next.add(item.photoId)
@@ -1997,7 +2076,7 @@ function openViewer(item) {
   const idx = photoList.value.findIndex(p => p.photoId === item.photoId)
   mediaIndex.value = idx >= 0 ? idx : 0
   resetImageTransform()
-  videoQuality.value = '1080p'
+  videoQuality.value = '480p'
   pendingVideoSeek = null
   mediaVisible.value = true
   nextTick(() => reloadVideoProxy())
@@ -2007,6 +2086,8 @@ function closeMedia() {
   detailOpen.value = false
   mediaVisible.value = false
   videoPlayUrl.value = ''
+  videoSourceMeta.value = null
+  videoUsingOriginal.value = false
   resetImageTransform()
 }
 
@@ -2015,7 +2096,7 @@ function shiftMedia(step) {
   if (next < 0 || next >= photoList.value.length) return
   mediaIndex.value = next
   resetImageTransform()
-  videoQuality.value = '1080p'
+  videoQuality.value = '480p'
   pendingVideoSeek = null
   nextTick(() => reloadVideoProxy())
 }
@@ -2076,29 +2157,18 @@ function selectedPhotos() {
 
 async function downloadSelected() {
   const items = selectedPhotos()
-  if (!items.length || downloading.value) return
-  downloading.value = true
-  try {
-    for (const item of items) {
-      const url = originalSrc(item)
-      const res = await axios({
-        method: 'get',
-        url,
-        responseType: 'blob',
-        headers: { Authorization: 'Bearer ' + getToken() }
-      })
-      const name = item.fileName || `photo_${item.photoId}`
-      saveAs(res.data, name)
-    }
-    if (items.length > 1) {
-      proxy.$modal.msgSuccess(`已开始下载 ${items.length} 项`)
-    }
-  } catch (e) {
-    console.error(e)
-    proxy.$modal.msgError('下载失败')
-  } finally {
-    downloading.value = false
+  if (!items.length) return
+  albumDownloadStore.startItems(items, downloadSrc)
+}
+
+function downloadAlbumZip() {
+  const albumId = album.value?.albumId || route.params.albumId
+  if (!albumId) return
+  if (!total.value) {
+    proxy.$modal.msgWarning('相册内没有可下载的文件')
+    return
   }
+  albumDownloadStore.startAlbum(albumId, album.value?.albumName)
 }
 
 function openAddToAlbum() {
@@ -2267,6 +2337,8 @@ function loadPhotos(reset = false) {
     loading.value = true
     refillAutoChainBudget()
     brokenThumbs.value = new Set()
+    thumbRetryCount.value = new Map()
+    thumbBustMap.value = new Map()
   } else {
     loadingMore.value = true
   }
@@ -3026,6 +3098,16 @@ init()
   border-radius: 22px;
   background: rgba(0, 0, 0, 0.78);
   color: #fff;
+  max-width: calc(100% - 32px);
+}
+
+.media-video-hint {
+  font-size: 12px;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
 }
 
 .media-video-field {
@@ -3047,6 +3129,7 @@ init()
     color: #fff;
     outline: none;
     cursor: pointer;
+    max-width: 220px;
 
     option {
       color: #111;

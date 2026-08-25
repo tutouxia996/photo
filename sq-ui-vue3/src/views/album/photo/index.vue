@@ -137,6 +137,7 @@
               <label>
                 清晰度
                 <select v-model="videoQuality" @change="onAdminVideoQualityChange">
+                  <option value="480p">480p</option>
                   <option value="720p">720p</option>
                   <option value="1080p">1080p</option>
                   <option value="original">原片</option>
@@ -199,7 +200,7 @@ const previewUrl = ref('')
 const previewName = ref('')
 const previewIsVideo = ref(false)
 const previewPhotoId = ref(null)
-const videoQuality = ref('1080p')
+const videoQuality = ref('480p')
 const VIDEO_PLAY_FPS = 30
 const videoPlayerKey = ref('')
 let videoProxyReqSeq = 0
@@ -370,7 +371,7 @@ function openPreview(item) {
   setPreviewPageLock(true)
   resetPreviewTransform()
   if (isVideo) {
-    videoQuality.value = '1080p'
+    videoQuality.value = '480p'
     reloadAdminVideoProxy()
   } else {
     previewUrl.value = originalSrc(item)

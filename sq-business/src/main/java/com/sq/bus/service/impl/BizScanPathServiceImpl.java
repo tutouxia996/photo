@@ -19,6 +19,7 @@ import com.sq.bus.service.IPhotoFallbackLocationService;
 import com.sq.bus.service.IVideoProxyService;
 import com.sq.bus.domain.vo.VideoProxyStatus;
 import com.sq.bus.utils.ExifParseUtils;
+import com.sq.bus.utils.ExternalMediaTools;
 import com.sq.bus.utils.PhotoFieldUtils;
 import com.sq.bus.utils.ThumbUtils;
 import com.sq.bus.utils.VideoMetaUtils;
@@ -47,6 +48,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
@@ -65,6 +68,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
     /** 同一目录同时只允许一个进行中的扫描 */
     private final Set<Long> runningPathIds = ConcurrentHashMap.newKeySet();
+
+    private volatile Semaphore ffmpegSemaphore;
 
     @Autowired
     private IBizScanLogService scanLogService;
@@ -219,6 +224,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             }
 
             triggerScanVideoProxyEnqueue(scanPath, counter);
+            triggerScanVideoThumbRepair(scanPath);
 
             try {
                 scanPath.setLastScanTime(new Date());
@@ -565,15 +571,37 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
     }
 
     private static void applyMediaMeta(BizPhoto photo, MediaMeta meta, Date fallbackShootTime) {
-        photo.setShootTime(meta.shootTime != null ? meta.shootTime : fallbackShootTime);
+        if (meta.shootTime != null) {
+            photo.setShootTime(meta.shootTime);
+        } else if (photo.getShootTime() == null) {
+            photo.setShootTime(fallbackShootTime);
+        }
         int fileType = photo.getFileType() != null ? photo.getFileType() : 1;
-        PhotoLocationSource.applyDeviceGps(photo, meta.latitude, meta.longitude, fileType);
-        photo.setCameraModel(meta.cameraModel);
-        photo.setLensInfo(meta.lensInfo);
-        photo.setAperture(meta.aperture);
-        photo.setShutterSpeed(meta.shutterSpeed);
-        photo.setIso(meta.iso);
-        photo.setFocalLength(meta.focalLength);
+        // 解析不到 GPS 时保留已有权威坐标，避免二次扫描/回收把视频定位清掉
+        if (meta.latitude != null && meta.longitude != null) {
+            PhotoLocationSource.applyDeviceGps(photo, meta.latitude, meta.longitude, fileType);
+        } else if (!PhotoLocationSource.isAuthoritativeGps(photo)
+                && !PhotoLocationSource.isConfirmedFallback(photo)) {
+            // 仅在原本无权威坐标时保持空；不主动清空已有点
+        }
+        if (meta.cameraModel != null) {
+            photo.setCameraModel(meta.cameraModel);
+        }
+        if (meta.lensInfo != null) {
+            photo.setLensInfo(meta.lensInfo);
+        }
+        if (meta.aperture != null) {
+            photo.setAperture(meta.aperture);
+        }
+        if (meta.shutterSpeed != null) {
+            photo.setShutterSpeed(meta.shutterSpeed);
+        }
+        if (meta.iso != null) {
+            photo.setIso(meta.iso);
+        }
+        if (meta.focalLength != null) {
+            photo.setFocalLength(meta.focalLength);
+        }
     }
 
     /**
@@ -641,37 +669,55 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         return gpsFilled;
     }
 
-    /**
-     * 单条视频补缩略图（忽略「超大跳过」上限，大疆 4K 也尽量截一帧）。
-     * @return 是否写入了可用 thumbUrl
-     */
     private boolean repairOneVideoThumb(BizPhoto photo, File file, BizScanPath scanPath) {
+        return repairOneVideoThumb(photo, file, scanPath, false) == null;
+    }
+
+    /**
+     * @return null 表示成功；非空为失败原因
+     */
+    private String repairOneVideoThumb(BizPhoto photo, File file, BizScanPath scanPath, boolean force) {
         if (photo == null || file == null || !file.isFile() || scanPath == null || scanPath.getPathId() == null) {
-            return false;
+            return "参数无效";
         }
-        if (hasUsableThumb(photo)) {
-            return false;
+        if (!force && hasUsableThumb(photo)) {
+            return null;
         }
         String relativeName = file.getName();
         File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
         String thumbName = "s_" + relativeName.replaceAll("\\.[^.]+$", "") + ".jpg";
         File thumbFile = new File(thumbDir, thumbName);
-        // 磁盘上已有可用文件：只回写 URL
-        if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
+        if (!force && thumbFile.exists() && thumbFile.isFile() && thumbFile.length() >= 1024L) {
             photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
             photo.setUpdateTime(new Date());
             PhotoFieldUtils.clamp(photo);
             photoService.updateById(photo);
-            return true;
+            return null;
         }
-        if (!ThumbUtils.createVideoThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth())) {
-            return false;
+        boolean acquired = false;
+        try {
+            acquired = ffmpegSemaphore().tryAcquire(120, TimeUnit.SECONDS);
+            if (!acquired) {
+                return "截帧排队超时（并发已满）";
+            }
+            ThumbUtils.ThumbResult result = ThumbUtils.createVideoThumbnailDetailed(
+                    file, thumbFile, albumProperties.getThumb().getSmallWidth());
+            if (!result.ok) {
+                return result.error;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "截帧被中断";
+        } finally {
+            if (acquired) {
+                ffmpegSemaphore().release();
+            }
         }
         photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
         photo.setUpdateTime(new Date());
         PhotoFieldUtils.clamp(photo);
         photoService.updateById(photo);
-        return true;
+        return null;
     }
 
     @Override
@@ -695,9 +741,11 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
 
         int total = 0;
         int repaired = 0;
+        int gpsFilled = 0;
         int failed = 0;
         int skipped = 0;
         List<String> samples = new ArrayList<String>();
+        java.util.Set<Long> albumsNeedTrackSync = new java.util.LinkedHashSet<Long>();
 
         for (BizScanPath scanPath : paths) {
             if (scanPath.getDefaultAlbumId() == null) {
@@ -712,35 +760,79 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             }
             for (BizPhoto photo : videos) {
                 total++;
-                if (!force && hasUsableThumb(photo)) {
+                String fp = photo.getFilePath();
+                File file = resolvePhotoFile(photo);
+                if (file == null || !file.isFile()) {
+                    failed++;
+                    if (samples.size() < 8) {
+                        String pathHint = fp == null || fp.isEmpty() ? "无 file_path" : ("路径不存在:" + fp);
+                        samples.add(photo.getFileName() + "（源文件不存在，" + pathHint + "）");
+                    }
+                    continue;
+                }
+                boolean needThumb = force || !hasUsableThumb(photo);
+                boolean needGps = photo.getLatitude() == null || photo.getLongitude() == null
+                        || PhotoLocationSource.isFallback(photo.getLocationSource());
+                if (!needThumb && !needGps) {
                     skipped++;
                     continue;
                 }
-                String fp = photo.getFilePath();
-                if (fp == null || fp.isEmpty()) {
-                    failed++;
-                    continue;
-                }
-                File file = new File(fp);
-                if (!file.isFile()) {
-                    failed++;
-                    if (samples.size() < 8) {
-                        samples.add(photo.getFileName() + "（源文件不存在）");
-                    }
-                    continue;
-                }
                 try {
-                    if (repairOneVideoThumb(photo, file, scanPath)) {
-                        repaired++;
-                    } else {
+                    boolean changed = false;
+                    String gpsMissReason = null;
+                    if (needGps) {
+                        VideoMetaUtils.MetaInfo meta = VideoMetaUtils.parse(file);
+                        if (meta.getLatitude() != null && meta.getLongitude() != null) {
+                            PhotoLocationSource.applyDeviceGps(photo, meta.getLatitude(), meta.getLongitude(), 2);
+                            if (meta.getShootTime() != null) {
+                                photo.setShootTime(meta.getShootTime());
+                            }
+                            gpsFilled++;
+                            changed = true;
+                            albumsNeedTrackSync.add(scanPath.getDefaultAlbumId());
+                        } else {
+                            gpsMissReason = ExternalMediaTools.isFfprobeAvailable()
+                                    ? "文件无定位标签"
+                                    : ("ffprobe不可用:" + ExternalMediaTools.ffprobe());
+                        }
+                    }
+                    if (needThumb) {
+                        String thumbErr = repairOneVideoThumb(photo, file, scanPath, force);
+                        if (thumbErr == null) {
+                            repaired++;
+                            changed = false; // repairOneVideoThumb 已落库（含可能刚写入的 GPS）
+                        } else {
+                            failed++;
+                            if (samples.size() < 8) {
+                                String tip = photo.getFileName() + "（截帧:" + thumbErr;
+                                if (gpsMissReason != null) {
+                                    tip += "；GPS:" + gpsMissReason;
+                                }
+                                tip += "）";
+                                samples.add(tip);
+                            }
+                        }
+                    } else if (gpsMissReason != null && !changed) {
+                        // 仅缺 GPS 且解析失败
                         failed++;
                         if (samples.size() < 8) {
-                            samples.add(photo.getFileName() + "（截帧失败）");
+                            samples.add(photo.getFileName() + "（GPS:" + gpsMissReason + "）");
                         }
+                    }
+                    if (changed) {
+                        if (photo.getDuration() == null) {
+                            Integer duration = ThumbUtils.getVideoDurationSeconds(file);
+                            if (duration != null) {
+                                photo.setDuration(duration);
+                            }
+                        }
+                        photo.setUpdateTime(new Date());
+                        PhotoFieldUtils.clamp(photo);
+                        photoService.updateById(photo);
                     }
                 } catch (Exception e) {
                     failed++;
-                    log.warn("补视频缩略图异常 photoId={} err={}", photo.getPhotoId(), e.toString());
+                    log.warn("补视频封面/GPS 异常 photoId={} err={}", photo.getPhotoId(), e.toString());
                     if (samples.size() < 8) {
                         samples.add(photo.getFileName() + "（" + e.getMessage() + "）");
                     }
@@ -748,15 +840,33 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             }
         }
 
+        int tracksSynced = 0;
+        for (Long albumId : albumsNeedTrackSync) {
+            try {
+                trackService.autoSyncAlbumTrack(albumId);
+                tracksSynced++;
+            } catch (Exception e) {
+                log.warn("补视频 GPS 后同步轨迹失败 albumId={} err={}", albumId, e.toString());
+            }
+        }
+
         Map<String, Object> result = new LinkedHashMap<String, Object>();
         result.put("total", total);
         result.put("repaired", repaired);
+        result.put("gpsFilled", gpsFilled);
+        result.put("tracksSynced", tracksSynced);
         result.put("failed", failed);
         result.put("skipped", skipped);
         result.put("force", force);
         result.put("samples", samples);
-        if (!force && repaired == 0 && failed == 0 && skipped > 0) {
-            result.put("hint", "库里已有可用封面文件，故全部跳过；请强制刷新首页/地图。若仍显示「视频」占位，可勾选强制重截后再试。");
+        result.put("tools", ExternalMediaTools.diagnose());
+        if (gpsFilled > 0) {
+            result.put("hint", "已补 GPS " + gpsFilled + " 个并刷新 " + tracksSynced
+                    + " 个相册轨迹；封面成功 " + repaired + "。请刷新轨迹/地图查看。");
+        } else if (!ExternalMediaTools.isFfmpegAvailable() || !ExternalMediaTools.isFfprobeAvailable()) {
+            result.put("hint", "本机未找到可用 ffmpeg/ffprobe。请安装并加入 PATH，或设置环境变量 ALBUM_FFMPEG / ALBUM_FFPROBE 后重启。");
+        } else if (!force && repaired == 0 && failed == 0 && skipped > 0) {
+            result.put("hint", "库里已有可用封面且无缺失 GPS，故全部跳过；请强制刷新首页/地图。若仍显示「视频」占位，可勾选强制重截后再试。");
         }
         return result;
     }
@@ -924,7 +1034,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             videoProxyService.onBatchVideoSkipped();
             return;
         }
-        String[] qualities = new String[]{"720p", "1080p"};
+        String[] qualities = new String[]{"480p", "720p", "1080p"};
         int fps30 = 30;
         for (String quality : qualities) {
             try {
@@ -973,6 +1083,43 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             }
         });
         counter.proxyEnqueued = n;
+    }
+
+    private void triggerScanVideoThumbRepair(BizScanPath scanPath) {
+        AlbumProperties.ScanConfig cfg = albumProperties.getScan();
+        if (cfg != null && !cfg.isRepairVideoThumbsOnScan()) {
+            return;
+        }
+        if (scanPath == null || scanPath.getPathId() == null) {
+            return;
+        }
+        Long pathId = scanPath.getPathId();
+        log.info("扫描后后台补封面/GPS pathId={}", pathId);
+        threadPoolTaskExecutor.execute(() -> {
+            try {
+                Map<String, Object> result = repairMissingVideoThumbs(pathId, false);
+                log.info("扫描后补封面/GPS 完成 pathId={} repaired={} failed={}",
+                        pathId, result.get("repaired"), result.get("failed"));
+            } catch (Exception e) {
+                log.warn("扫描后补封面/GPS 失败 pathId={} err={}", pathId, e.toString());
+            }
+        });
+    }
+
+    private Semaphore ffmpegSemaphore() {
+        if (ffmpegSemaphore == null) {
+            synchronized (this) {
+                if (ffmpegSemaphore == null) {
+                    int n = 2;
+                    AlbumProperties.ScanConfig cfg = albumProperties.getScan();
+                    if (cfg != null && cfg.getThumbFfmpegConcurrency() > 0) {
+                        n = cfg.getThumbFfmpegConcurrency();
+                    }
+                    ffmpegSemaphore = new Semaphore(n);
+                }
+            }
+        }
+        return ffmpegSemaphore;
     }
 
     private boolean hasUsableThumb(BizPhoto photo) {
@@ -1129,6 +1276,18 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 }
             }
         }
+        if (photo.getAlbumId() != null && StringUtils.isNotEmpty(photo.getFileName())) {
+            BizScanPath sp = getOne(new LambdaQueryWrapper<BizScanPath>()
+                    .eq(BizScanPath::getDeleted, 0)
+                    .eq(BizScanPath::getDefaultAlbumId, photo.getAlbumId())
+                    .last("LIMIT 1"), false);
+            if (sp != null && StringUtils.isNotEmpty(sp.getLocalPath())) {
+                File f = new File(sp.getLocalPath(), photo.getFileName());
+                if (f.exists() && f.isFile()) {
+                    return f;
+                }
+            }
+        }
         return null;
     }
 
@@ -1167,6 +1326,15 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
                 if (sp.getLocalPath() != null && isUnderConfiguredRoot(file, sp.getLocalPath())) {
                     return sp.getPathId();
                 }
+            }
+        }
+        if (photo.getAlbumId() != null) {
+            BizScanPath byAlbum = getOne(new LambdaQueryWrapper<BizScanPath>()
+                    .eq(BizScanPath::getDeleted, 0)
+                    .eq(BizScanPath::getDefaultAlbumId, photo.getAlbumId())
+                    .last("LIMIT 1"), false);
+            if (byAlbum != null) {
+                return byAlbum.getPathId();
             }
         }
         return null;

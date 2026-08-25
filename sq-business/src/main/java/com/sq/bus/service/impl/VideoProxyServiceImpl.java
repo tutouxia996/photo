@@ -39,6 +39,7 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
 
     private static final Logger log = LoggerFactory.getLogger(VideoProxyServiceImpl.class);
 
+    public static final String QUALITY_480 = "480p";
     public static final String QUALITY_720 = "720p";
     public static final String QUALITY_1080 = "1080p";
     public static final String QUALITY_ORIGINAL = "original";
@@ -131,6 +132,7 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
     public VideoProxyStatus status(Long photoId, String quality, Integer fps) {
         Normalized n = normalize(quality, fps);
         VideoProxyStatus st = baseStatus(photoId, n);
+        fillSourceMeta(st, photoId);
         if (n.original) {
             st.setStatus(STATUS_ORIGINAL);
             st.setPlayUrl("/album/photo/media/" + photoId + "?original=true");
@@ -460,8 +462,7 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
             if (cfg == null) {
                 cfg = new AlbumProperties.VideoProxy();
             }
-            int height = QUALITY_720.equals(n.quality) ? 720 : 1080;
-            long timeout = timeoutSeconds(origin.length(), cfg);
+            int height = qualityHeight(n.quality);
             ExternalMediaTools.ProcessResult result = transcodeWithFallback(origin, part, height, n.fps, cfg);
             if (!result.ok() || !part.exists() || part.length() < 1024L) {
                 String msg = "转码失败 exit=" + result.exitCode + " " + result.shortOutput();
@@ -529,20 +530,28 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
         String ffmpeg = ExternalMediaTools.ffmpeg();
         String src = origin.getAbsolutePath();
         String out = part.getAbsolutePath();
+        int crf480 = cfg.getCrf480() > 0 ? cfg.getCrf480() : 28;
         int crf720 = cfg.getCrf720() > 0 ? cfg.getCrf720() : 26;
         int crf1080 = cfg.getCrf1080() > 0 ? cfg.getCrf1080() : 23;
-        int crf = height <= 720 ? crf720 : crf1080;
+        int crf = height <= 480 ? crf480 : (height <= 720 ? crf720 : crf1080);
         String preset = StringUtils.isEmpty(cfg.getPreset()) ? "veryfast" : cfg.getPreset();
-        String audioBr = StringUtils.isEmpty(cfg.getAudioBitrate()) ? "128k" : cfg.getAudioBitrate();
+        String audioBr;
+        String maxrate = null;
+        if (height <= 480) {
+            audioBr = StringUtils.isEmpty(cfg.getAudioBitrate480()) ? "96k" : cfg.getAudioBitrate480();
+            maxrate = StringUtils.isEmpty(cfg.getMaxrate480()) ? "1500k" : cfg.getMaxrate480();
+        } else {
+            audioBr = StringUtils.isEmpty(cfg.getAudioBitrate()) ? "128k" : cfg.getAudioBitrate();
+        }
         String vf = buildVideoFilter(height, fps, true);
         String vfNoFps = buildVideoFilter(height, fps, false);
 
         List<String[]> attempts = new ArrayList<String[]>();
-        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, true, false));
-        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, false, false));
-        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vfNoFps, preset, crf, audioBr, false, false));
-        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, true, true));
-        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, false, true));
+        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, maxrate, true, false));
+        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, maxrate, false, false));
+        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vfNoFps, preset, crf, audioBr, maxrate, false, false));
+        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, maxrate, true, true));
+        attempts.add(buildTranscodeCmd(ffmpeg, src, out, vf, preset, crf, audioBr, maxrate, false, true));
 
         long timeout = timeoutSeconds(origin.length(), cfg);
         ExternalMediaTools.ProcessResult last = new ExternalMediaTools.ProcessResult(false, -1, "no attempt");
@@ -578,7 +587,7 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
     }
 
     private static String[] buildTranscodeCmd(String ffmpeg, String src, String out, String vf, String preset,
-                                              int crf, String audioBr, boolean withAudio, boolean hwaccel) {
+                                              int crf, String audioBr, String maxrate, boolean withAudio, boolean hwaccel) {
         List<String> cmd = new ArrayList<String>();
         cmd.add(ffmpeg);
         cmd.add("-nostdin");
@@ -608,6 +617,13 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
         cmd.add(preset);
         cmd.add("-crf");
         cmd.add(String.valueOf(crf));
+        if (StringUtils.isNotEmpty(maxrate)) {
+            cmd.add("-maxrate");
+            cmd.add(maxrate.trim());
+            cmd.add("-bufsize");
+            // 缓冲约为峰值码率 2 倍，利于 VBV 控流
+            cmd.add(doubleBitrateLabel(maxrate.trim()));
+        }
         cmd.add("-pix_fmt");
         cmd.add("yuv420p");
         cmd.add("-tag:v");
@@ -632,6 +648,38 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
         return cmd.toArray(new String[0]);
     }
 
+    /** 1500k → 3000k；解析失败则原样返回。 */
+    private static String doubleBitrateLabel(String rate) {
+        if (rate == null || rate.isEmpty()) {
+            return "3000k";
+        }
+        String s = rate.trim().toLowerCase(Locale.ROOT);
+        try {
+            if (s.endsWith("k")) {
+                double v = Double.parseDouble(s.substring(0, s.length() - 1));
+                return String.valueOf(Math.max(1, Math.round(v * 2))) + "k";
+            }
+            if (s.endsWith("m")) {
+                double v = Double.parseDouble(s.substring(0, s.length() - 1));
+                return String.valueOf(Math.max(1, Math.round(v * 2))) + "m";
+            }
+            long v = Long.parseLong(s);
+            return String.valueOf(Math.max(1L, v * 2));
+        } catch (NumberFormatException e) {
+            return rate;
+        }
+    }
+
+    private static int qualityHeight(String quality) {
+        if (QUALITY_480.equals(quality)) {
+            return 480;
+        }
+        if (QUALITY_720.equals(quality)) {
+            return 720;
+        }
+        return 1080;
+    }
+
     private static long timeoutSeconds(long bytes, AlbumProperties.VideoProxy cfg) {
         double gb = Math.max(0.1d, bytes / (1024d * 1024d * 1024d));
         long perGb = cfg.getTimeoutSecondsPerGb() > 0 ? cfg.getTimeoutSecondsPerGb() : 2400L;
@@ -654,6 +702,28 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
         st.setFps(n.original ? null : n.fps);
         st.setVariant(n.variant);
         return st;
+    }
+
+    /** 附带原片分辨率/帧率，供前端「原片」选项展示 */
+    private void fillSourceMeta(VideoProxyStatus st, Long photoId) {
+        if (st == null || photoId == null) {
+            return;
+        }
+        File origin = originFile(photoId);
+        if (origin == null) {
+            return;
+        }
+        VideoStreamProbe.StreamInfo info = VideoStreamProbe.probe(origin);
+        if (info == null || info.width <= 0 || info.height <= 0) {
+            return;
+        }
+        st.setSourceWidth(info.width);
+        st.setSourceHeight(info.height);
+        int fpsRound = (int) Math.round(info.fps);
+        if (fpsRound > 0) {
+            st.setSourceFps(fpsRound);
+        }
+        st.setSourceLabel(info.summary());
     }
 
     private static String playUrl(Long photoId, Normalized n) {
@@ -704,12 +774,12 @@ public class VideoProxyServiceImpl implements IVideoProxyService {
     }
 
     static Normalized normalize(String quality, Integer fps) {
-        String q = quality == null ? QUALITY_1080 : quality.trim().toLowerCase(Locale.ROOT);
+        String q = quality == null ? QUALITY_480 : quality.trim().toLowerCase(Locale.ROOT);
         if ("原片".equals(quality) || "origin".equals(q) || "source".equals(q)) {
             q = QUALITY_ORIGINAL;
         }
-        if (!QUALITY_720.equals(q) && !QUALITY_1080.equals(q) && !QUALITY_ORIGINAL.equals(q)) {
-            q = QUALITY_1080;
+        if (!QUALITY_480.equals(q) && !QUALITY_720.equals(q) && !QUALITY_1080.equals(q) && !QUALITY_ORIGINAL.equals(q)) {
+            q = QUALITY_480;
         }
         int f = fps == null ? 30 : fps;
         if (f != 30) {

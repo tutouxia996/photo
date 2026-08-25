@@ -8,9 +8,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -19,10 +21,13 @@ import java.util.concurrent.TimeUnit;
 public final class ExternalMediaTools {
 
     private static final Logger log = LoggerFactory.getLogger(ExternalMediaTools.class);
+    private static final int MAX_OUTPUT_BYTES = 256 * 1024;
 
     private static volatile String ffmpegCmd = "ffmpeg";
     private static volatile String ffprobeCmd = "ffprobe";
     private static volatile boolean resolved = false;
+    private static volatile boolean ffmpegOk = false;
+    private static volatile boolean ffprobeOk = false;
 
     private ExternalMediaTools() {
     }
@@ -49,6 +54,28 @@ public final class ExternalMediaTools {
         return ffprobeCmd;
     }
 
+    public static boolean isFfmpegAvailable() {
+        ensureResolved();
+        return ffmpegOk;
+    }
+
+    public static boolean isFfprobeAvailable() {
+        ensureResolved();
+        return ffprobeOk;
+    }
+
+    /** 供修复接口回显，便于排查 PATH/编码问题 */
+    public static Map<String, Object> diagnose() {
+        ensureResolved();
+        Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("ffmpeg", ffmpegCmd);
+        m.put("ffprobe", ffprobeCmd);
+        m.put("ffmpegOk", ffmpegOk);
+        m.put("ffprobeOk", ffprobeOk);
+        m.put("userHome", System.getProperty("user.home", ""));
+        return m;
+    }
+
     private static synchronized void ensureResolved() {
         if (resolved) {
             return;
@@ -57,23 +84,29 @@ public final class ExternalMediaTools {
         String fp = firstWorking(buildCandidates(ffprobeCmd, "ffprobe", "ffprobe.exe"));
         if (ff != null) {
             ffmpegCmd = ff;
+            ffmpegOk = true;
         }
         if (fp != null) {
             ffprobeCmd = fp;
+            ffprobeOk = true;
         }
         resolved = true;
-        log.info("媒体工具定位：ffmpeg={} ffprobe={}", ffmpegCmd, ffprobeCmd);
-        if (ff == null) {
+        log.info("媒体工具定位：ffmpeg={} (ok={}) ffprobe={} (ok={})",
+                ffmpegCmd, ffmpegOk, ffprobeCmd, ffprobeOk);
+        if (!ffmpegOk) {
             log.warn("未找到可用的 ffmpeg，视频截帧将失败。可配置 album.ffmpegPath 或将 ffmpeg 加入 PATH");
         }
-        if (fp == null) {
+        if (!ffprobeOk) {
             log.warn("未找到可用的 ffprobe，视频时长/定位解析可能失败。可配置 album.ffprobePath");
         }
     }
 
     private static List<String> buildCandidates(String preferred, String bare, String bareExe) {
         List<String> list = new ArrayList<String>();
-        if (preferred != null && !preferred.trim().isEmpty()) {
+        if (preferred != null && !preferred.trim().isEmpty()
+                && !"ffmpeg".equals(preferred.trim()) && !"ffprobe".equals(preferred.trim())
+                && !"ffmpeg.exe".equalsIgnoreCase(preferred.trim())
+                && !"ffprobe.exe".equalsIgnoreCase(preferred.trim())) {
             list.add(preferred.trim());
         }
         String envFfmpeg = System.getenv("ALBUM_FFMPEG");
@@ -84,17 +117,20 @@ public final class ExternalMediaTools {
         if ("ffprobe".equals(bare) && envFfprobe != null && !envFfprobe.trim().isEmpty()) {
             list.add(envFfprobe.trim());
         }
-        list.add(bare);
-        list.add(bareExe);
+        // 绝对路径优先于 PATH 裸命令，避免启动脚本 PATH 残缺/指到残缺构建
         String home = System.getProperty("user.home", "");
         if (!home.isEmpty()) {
             list.add(home + "\\.lmstudio\\bin\\" + bareExe);
             list.add(home + "/.lmstudio/bin/" + bare);
+            list.add(home + "\\scoop\\apps\\ffmpeg\\current\\bin\\" + bareExe);
             list.add(home + "\\scoop\\shims\\" + bareExe);
             list.add(home + "\\AppData\\Local\\Microsoft\\WinGet\\Links\\" + bareExe);
         }
         list.add("C:\\ffmpeg\\bin\\" + bareExe);
+        list.add("D:\\ffmpeg\\bin\\" + bareExe);
         list.add("C:\\ProgramData\\chocolatey\\bin\\" + bareExe);
+        list.add(bareExe);
+        list.add(bare);
         return list;
     }
 
@@ -103,7 +139,6 @@ public final class ExternalMediaTools {
             if (cmd == null || cmd.isEmpty()) {
                 continue;
             }
-            // 绝对路径先检查文件存在
             File asFile = new File(cmd);
             if ((cmd.contains("/") || cmd.contains("\\")) && (!asFile.exists() || !asFile.isFile())) {
                 continue;
@@ -128,12 +163,14 @@ public final class ExternalMediaTools {
         ByteArrayOutputStream collected = new ByteArrayOutputStream();
         Thread drain = new Thread(() -> {
             try (InputStream in = process.getInputStream()) {
-                byte[] buf = new byte[4096];
+                byte[] buf = new byte[8192];
                 int n;
                 while ((n = in.read(buf)) != -1) {
-                    if (collected.size() < 32768) {
-                        collected.write(buf, 0, Math.min(n, 32768 - collected.size()));
+                    int remain = MAX_OUTPUT_BYTES - collected.size();
+                    if (remain <= 0) {
+                        continue;
                     }
+                    collected.write(buf, 0, Math.min(n, remain));
                 }
             } catch (IOException ignored) {
                 // 进程被杀掉时读流失败属正常
@@ -153,8 +190,27 @@ public final class ExternalMediaTools {
             Thread.currentThread().interrupt();
         }
         int exitCode = finished ? process.exitValue() : -1;
-        String output = new String(collected.toByteArray(), Charset.defaultCharset());
+        // ffprobe/ffmpeg 输出为 UTF-8；中文 Windows 默认 GBK 会把小米等标签字节错解，导致 JSON/截帧诊断失败
+        String output = decodeUtf8Prefer(collected.toByteArray());
         return new ProcessResult(finished, exitCode, output);
+    }
+
+    private static String decodeUtf8Prefer(byte[] raw) {
+        if (raw == null || raw.length == 0) {
+            return "";
+        }
+        String utf8 = new String(raw, StandardCharsets.UTF_8);
+        // 若几乎全是替换符，再回退系统编码（极老本地化工具）
+        int bad = 0;
+        for (int i = 0; i < utf8.length(); i++) {
+            if (utf8.charAt(i) == '\uFFFD') {
+                bad++;
+            }
+        }
+        if (bad > 0 && bad * 10 > utf8.length()) {
+            return new String(raw, Charset.defaultCharset());
+        }
+        return utf8;
     }
 
     public static final class ProcessResult {

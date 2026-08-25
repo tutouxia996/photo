@@ -76,3 +76,28 @@ export function purgeAlbum(albumId) {
     method: 'delete'
   })
 }
+
+/** 启动相册后台打包下载（原图/原视频 → zip） */
+export function startAlbumDownload(albumId) {
+  return request({
+    url: '/album/album/' + albumId + '/download',
+    method: 'post',
+    timeout: 60000,
+    showActionLoading: false
+  })
+}
+
+/** 相册打包/下载进度 */
+export function getAlbumDownloadProgress() {
+  return request({
+    url: '/album/album/download/progress',
+    method: 'get',
+    headers: { repeatSubmit: false },
+    silent: true
+  })
+}
+
+/** 已打包 zip 文件下载地址 */
+export function albumDownloadFileUrl(taskId) {
+  return '/album/album/download/file?taskId=' + encodeURIComponent(taskId)
+}

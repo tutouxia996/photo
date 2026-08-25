@@ -58,7 +58,7 @@ export function getVideoProxyStats(pathId) {
   })
 }
 
-/** 一键排队生成视频浏览档（720p30/1080p30）；后台转码，立即返回 */
+/** 一键排队生成视频浏览档（480p30/720p30/1080p30）；后台转码，立即返回 */
 export function generateVideoProxies(pathId, force = false) {
   const params = {}
   if (pathId != null) params.pathId = pathId

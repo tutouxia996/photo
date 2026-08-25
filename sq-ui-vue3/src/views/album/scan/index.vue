@@ -39,7 +39,7 @@
             :disabled="scanning || repairing || proxying"
             @click="handleRepairThumbs(scope.row)"
             v-hasPermi="['album:scan:run']"
-          >补视频缩略图</el-button>
+          >补封面/GPS</el-button>
           <el-button
             link
             type="success"
@@ -196,16 +196,22 @@ async function handleRepairThumbs(row) {
     const res = await repairVideoThumbs(row.pathId, force)
     const data = res.data || {}
     const repaired = Number(data.repaired) || 0
+    const gpsFilled = Number(data.gpsFilled) || 0
+    const tracksSynced = Number(data.tracksSynced) || 0
     const failed = Number(data.failed) || 0
     const skipped = Number(data.skipped) || 0
     const samples = Array.isArray(data.samples) ? data.samples : []
-    let msg = `补齐完成：成功 ${repaired}，跳过 ${skipped}，失败 ${failed}`
+    const tools = data.tools || {}
+    let msg = `补齐完成：封面 ${repaired}，GPS ${gpsFilled}，轨迹刷新 ${tracksSynced}，跳过 ${skipped}，失败 ${failed}`
+    if (tools.ffmpeg || tools.ffprobe) {
+      msg += `。工具 ffmpegOk=${tools.ffmpegOk} ffprobeOk=${tools.ffprobeOk}`
+    }
     if (data.hint) {
       msg += `。${data.hint}`
     } else if (samples.length) {
-      msg += `。示例：${samples.slice(0, 3).join('；')}`
-    } else if (repaired > 0) {
-      msg += '。请强制刷新首页/地图查看封面。'
+      msg += `。示例：${samples.slice(0, 2).join('；')}`
+    } else if (repaired > 0 || gpsFilled > 0) {
+      msg += '。请刷新首页/轨迹/地图查看。'
     }
     if (failed > 0 && repaired === 0) {
       proxy.$modal.msgError(msg)
@@ -254,7 +260,7 @@ async function handleGenerateProxies(row) {
       `条件：1080p 及以上 且 ≥30fps` +
       reasonText +
       (sampleText ? `\n\n示例：\n${sampleText}` : '') +
-      `\n\n生成 720p30 / 1080p30，输出到 cache/proxy。`
+      `\n\n生成 480p30 / 720p30 / 1080p30，输出到 cache/proxy。\n默认跳过已有档；下一弹窗可选强制覆盖重转。`
     )
   } catch (e) {
     return

@@ -115,7 +115,7 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                         "/**/*.css", "/**/*.js", "/**/*.map", "/**/*.ico", "/**/*.png", "/**/*.svg",
                         "/**/*.woff", "/**/*.woff2", "/**/*.ttf", "/profile/**").permitAll()
                 // 相册媒体预览（img/video 标签无法带 Token）
-                .antMatchers(HttpMethod.GET, "/album/photo/media/**", "/album/files/**").permitAll()
+                .antMatchers(HttpMethod.GET, "/album/photo/media/**", "/album/photo/thumb/**", "/album/files/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/album/photo/videoProxy/**").permitAll()
                 .antMatchers(HttpMethod.POST, "/album/photo/videoProxy/**/ensure").authenticated()
                 .antMatchers("/swagger-ui.html", "/swagger-resources/**", "/webjars/**", "/*/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/doc.html", "/druid/**").permitAll()

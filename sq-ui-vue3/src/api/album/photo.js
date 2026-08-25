@@ -38,7 +38,7 @@ export function uploadPhoto(data) {
 }
 
 /** 查询视频浏览档状态 */
-export function getVideoProxyStatus(photoId, quality = '1080p', fps = 30) {
+export function getVideoProxyStatus(photoId, quality = '480p', fps = 30) {
   return request({
     url: '/album/photo/videoProxy/' + photoId,
     method: 'get',
@@ -47,7 +47,7 @@ export function getVideoProxyStatus(photoId, quality = '1080p', fps = 30) {
 }
 
 /** 确保浏览档就绪 */
-export function ensureVideoProxy(photoId, quality = '1080p', fps = 30) {
+export function ensureVideoProxy(photoId, quality = '480p', fps = 30) {
   return request({
     url: '/album/photo/videoProxy/' + photoId + '/ensure',
     method: 'post',

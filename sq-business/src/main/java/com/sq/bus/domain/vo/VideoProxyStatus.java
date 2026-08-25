@@ -19,6 +19,15 @@ public class VideoProxyStatus implements Serializable {
     private Long fileSize;
     private String playUrl;
 
+    /** 原片分辨率宽（ffprobe） */
+    private Integer sourceWidth;
+    /** 原片分辨率高 */
+    private Integer sourceHeight;
+    /** 原片帧率（四舍五入） */
+    private Integer sourceFps;
+    /** 如 1920x1080@30fps，供前端「原片」选项展示 */
+    private String sourceLabel;
+
     public Long getPhotoId() {
         return photoId;
     }
@@ -81,5 +90,37 @@ public class VideoProxyStatus implements Serializable {
 
     public void setPlayUrl(String playUrl) {
         this.playUrl = playUrl;
+    }
+
+    public Integer getSourceWidth() {
+        return sourceWidth;
+    }
+
+    public void setSourceWidth(Integer sourceWidth) {
+        this.sourceWidth = sourceWidth;
+    }
+
+    public Integer getSourceHeight() {
+        return sourceHeight;
+    }
+
+    public void setSourceHeight(Integer sourceHeight) {
+        this.sourceHeight = sourceHeight;
+    }
+
+    public Integer getSourceFps() {
+        return sourceFps;
+    }
+
+    public void setSourceFps(Integer sourceFps) {
+        this.sourceFps = sourceFps;
+    }
+
+    public String getSourceLabel() {
+        return sourceLabel;
+    }
+
+    public void setSourceLabel(String sourceLabel) {
+        this.sourceLabel = sourceLabel;
     }
 }

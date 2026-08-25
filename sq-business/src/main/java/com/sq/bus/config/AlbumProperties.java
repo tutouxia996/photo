@@ -26,7 +26,7 @@ public class AlbumProperties {
 
     /**
      * 视频浏览代理片缓存目录（与原片分离，不入库、不在相册列表展示）。
-     * 例如 1080p30.mp4，可随时删除后按需再生成。
+     * 例如 480p30.mp4，可随时删除后按需再生成。
      */
     private String proxyPath = "D:/uploadPath/album/cache/proxy";
 
@@ -56,6 +56,15 @@ public class AlbumProperties {
     /** 阿里云盘个人相册定时同步到本地，再走磁盘扫描入库 */
     private AliyunDriveConfig aliyunDrive = new AliyunDriveConfig();
 
+    /**
+     * ffmpeg 可执行文件绝对路径（可选）。
+     * 也可通过环境变量 ALBUM_FFMPEG / ALBUM_FFPROBE 指定。
+     */
+    private String ffmpegPath = "";
+
+    /** ffprobe 可执行文件绝对路径（可选） */
+    private String ffprobePath = "";
+
     /** 磁盘扫描性能（大视频路径跳过 / 采样哈希 / 截帧） */
     private ScanConfig scan = new ScanConfig();
 
@@ -77,6 +86,10 @@ public class AlbumProperties {
          * 默认 8GB（大疆 4K 常见 1～4GB）；设为 0 表示始终截帧。
          */
         private long skipVideoThumbAboveBytes = 8L * 1024 * 1024 * 1024;
+        /** 扫描完成后后台补全无封面视频缩略图与 GPS */
+        private boolean repairVideoThumbsOnScan = true;
+        /** 并行 ffmpeg 截帧上限（按需 thumb / 补封面共用） */
+        private int thumbFfmpegConcurrency = 2;
     }
 
     @Data
@@ -90,6 +103,10 @@ public class AlbumProperties {
     public static class VideoProxy {
         /** 同时转码任务数（家用机器建议 1） */
         private int concurrency = 1;
+        /** 480p CRF，越大体积越小（外网流畅档） */
+        private int crf480 = 28;
+        /** 480p 峰值码率上限，如 1500k；空则不限 */
+        private String maxrate480 = "1500k";
         /** 720p CRF，越大体积越小 */
         private int crf720 = 26;
         /** 1080p CRF */
@@ -98,6 +115,8 @@ public class AlbumProperties {
         private String preset = "veryfast";
         /** 音频码率 */
         private String audioBitrate = "128k";
+        /** 480p 音频码率（外网档更省带宽） */
+        private String audioBitrate480 = "96k";
         /** 超过该大小（字节）才可能转码；0 表示不限制体积 */
         private long minBytes = 0L;
         /** 分辨率下限：宽≥minWidth 或 高≥minHeight（默认 1080p） */

@@ -45,11 +45,12 @@ export default {
   },
   zip(url, name) {
     var url = baseURL + url
-    downloadLoadingInstance = ElLoading.service({ text: "正在下载数据，请稍候", background: "rgba(0, 0, 0, 0.7)", })
+    downloadLoadingInstance = ElLoading.service({ text: "正在打包下载，请稍候", background: "rgba(0, 0, 0, 0.7)", })
     axios({
       method: 'get',
       url: url,
       responseType: 'blob',
+      timeout: 0,
       headers: { 'Authorization': 'Bearer ' + getToken() }
     }).then((res) => {
       const isBlob = blobValidate(res.data);
