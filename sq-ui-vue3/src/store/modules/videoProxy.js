@@ -42,6 +42,10 @@ const useVideoProxyStore = defineStore('videoProxy', {
         return true
       }
       if (total <= 0) {
+        // 扫描衔接阶段可能尚无 total，保留短时可见
+        if (state.finishedAt && Date.now() - state.finishedAt < 8000) {
+          return true
+        }
         return false
       }
       if (Number(p.status) === 2) {
@@ -59,7 +63,7 @@ const useVideoProxyStore = defineStore('videoProxy', {
       this.progress = { ...empty(), ...(p || {}) }
       const total = Number(this.progress.total) || 0
       const nowRunning = this.progress.running || Number(this.progress.status) === 0
-      if (total > 0 && prevRunning && !nowRunning) {
+      if (prevRunning && !nowRunning) {
         this.finishedAt = Date.now()
       } else if (Number(this.progress.status) === 2 && total > 0 && !nowRunning) {
         this.finishedAt = Date.now()

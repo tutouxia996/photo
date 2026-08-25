@@ -18,6 +18,8 @@
       <el-progress
         :percentage="Number(progress.percent) || 0"
         :stroke-width="8"
+        striped
+        :striped-flow="Number(progress.status) === 0 || progress.running"
         :status="progress.status === 2 ? 'exception' : (progress.status === 1 ? 'success' : undefined)"
       />
       <div class="aliyun-sync-stats">

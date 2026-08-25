@@ -1,6 +1,7 @@
 import { getActiveScanProgress, getScanProgress } from '@/api/album/scan'
 import { getToken } from '@/utils/auth'
 import useUserStore from '@/store/modules/user'
+import useVideoProxyStore from '@/store/modules/videoProxy'
 
 function hasScanPerm() {
   const p = useUserStore().permissions || []
@@ -61,6 +62,38 @@ const useDiskScanStore = defineStore('diskScan', {
       const nowRunning = this.progress.running
       if (prevRunning && !nowRunning) {
         this.finishedAt = Date.now()
+        // 扫描结束后会异步排队浏览档转码；全局拉起转码浮层轮询（不依赖是否停在扫描页）
+        this.kickVideoProxyAfterScan()
+      }
+    },
+    kickVideoProxyAfterScan() {
+      try {
+        const msg = String(this.progress.message || '')
+        const hinted = /转码|浏览档|proxy/i.test(msg)
+        // enqueueOnScan 默认开启：即使文案被截断，也短暂轮询一次，避免漏掉转码进度
+        if (hinted || Number(this.progress.newCount) > 0 || Number(this.progress.skipCount) > 0) {
+          const proxyStore = useVideoProxyStore()
+          const p = proxyStore.progress
+          const alreadyLive = p.running || Number(p.status) === 0 || Number(p.generating) > 0
+          if (!alreadyLive) {
+            proxyStore.apply({
+              status: 0,
+              running: true,
+              message: hinted ? '扫描完成，正在衔接视频转码…' : '扫描完成，正在检查是否需要转码…',
+              percent: 0,
+              total: 0,
+              done: 0,
+              failed: 0,
+              generating: 0,
+              remaining: 0
+            })
+            proxyStore.finishedAt = 0
+            proxyStore.minimized = false
+          }
+          proxyStore.startPolling()
+        }
+      } catch (e) {
+        // ignore
       }
     },
     async refreshByLogId(logId) {
@@ -83,6 +116,11 @@ const useDiskScanStore = defineStore('diskScan', {
         const log = res.data
         if (log && Number(log.status) === 0) {
           this.apply(log)
+        } else if (this.progress.running || Number(this.progress.status) === 0) {
+          // 进行中任务刚结束时 active 可能已空，用 logId 拉最终态（含「已排队转码」文案）
+          if (this.progress.logId) {
+            await this.refreshByLogId(this.progress.logId)
+          }
         } else if (!this.progress.running) {
           if (this.progress.logId && Number(this.progress.status) === 0) {
             await this.refreshByLogId(this.progress.logId)

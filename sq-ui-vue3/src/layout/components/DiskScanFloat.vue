@@ -37,6 +37,7 @@
         <span>失败 {{ progress.failCount || 0 }}</span>
       </div>
       <div class="disk-scan-msg" :title="progress.message">{{ progress.message || '准备中…' }}</div>
+      <div v-if="proxyHint" class="disk-scan-proxy-hint">{{ proxyHint }}</div>
     </template>
     <div v-else class="disk-scan-mini">{{ percent }}% · {{ processedText }}</div>
   </div>
@@ -71,6 +72,20 @@ const processedText = computed(() => {
 })
 
 const canDismiss = computed(() => !progress.value.running && Number(progress.value.status) !== 0)
+
+const proxyHint = computed(() => {
+  if (videoProxyStore.visible && (videoProxyStore.progress.running || Number(videoProxyStore.progress.status) === 0)) {
+    const p = videoProxyStore.progress
+    const pct = Number(p.percent) || 0
+    const rem = Number(p.remaining) || 0
+    return `视频转码进行中 ${pct}%${rem ? `，剩余 ${rem}` : ''}（详见下方浮层）`
+  }
+  const msg = String(progress.value.message || '')
+  if (!progress.value.running && /转码|浏览档/i.test(msg)) {
+    return '已触发视频转码，进度见右下角转码浮层'
+  }
+  return ''
+})
 
 const floatBottom = computed(() => {
   let bottom = 20
@@ -163,6 +178,12 @@ onUnmounted(() => {
 .disk-scan-msg {
   margin-top: 8px;
   color: #606266;
+}
+.disk-scan-proxy-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #409eff;
+  line-height: 1.4;
 }
 .disk-scan-mini {
   color: #909399;

@@ -305,10 +305,6 @@ watch(
   (status, prev) => {
     if (prev === 0 && status !== 0) {
       getList()
-      const msg = diskScanStore.progress.message || ''
-      if (msg.includes('视频转码')) {
-        videoProxyStore.startPolling()
-      }
     }
   }
 )

@@ -1102,7 +1102,7 @@ UNLOCK TABLES;
 
 LOCK TABLES `sys_job` WRITE;
 /*!40000 ALTER TABLE `sys_job` DISABLE KEYS */;
-INSERT INTO `sys_job` VALUES (1,'系统默认（无参）','DEFAULT','ryTask.ryNoParams','0/10 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(2,'系统默认（有参）','DEFAULT','ryTask.ryParams(\'ry\')','0/15 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(3,'系统默认（多参）','DEFAULT','ryTask.ryMultipleParams(\'ry\', true, 2000L, 316.50D, 100)','0/20 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(4,'阿里云盘相册同步','DEFAULT','aliyunAlbumSyncTask.syncAndScan()','0 0 2 * * ?','2','0','1','admin','2026-08-18 01:04:47','admin','2026-08-18 21:03:18','');
+INSERT INTO `sys_job` VALUES (1,'系统默认（无参）','DEFAULT','ryTask.ryNoParams','0/10 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(2,'系统默认（有参）','DEFAULT','ryTask.ryParams(\'ry\')','0/15 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(3,'系统默认（多参）','DEFAULT','ryTask.ryMultipleParams(\'ry\', true, 2000L, 316.50D, 100)','0/20 * * * * ?','3','1','1','admin','2024-06-21 10:57:33','',NULL,''),(4,'阿里云盘相册同步','DEFAULT','aliyunAlbumSyncTask.syncAndScan()','0 0 1 * * ?','2','0','1','admin','2026-08-18 01:04:47','admin','2026-08-18 21:03:18','');
 /*!40000 ALTER TABLE `sys_job` ENABLE KEYS */;
 UNLOCK TABLES;
 

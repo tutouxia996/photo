@@ -40,4 +40,4 @@ INSERT IGNORE INTO `sys_role_menu` VALUES
 (1,3005),(1,3050),(1,3051),(1,3052);
 
 INSERT IGNORE INTO `sys_job` VALUES
-(4,'阿里云盘相册同步','DEFAULT','aliyunAlbumSyncTask.syncAndScan()','0 0 2 * * ?','2','0','1','admin','2026-08-18 01:04:47','admin','2026-08-18 21:03:18','');
+(4,'阿里云盘相册同步','DEFAULT','aliyunAlbumSyncTask.syncAndScan()','0 0 1 * * ?','2','0','1','admin','2026-08-18 01:04:47','admin','2026-08-18 21:03:18','');

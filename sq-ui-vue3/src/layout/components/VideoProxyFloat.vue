@@ -28,6 +28,8 @@
         v-if="Number(progress.total) > 0 || progress.running"
         :percentage="Number(progress.percent) || 0"
         :stroke-width="8"
+        striped
+        :striped-flow="progress.running || Number(progress.status) === 0"
         :status="progress.status === 2 ? 'exception' : (progress.status === 1 && !progress.running ? 'success' : undefined)"
       />
       <div class="video-proxy-stats">
