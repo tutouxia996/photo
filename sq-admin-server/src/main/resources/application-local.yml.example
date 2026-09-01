@@ -5,6 +5,10 @@
 # 3. 阿里云盘同步请在后台「相册管理 → 云盘同步」保存（也可在下方填默认回落值）
 # 4. 重启后端（开发：-Dspring.profiles.active=mysql-dev,local；部署：mysql-deploy,local）
 # 数据库账号见 application-mysql-dev.yml（开发）或 application-mysql-deploy.yml（部署），勿写在本文件
+#
+# 百度街景（浏览器端 AK）不在本文件：写在前端 sq-ui-vue3/.env.development.local
+#   与 .env.production.local 的 VITE_BAIDU_MAP_AK。地图右上角「高德|百度」双引擎，
+#   百度含标准/卫星/全景。详见 doc/地图与密钥配置.md
 
 album:
   map:

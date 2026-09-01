@@ -1,5 +1,8 @@
 # 复制为 application-local.yml 后按部署机环境修改（不要提交真实密钥到 Git）
 # MySQL 见 application-mysql-deploy.yml（root / photo）；Redis 密码若与默认不同，在下方填写
+#
+# 百度街景 AK 不在本文件：打包前端前写入 sq-ui-vue3/.env.production.local
+#   VITE_BAIDU_MAP_AK=浏览器端AK。详见仓库 doc/地图与密钥配置.md
 
 spring:
   redis:

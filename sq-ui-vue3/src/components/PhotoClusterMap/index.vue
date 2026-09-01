@@ -1,35 +1,98 @@
 <template>
-  <div class="photo-cluster-map" :class="{ 'is-editable': editable }">
+  <div class="photo-cluster-map" :class="{ 'is-editable': editable, 'is-baidu': provider === 'baidu' }">
     <div class="map-toolbar-left">
       <slot name="meta" />
     </div>
-    <div class="map-style-switch">
-      <button
-        v-for="item in mapStyles"
-        :key="item.key"
-        type="button"
-        class="style-btn"
-        :class="{ active: currentStyle === item.key }"
-        @click="switchMapStyle(item.key)"
-      >
-        {{ item.label }}
-      </button>
+    <div
+      v-show="!(provider === 'baidu' && baiduPanoOpen)"
+      class="map-style-switch"
+    >
+      <div class="provider-group" :class="{ active: provider === 'amap' }">
+        <button type="button" class="style-btn provider-btn" @click="selectProvider('amap')">
+          高德地图
+        </button>
+        <el-dropdown trigger="click" @command="onAmapStyleCommand">
+          <button type="button" class="style-btn dropdown-btn" :title="amapStyleLabel">
+            {{ amapStyleLabel }}
+            <span class="caret">▾</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="item in amapStyles"
+                :key="item.key"
+                :command="item.key"
+                :class="{ 'is-active-item': amapStyle === item.key }"
+              >
+                {{ item.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+      <span class="style-sep" aria-hidden="true" />
+      <div class="provider-group" :class="{ active: provider === 'baidu' }">
+        <button type="button" class="style-btn provider-btn" @click="selectProvider('baidu')">
+          百度地图
+        </button>
+        <el-dropdown trigger="click" @command="onBaiduStyleCommand">
+          <button type="button" class="style-btn dropdown-btn" :title="baiduStyleLabel">
+            {{ baiduStyleLabel }}
+            <span class="caret">▾</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="item in baiduStyles"
+                :key="item.key"
+                :command="item.key"
+                :class="{ 'is-active-item': baiduStyle === item.key }"
+              >
+                {{ item.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </div>
-    <div ref="mapEl" class="map-canvas" />
-    <div v-if="!hasPoints" class="map-empty">{{ emptyText }}</div>
+    <div v-show="provider === 'baidu'" class="baidu-street-overlay">
+      <div :id="baiduMapDomId" class="baidu-street-canvas" />
+      <div v-if="baiduStatus" class="baidu-street-status">
+        <p>{{ baiduStatus }}</p>
+        <button type="button" class="baidu-street-link is-muted" @click="selectProvider('amap')">
+          返回高德地图
+        </button>
+      </div>
+      <div v-else-if="baiduStyle === 'panorama' && !baiduPanoOpen" class="baidu-street-hint">
+        蓝色为全景路网 · 点右下角百度「全景」后移到蓝线上进入街景，用百度自带关闭退出
+      </div>
+    </div>
+    <div ref="mapEl" class="map-canvas" :class="{ 'is-hidden-by-street': provider === 'baidu' }" />
+    <div v-if="!hasPoints && provider === 'amap'" class="map-empty">{{ emptyText }}</div>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import L from '@/utils/leaflet'
+import { applyAmapBaseLayers } from '@/utils/mapAdapters/amapLeaflet'
+import { BaiduMapEngine, leafletCenterToBd } from '@/utils/mapAdapters/baiduEngine'
 import {
-  MAP_STYLES,
-  STYLE_LAYERS,
+  AMAP_STYLES,
+  BAIDU_STYLES,
+  MAP_PROVIDER_AMAP,
+  MAP_PROVIDER_BAIDU,
+  loadMapProviderPrefs,
+  saveMapProviderPrefs
+} from '@/utils/mapAdapters/types'
+import { getBaiduMapAk } from '@/utils/baiduMap'
+import {
   cleanRailDisplayPath,
   createClusterGroup,
   createEstimatedClusterGroup,
   createPhotoMarker,
+  escapeHtml,
   filterValidPoints,
   fromMapLatLng,
   isEstimatedLocation,
@@ -117,8 +180,24 @@ const emit = defineEmits([
 ])
 
 const mapEl = ref(null)
-const currentStyle = ref('normal')
-const mapStyles = MAP_STYLES
+const prefs = loadMapProviderPrefs()
+const provider = ref(prefs?.provider || MAP_PROVIDER_AMAP)
+const amapStyle = ref(prefs?.amapStyle || 'normal')
+const baiduStyle = ref(prefs?.baiduStyle || 'normal')
+const amapStyles = AMAP_STYLES
+const baiduStyles = BAIDU_STYLES
+const baiduStatus = ref('')
+const baiduMapDomId = `baidu-map-${Math.random().toString(36).slice(2, 10)}`
+const baiduOpening = ref(false)
+/** 百度原生街景打开时隐藏地图切换，避免挡住官方关闭按钮 */
+const baiduPanoOpen = ref(false)
+
+const amapStyleLabel = computed(() =>
+  amapStyles.find(s => s.key === amapStyle.value)?.label || '标准'
+)
+const baiduStyleLabel = computed(() =>
+  baiduStyles.find(s => s.key === baiduStyle.value)?.label || '标准'
+)
 
 let map = null
 let baseLayer = null
@@ -146,6 +225,8 @@ let boxSelectRect = null
 let boxSelectStart = null
 let boxSelectDragging = false
 let boxSelectHandlersBound = false
+/** @type {BaiduMapEngine | null} */
+let baiduEngine = null
 
 const selectedSegmentSet = computed(() => {
   const arr = Array.isArray(props.selectedSegmentIndexes) ? props.selectedSegmentIndexes : []
@@ -252,21 +333,19 @@ function ensureMapSized(attempt = 0) {
   }
 }
 
+function persistPrefs() {
+  saveMapProviderPrefs({
+    provider: provider.value,
+    amapStyle: amapStyle.value,
+    baiduStyle: baiduStyle.value
+  })
+}
+
 function applyBaseLayers(styleKey) {
   if (!map) return
-  const conf = STYLE_LAYERS[styleKey] || STYLE_LAYERS.normal
-  if (baseLayer) {
-    map.removeLayer(baseLayer)
-    baseLayer = null
-  }
-  if (labelLayer) {
-    map.removeLayer(labelLayer)
-    labelLayer = null
-  }
-  baseLayer = L.tileLayer(conf.url, conf.options).addTo(map)
-  if (conf.labelUrl) {
-    labelLayer = L.tileLayer(conf.labelUrl, conf.labelOptions || conf.options).addTo(map)
-  }
+  const layers = applyAmapBaseLayers(map, styleKey, { baseLayer, labelLayer })
+  baseLayer = layers.baseLayer
+  labelLayer = layers.labelLayer
   if (regionLayer) regionLayer.bringToFront()
   if (lineLayer) lineLayer.bringToFront()
   if (gpxOverlayLayer) gpxOverlayLayer.bringToFront()
@@ -275,10 +354,173 @@ function applyBaseLayers(styleKey) {
   if (estimatedLayer) estimatedLayer.bringToFront()
 }
 
-function switchMapStyle(key) {
-  if (currentStyle.value === key) return
-  currentStyle.value = key
+function buildBaiduScene() {
+  const matched = visibleMatchedPhotos()
+  const matchedIds = new Set(matched.map(p => String(p.photoId)).filter(Boolean))
+  const points = []
+  const seen = new Set()
+  for (const p of validPoints.value) {
+    if (p.photoId != null && matchedIds.has(String(p.photoId))) continue
+    const key = p.photoId != null ? `p:${p.photoId}` : `c:${p.latitude},${p.longitude}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    points.push(p)
+  }
+  for (const p of matched) {
+    const key = p.photoId != null ? `p:${p.photoId}` : `c:${p.latitude},${p.longitude}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    points.push(p)
+  }
+  return {
+    points,
+    polylinePoints: polylineSource.value,
+    showPolyline: props.showPolyline,
+    polylineColor: props.polylineColor,
+    segmentByTravelMode: props.segmentByTravelMode,
+    showDirection: props.showDirection,
+    previewPath: props.previewPath,
+    overlayPaths: overlayList.value,
+    visibleTravelModes: props.visibleTravelModes,
+    editable: props.editable,
+    activeSegmentIndex: props.activeSegmentIndex,
+    pathEditIndex: props.pathEditIndex,
+    selectedSegmentIndexes: props.selectedSegmentIndexes,
+    estimatedDraggable: props.estimatedDraggable,
+    locationCorrectable: props.locationCorrectable,
+    aiPickMode: props.aiPickMode,
+    selectedPhotoIds: props.selectedPhotoIds,
+    pointPickable: props.pointPickable,
+    gpxEndpointPickable: props.gpxEndpointPickable,
+    regionGeoJson: props.regionGeoJson,
+    showRegionHighlight: props.showRegionHighlight,
+    gpxMatchedIds: matchedIds
+  }
+}
+
+function baiduCallbacks() {
+  return {
+    onSegmentClick: (p) => emit('segment-click', p),
+    onSegmentPathChange: (p) => emit('segment-path-change', p),
+    onWaypointClick: (p) => emit('waypoint-click', p),
+    onPointClick: (p) => emit('point-click', p),
+    onGpxClick: (p) => emit('gpx-click', p),
+    onGpxEndpointClick: (p) => emit('gpx-endpoint-click', p),
+    onEstimatedSelect: (p) => {
+      emit('estimated-select', p)
+      emit('location-select', p)
+    },
+    onLocationSelect: (p) => emit('location-select', p),
+    onEstimatedDragEnd: (p) => emit('estimated-drag-end', p),
+    onLocationDragEnd: (p) => emit('location-drag-end', p),
+    onBoxSelect: (p) => emit('box-select', p),
+    onNativePanoramaChange: (open) => {
+      baiduPanoOpen.value = !!open
+    }
+  }
+}
+
+async function ensureBaiduEngine({ fit = false } = {}) {
+  if (baiduOpening.value) return
+  baiduOpening.value = true
+  baiduStatus.value = '正在加载百度地图…'
+  try {
+    if (!baiduEngine) {
+      baiduEngine = new BaiduMapEngine()
+    }
+    if (!baiduEngine.map) {
+      await nextTick()
+      const centerBd = leafletCenterToBd(map) || [116.404, 39.915]
+      const zoom = map ? Math.min(Math.max(Math.round(map.getZoom() || 12), 4), 18) : 12
+      await baiduEngine.init(baiduMapDomId, {
+        centerBd,
+        zoom,
+        styleKey: baiduStyle.value,
+        callbacks: baiduCallbacks()
+      })
+    } else {
+      baiduEngine.callbacks = baiduCallbacks()
+      baiduEngine.setBasemap(baiduStyle.value)
+    }
+    baiduEngine.render(buildBaiduScene(), { fit: fit || !baiduEngine.didFit })
+    baiduEngine.setBoxSelectActive(!!props.boxSelectActive)
+    baiduStatus.value = ''
+    setTimeout(() => baiduEngine?.checkResize(), 120)
+  } catch (err) {
+    const msg = err?.message || '百度地图加载失败'
+    baiduStatus.value = msg
+    ElMessage.error(msg)
+    provider.value = MAP_PROVIDER_AMAP
+    persistPrefs()
+  } finally {
+    baiduOpening.value = false
+  }
+}
+
+function destroyBaiduEngine() {
+  if (baiduEngine) {
+    baiduEngine.destroy()
+    baiduEngine = null
+  }
+  baiduStatus.value = ''
+  baiduPanoOpen.value = false
+}
+
+async function selectProvider(next) {
+  if (next === provider.value) return
+  if (next === MAP_PROVIDER_BAIDU && !getBaiduMapAk()) {
+    ElMessage.warning('未配置百度地图 AK（VITE_BAIDU_MAP_AK）')
+    return
+  }
+  // 切换引擎前清交互，避免脏状态
+  if (props.boxSelectActive) syncBoxSelectMode(false)
+  provider.value = next
+  persistPrefs()
+  if (next === MAP_PROVIDER_BAIDU) {
+    await ensureBaiduEngine({ fit: true })
+  } else {
+    destroyBaiduEngine()
+    await nextTick()
+    invalidateMapSize()
+    refresh({ fit: false })
+  }
+}
+
+function onAmapStyleCommand(key) {
+  if (provider.value !== MAP_PROVIDER_AMAP) {
+    selectProvider(MAP_PROVIDER_AMAP).then(() => {
+      amapStyle.value = key
+      persistPrefs()
+      applyBaseLayers(key)
+    })
+    return
+  }
+  if (amapStyle.value === key) return
+  amapStyle.value = key
+  persistPrefs()
   applyBaseLayers(key)
+}
+
+async function onBaiduStyleCommand(key) {
+  if (provider.value !== MAP_PROVIDER_BAIDU) {
+    baiduStyle.value = key
+    persistPrefs()
+    await selectProvider(MAP_PROVIDER_BAIDU)
+    return
+  }
+  if (baiduStyle.value === key) return
+  if (key !== 'panorama') {
+    baiduEngine?.closePanorama()
+    baiduPanoOpen.value = false
+  }
+  baiduStyle.value = key
+  persistPrefs()
+  if (baiduEngine?.map) {
+    baiduEngine.setBasemap(key)
+    baiduEngine.render(buildBaiduScene(), { fit: false })
+  } else {
+    await ensureBaiduEngine({ fit: false })
+  }
 }
 
 function setMarkerPaneVisible(visible) {
@@ -727,14 +969,6 @@ function buildGpxPopupHtml(item, nearest) {
 
 function metaRow(label, value) {
   return `<div class="pmc-meta"><span class="pmc-gpx-k">${escapeHtml(label)}</span>${escapeHtml(String(value))}</div>`
-}
-
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 /** 省/市/区蓝色高亮样式（区最深，省最浅） */
@@ -1214,7 +1448,7 @@ function initMap() {
   L.control.zoom({ position: 'bottomleft' }).addTo(map)
   canvasRenderer = L.canvas({ padding: 0.5 })
   svgRenderer = L.svg({ padding: 0.5 })
-  applyBaseLayers(currentStyle.value)
+  applyBaseLayers(amapStyle.value)
   // 估计点专用最高图层（高于普通 marker 600，低于 popup 700）
   if (!map.getPane('estimatedPane')) {
     map.createPane('estimatedPane')
@@ -1267,6 +1501,7 @@ function onBoxSelectMouseDown(e) {
   if (t && t.closest && (
     t.closest('.seg-panel')
     || t.closest('.map-style-switch')
+    || t.closest('.baidu-street-overlay')
     || t.closest('.leaflet-control')
     || t.closest('.track-meta')
   )) {
@@ -1357,6 +1592,18 @@ function syncBoxSelectMode(active) {
 function refresh(options = {}) {
   nextTick(() => {
     try {
+      if (provider.value === MAP_PROVIDER_BAIDU) {
+        if (baiduEngine?.map) {
+          baiduEngine.callbacks = baiduCallbacks()
+          baiduEngine.render(buildBaiduScene(), {
+            fit: !!options.fit && !baiduEngine.didFit
+          })
+          baiduEngine.setBoxSelectActive(!!props.boxSelectActive)
+        } else {
+          ensureBaiduEngine({ fit: !!options.fit })
+        }
+        return
+      }
       if (!map) initMap()
       renderPoints(options)
     } catch (e) {
@@ -1415,16 +1662,20 @@ watch(() => props.gpxEndpointPickable, (val) => {
 }, { immediate: true })
 
 watch(() => props.boxSelectActive, (val) => {
+  if (provider.value === MAP_PROVIDER_BAIDU) {
+    baiduEngine?.setBoxSelectActive(!!val)
+    return
+  }
   syncBoxSelectMode(!!val)
 }, { immediate: true })
 
 onMounted(() => {
   refresh({ fit: true })
-  // 过渡动画结束后再校准一次尺寸
   setTimeout(() => ensureMapSized(0), 360)
 })
 
 onBeforeUnmount(() => {
+  destroyBaiduEngine()
   syncBoxSelectMode(false)
   if (resizeObserver) {
     resizeObserver.disconnect()
@@ -1453,7 +1704,12 @@ defineExpose({
   invalidateMapSize,
   /** 将地图中心移到 WGS84 坐标（用于估计点预览） */
   focusWgs(lat, lng, zoom = 16) {
-    if (!map || lat == null || lng == null) return
+    if (lat == null || lng == null) return
+    if (provider.value === MAP_PROVIDER_BAIDU) {
+      if (baiduEngine?.map) baiduEngine.focusWgs(lat, lng, zoom)
+      return
+    }
+    if (!map) return
     const ll = toMapLatLng({ latitude: lat, longitude: lng })
     const z = Math.max(Number(zoom) || 16, map.getZoom() || 3)
     map.setView(ll, Math.min(z, 18), { animate: true })
@@ -1475,8 +1731,8 @@ defineExpose({
   z-index: 500;
   top: 10px;
   left: 10px;
-  right: 200px;
-  max-width: min(560px, calc(100% - 210px));
+  right: 360px;
+  max-width: min(560px, calc(100% - 370px));
   pointer-events: none;
 }
 
@@ -1486,15 +1742,55 @@ defineExpose({
 
 .map-style-switch {
   position: absolute;
-  z-index: 500;
+  z-index: 520;
   top: 10px;
   right: 10px;
   display: inline-flex;
+  align-items: center;
+  gap: 2px;
   padding: 3px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   pointer-events: auto;
+}
+
+.provider-group {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 1px;
+}
+
+.provider-group.active {
+  background: rgba(64, 158, 255, 0.12);
+}
+
+.provider-btn {
+  font-weight: 600;
+}
+
+.dropdown-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.dropdown-btn .caret {
+  margin-left: 2px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.provider-group.active .provider-btn,
+.provider-group.active .dropdown-btn {
+  color: var(--el-color-primary, #409eff);
+}
+
+.style-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .style-btn {
@@ -1503,7 +1799,7 @@ defineExpose({
   color: #606266;
   font-size: 13px;
   line-height: 1;
-  padding: 7px 12px;
+  padding: 7px 10px;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1513,9 +1809,209 @@ defineExpose({
   background: rgba(0, 0, 0, 0.04);
 }
 
-.style-btn.active {
+.baidu-street-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 450;
+  background: #e8eef5;
+}
+
+.baidu-street-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.baidu-street-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 460;
+  max-width: min(420px, calc(100% - 120px));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.baidu-street-status {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  text-align: center;
+  max-width: min(360px, 86%);
+}
+
+.baidu-street-status p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.baidu-street-link {
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: #0f172a;
+  background: #93c5fd;
+  cursor: pointer;
+}
+
+.baidu-street-link:hover {
+  background: #bfdbfe;
+}
+
+.baidu-street-link.is-muted {
+  background: #e2e8f0;
+}
+
+.baidu-street-link.is-muted:hover {
+  background: #fff;
+}
+
+/* Label 内复用 pmc 缩略图样式 */
+.baidu-street-overlay :deep(.pmc-wrap) {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  overflow: visible;
+}
+
+.baidu-street-overlay :deep(.baidu-pmc-marker) {
+  width: 52px;
+  height: 52px;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+.baidu-street-overlay :deep(.baidu-pmc-marker .pmc-wrap) {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  overflow: visible;
+}
+
+.baidu-street-overlay :deep(.baidu-pmc-marker .pmc-badge) {
+  position: absolute;
+  z-index: 2;
+  top: -8px;
+  right: -8px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #2f6bff;
   color: #fff;
-  background: var(--el-color-primary, #409eff);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 百度轨迹流动虚线（对齐 Leaflet pmc-flow-line） */
+.baidu-street-overlay :deep(path.pmc-flow-line) {
+  pointer-events: none !important;
+  animation: pmc-flow-dash 0.9s linear infinite;
+}
+
+.baidu-street-overlay :deep(path.pmc-flow-line--accent) {
+  animation-duration: 0.9s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .baidu-street-overlay :deep(path.pmc-flow-line) {
+    animation: none;
+  }
+}
+
+.baidu-street-overlay :deep(.baidu-flow-root) {
+  pointer-events: none !important;
+}
+
+.baidu-street-overlay :deep(.BMapLabel) {
+  max-width: none !important;
+}
+
+/* 百度 InfoWindow 复用 pmc 弹层样式 */
+.baidu-street-overlay :deep(.BMap_bubble_content),
+.baidu-street-overlay :deep(.BMap_pop .BMap_top),
+.photo-cluster-map.is-baidu :deep(.BMap_bubble_content) {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.baidu-street-overlay :deep(.pmc-popup .pmc-media),
+.photo-cluster-map.is-baidu :deep(.pmc-popup .pmc-media) {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  background: #111;
+  border-radius: 4px;
+}
+
+.baidu-street-status {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  text-align: center;
+  max-width: min(360px, 86%);
+}
+
+.baidu-street-status p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.baidu-street-link {
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: #0f172a;
+  background: #93c5fd;
+  cursor: pointer;
+}
+
+.baidu-street-link:hover {
+  background: #bfdbfe;
+}
+
+.baidu-street-link.is-muted {
+  background: #e2e8f0;
+}
+
+.baidu-street-link.is-muted:hover {
+  background: #fff;
 }
 
 .map-canvas {
@@ -1525,6 +2021,11 @@ defineExpose({
   height: 100%;
   background: #e8eef5;
   z-index: 0;
+}
+
+.map-canvas.is-hidden-by-street {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .map-empty {
