@@ -3,7 +3,7 @@
     v-if="visible"
     class="video-proxy-float"
     :class="{ mini: minimized }"
-    :style="{ bottom: floatBottom, right: floatRight }"
+    :style="{ bottom: floatBottom, right: floatRight, '--vp-bottom': floatBottom }"
   >
     <div class="video-proxy-head">
       <span class="video-proxy-title">{{ titleText }}</span>
@@ -20,36 +20,41 @@
       </div>
     </div>
     <template v-if="!minimized">
-      <div class="video-proxy-row">
-        <span>进度 {{ progress.percent || 0 }}%</span>
-        <span>剩余 {{ progress.remaining || 0 }} 个</span>
-      </div>
-      <el-progress
-        v-if="Number(progress.total) > 0 || progress.running"
-        :percentage="Number(progress.percent) || 0"
-        :stroke-width="8"
-        striped
-        :striped-flow="progress.running || Number(progress.status) === 0"
-        :status="progress.status === 2 ? 'exception' : (progress.status === 1 && !progress.running ? 'success' : undefined)"
-      />
-      <div class="video-proxy-stats">
-        <span v-if="Number(progress.total) > 0">完成 {{ progress.done || 0 }}/{{ progress.total || 0 }}</span>
-        <span v-if="progress.skippedVideos">跳过 {{ progress.skippedVideos }}</span>
-        <span>转码中 {{ progress.generating || 0 }}</span>
-        <span v-if="progress.failed">失败 {{ progress.failed }}</span>
-      </div>
-      <div v-if="currentJobs.length" class="video-proxy-current">
-        <div v-for="(j, i) in currentJobs" :key="i" class="video-proxy-name" :title="j.message">
-          {{ j.fileName }} · {{ j.variant }}
+      <div class="video-proxy-body">
+        <div class="video-proxy-row">
+          <span>进度 {{ progress.percent || 0 }}%</span>
+          <span>剩余 {{ progress.remaining || 0 }} 个</span>
         </div>
-      </div>
-      <div v-if="failedJobs.length" class="video-proxy-failed">
-        <div v-for="(j, i) in failedJobs" :key="i" class="video-proxy-fail-item">
-          <div class="video-proxy-name">失败：{{ j.fileName }} · {{ j.variant }}</div>
-          <div v-if="j.message" class="video-proxy-fail-msg" :title="j.message">{{ j.message }}</div>
+        <el-progress
+          v-if="Number(progress.total) > 0 || progress.running"
+          :percentage="Number(progress.percent) || 0"
+          :stroke-width="8"
+          striped
+          :striped-flow="progress.running || Number(progress.status) === 0"
+          :status="progress.status === 2 ? 'exception' : (progress.status === 1 && !progress.running ? 'success' : undefined)"
+        />
+        <div class="video-proxy-stats">
+          <span v-if="Number(progress.total) > 0">完成 {{ progress.done || 0 }}/{{ progress.total || 0 }}</span>
+          <span v-if="progress.skippedVideos">跳过 {{ progress.skippedVideos }}</span>
+          <span>转码中 {{ progress.generating || 0 }}</span>
+          <span v-if="progress.failed">失败 {{ progress.failed }}</span>
         </div>
+        <div v-if="displayJobs.length" class="video-proxy-current">
+          <div v-for="(j, i) in displayJobs" :key="i" class="video-proxy-name" :title="j.message">
+            {{ j.fileName }} · {{ j.variant }}
+          </div>
+          <div v-if="queuedExtra > 0" class="video-proxy-more">
+            另有 {{ queuedExtra }} 个排队中…
+          </div>
+        </div>
+        <div v-if="failedJobs.length" class="video-proxy-failed">
+          <div v-for="(j, i) in failedJobs" :key="i" class="video-proxy-fail-item">
+            <div class="video-proxy-name">失败：{{ j.fileName }} · {{ j.variant }}</div>
+            <div v-if="j.message" class="video-proxy-fail-msg" :title="j.message">{{ j.message }}</div>
+          </div>
+        </div>
+        <div class="video-proxy-msg" :title="progress.message">{{ progress.message }}</div>
       </div>
-      <div class="video-proxy-msg" :title="progress.message">{{ progress.message }}</div>
     </template>
     <div v-else class="video-proxy-mini">
       {{ progress.percent || 0 }}% · 剩 {{ progress.remaining || 0 }}
@@ -73,8 +78,20 @@ const minimized = computed({
   get: () => store.minimized,
   set: (v) => { store.minimized = v }
 })
-const currentJobs = computed(() => progress.value.currentJobs || [])
-const failedJobs = computed(() => (progress.value.failedJobs || []).slice(0, 5))
+
+/** 优先展示真正在转的；排队只留少量，避免长列表顶到标题栏 */
+const displayJobs = computed(() => {
+  const all = progress.value.currentJobs || []
+  const active = all.filter(j => String(j.message || '').includes('正在转码'))
+  const waiting = all.filter(j => !String(j.message || '').includes('正在转码'))
+  const shown = [...active, ...waiting.slice(0, active.length ? 1 : 2)]
+  return shown.slice(0, 3)
+})
+const queuedExtra = computed(() => {
+  const all = progress.value.currentJobs || []
+  return Math.max(0, all.length - displayJobs.value.length)
+})
+const failedJobs = computed(() => (progress.value.failedJobs || []).slice(0, 3))
 const canDismiss = computed(() => !progress.value.running && Number(progress.value.status) !== 0)
 
 const floatBottom = computed(() => {
@@ -115,15 +132,22 @@ onUnmounted(() => {
   position: fixed;
   z-index: 3000;
   width: 320px;
+  /* 顶边不低于标题栏：预留顶栏约 100px，并扣掉自身 bottom */
+  max-height: min(280px, calc(100vh - 100px - var(--vp-bottom, 20px)));
   padding: 12px 14px;
   background: #fff;
   border: 1px solid #dcdfe6;
   color: #303133;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .video-proxy-float.mini {
   width: auto;
   min-width: 160px;
+  max-height: none;
 }
 .video-proxy-head {
   display: flex;
@@ -131,6 +155,13 @@ onUnmounted(() => {
   align-items: center;
   margin-bottom: 8px;
   gap: 8px;
+  flex-shrink: 0;
+}
+.video-proxy-body {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .video-proxy-title {
   font-size: 13px;
@@ -162,6 +193,11 @@ onUnmounted(() => {
   margin-top: 6px;
   font-size: 12px;
   color: #606266;
+}
+.video-proxy-more {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 .video-proxy-failed {
   margin-top: 6px;
