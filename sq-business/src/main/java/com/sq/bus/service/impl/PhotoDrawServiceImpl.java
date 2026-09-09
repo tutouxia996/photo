@@ -217,6 +217,7 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
         photo.setThumbUrl(thumbUrl);
         photo.setFileSize(dest.length());
         photo.setFileType(1);
+        photo.setIsPano(0);
         photo.setShootTime(source.getShootTime());
         photo.setLatitude(source.getLatitude());
         photo.setLongitude(source.getLongitude());

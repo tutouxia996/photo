@@ -209,7 +209,12 @@
               @error="onThumbError(item)"
             />
             <div v-else class="thumb-placeholder" aria-hidden="true" />
-            <div v-if="item.aestheticScore != null" class="score-mark" :class="item.scorePass === 1 ? 'pass' : 'fail'">
+            <div v-if="isPanoPhoto(item)" class="pano-mark" title="360 全景">360</div>
+            <div
+              v-if="item.aestheticScore != null"
+              class="score-mark"
+              :class="[item.scorePass === 1 ? 'pass' : 'fail', { 'with-pano': isPanoPhoto(item) }]"
+            >
               {{ item.aestheticScore }}
             </div>
             <div v-if="isAiDraw(item)" class="ai-mark">AI</div>
@@ -480,7 +485,14 @@
           </button>
 
           <div
-            v-if="currentMedia && currentMedia.fileType !== 2"
+            v-if="currentMedia && currentMedia.fileType !== 2 && isPanoPhoto(currentMedia)"
+            class="media-pano-wrap"
+            @click.stop
+          >
+            <PhotoSphereViewer :src="originalSrc(currentMedia)" :key="currentMedia.photoId" />
+          </div>
+          <div
+            v-else-if="currentMedia && currentMedia.fileType !== 2"
             class="media-canvas"
             @wheel.prevent="onImageWheel"
             @dblclick.prevent="onImageDblClick"
@@ -528,7 +540,7 @@
           </div>
 
           <div
-            v-if="currentMedia && currentMedia.fileType !== 2"
+            v-if="currentMedia && currentMedia.fileType !== 2 && !isPanoPhoto(currentMedia)"
             class="media-toolbar"
             @click.stop
           >
@@ -556,10 +568,16 @@
     <!-- 预览顶栏按钮独立层级，打开抽屉时位置不变且可点 -->
     <teleport to="body">
       <template v-if="mediaVisible">
-        <button type="button" class="media-close" title="返回" @click="closeMedia">
+        <button
+          type="button"
+          class="media-close"
+          :class="{ 'on-dark': isPanoViewing }"
+          title="返回"
+          @click="closeMedia"
+        >
           <el-icon :size="22"><ArrowLeft /></el-icon>
         </button>
-        <div class="media-actions">
+        <div class="media-actions" :class="{ 'on-dark': isPanoViewing }">
           <button
             type="button"
             class="media-action-btn"
@@ -596,6 +614,15 @@
             @click.stop="onMediaDetail"
           >
             <el-icon :size="20"><InfoFilled /></el-icon>
+          </button>
+          <button
+            v-if="isPanoViewing"
+            type="button"
+            class="media-action-btn media-close-x"
+            title="关闭"
+            @click.stop="closeMedia"
+          >
+            <el-icon :size="20"><Close /></el-icon>
           </button>
         </div>
       </template>
@@ -647,7 +674,7 @@
               </div>
               <div class="photo-detail-row">
                 <span class="label">类型</span>
-                <span class="value">{{ detailPhoto.fileType === 2 ? '视频' : '图片' }}</span>
+                <span class="value">{{ detailTypeText }}</span>
               </div>
               <div v-if="detailPhoto.fileType === 2" class="photo-detail-row">
                 <span class="label">时长</span>
@@ -766,6 +793,7 @@ import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPho
 import { videoPlaySrc } from '@/utils/videoProxy'
 import usePhotoScoreStore from '@/store/modules/photoScore'
 import useAlbumDownloadStore from '@/store/modules/albumDownload'
+import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
@@ -990,6 +1018,13 @@ const scoreDetailText = computed(() => {
   return `${p.aestheticScore}（${flag}）${reason}`
 })
 
+const detailTypeText = computed(() => {
+  const p = detailPhoto.value
+  if (!p) return '-'
+  if (p.fileType === 2) return '视频'
+  return isPanoPhoto(p) ? '360 全景' : '图片'
+})
+
 const shootTimeOrderLabel = computed(() =>
   shootTimeOrder.value === 'asc' ? '时间升序' : '时间降序'
 )
@@ -1058,6 +1093,8 @@ const gridWindowStyle = computed(() => ({
 }))
 
 const currentMedia = computed(() => photoList.value[mediaIndex.value] || null)
+
+const isPanoViewing = computed(() => isPanoPhoto(currentMedia.value))
 
 const isSelecting = computed(() => selectedIds.value.length > 0 || multiMode.value)
 
@@ -1332,6 +1369,14 @@ function isAiDraw(item) {
   if (!item) return false
   if (item.originType === 'ai_draw') return true
   return typeof item.remark === 'string' && item.remark.startsWith('AI出图:')
+}
+
+/** 360 全景：库字段优先，文件名 PHOTOSPHERE 兜底（未重新扫描时也能识别） */
+function isPanoPhoto(item) {
+  if (!item || item.fileType === 2) return false
+  if (item.isPano === 1 || item.isPano === true) return true
+  const name = item.fileName || ''
+  return /PHOTOSPHERE|\.PANO\./i.test(name)
 }
 
 function collectDrawCandidates(ids) {
@@ -2826,6 +2871,27 @@ init()
   color: #fff;
 }
 
+.score-mark.with-pano {
+  right: 48px;
+}
+
+.pano-mark {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 20px;
+  text-align: center;
+  z-index: 2;
+  color: #fff;
+  background: rgba(20, 100, 180, 0.88);
+}
+
 .score-mark.pass {
   background: rgba(16, 140, 72, 0.82);
 }
@@ -3008,7 +3074,17 @@ init()
   position: fixed;
   top: 20px;
   left: 20px;
-  z-index: 3020;
+  z-index: 3200;
+}
+
+.media-close.on-dark {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.72);
+  }
 }
 
 .media-nav.prev {
@@ -3027,10 +3103,29 @@ init()
   position: fixed;
   top: 18px;
   right: 24px;
-  z-index: 3020;
+  z-index: 3200;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.media-actions.on-dark .media-action-btn {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.72);
+  }
+
+  &.active {
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+  }
+}
+
+.media-close-x {
+  margin-left: 4px;
 }
 
 .media-action-btn {
@@ -3083,6 +3178,14 @@ init()
   user-select: none;
   -webkit-user-select: none;
   contain: layout style;
+}
+
+.media-pano-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  background: #111;
 }
 
 .media-image-layer {

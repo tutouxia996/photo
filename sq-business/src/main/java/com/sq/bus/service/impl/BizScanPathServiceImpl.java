@@ -561,6 +561,10 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             meta.shutterSpeed = exif.getShutterSpeed();
             meta.iso = exif.getIso();
             meta.focalLength = exif.getFocalLength();
+            boolean pano = Boolean.TRUE.equals(exif.getPano())
+                    || (exif.getPano() == null && ExifParseUtils.detectPanoByFileName(file.getName()));
+            meta.pano = pano;
+            meta.panoChecked = true;
             return meta;
         }
         VideoMetaUtils.MetaInfo video = VideoMetaUtils.parse(file);
@@ -602,31 +606,51 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         if (meta.focalLength != null) {
             photo.setFocalLength(meta.focalLength);
         }
+        if (fileType == 2) {
+            photo.setIsPano(0);
+        } else if (meta.panoChecked) {
+            photo.setIsPano(meta.pano ? 1 : 0);
+        }
     }
 
     /**
-     * 全量扫描时为已入库图片补齐缺失/失效的缩略图。
+     * 已入库图片：缺缩略图时补齐；未检测过全景时补检 GPano。
      */
     private void enrichExistingImageThumb(BizPhoto photo, File file, BizScanPath scanPath) {
-        if (hasUsableThumb(photo)) {
-            return;
-        }
-        String relativeName = file.getName();
-        File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
-        String thumbName = "s_" + relativeName;
-        File thumbFile = new File(thumbDir, thumbName);
-        try {
-            ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
-            if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
-                photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
-                photo.setUpdateTime(new Date());
-                PhotoFieldUtils.clamp(photo);
-                photoService.updateById(photo);
-            } else {
-                log.warn("图片缩略图未生成 file={}", file.getAbsolutePath());
+        boolean dirty = false;
+        if (photo.getIsPano() == null) {
+            try {
+                ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(file);
+                boolean pano = Boolean.TRUE.equals(exif.getPano())
+                        || ExifParseUtils.detectPanoByFileName(file.getName());
+                photo.setIsPano(pano ? 1 : 0);
+                dirty = true;
+            } catch (Exception ex) {
+                photo.setIsPano(ExifParseUtils.detectPanoByFileName(file.getName()) ? 1 : 0);
+                dirty = true;
             }
-        } catch (Exception ex) {
-            log.warn("补齐图片缩略图失败 file={} err={}", file.getAbsolutePath(), ex.toString());
+        }
+        if (!hasUsableThumb(photo)) {
+            String relativeName = file.getName();
+            File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
+            String thumbName = "s_" + relativeName;
+            File thumbFile = new File(thumbDir, thumbName);
+            try {
+                ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
+                if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
+                    photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
+                    dirty = true;
+                } else {
+                    log.warn("图片缩略图未生成 file={}", file.getAbsolutePath());
+                }
+            } catch (Exception ex) {
+                log.warn("补齐图片缩略图失败 file={} err={}", file.getAbsolutePath(), ex.toString());
+            }
+        }
+        if (dirty) {
+            photo.setUpdateTime(new Date());
+            PhotoFieldUtils.clamp(photo);
+            photoService.updateById(photo);
         }
     }
 
@@ -1361,6 +1385,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         private String shutterSpeed;
         private Integer iso;
         private String focalLength;
+        private boolean pano;
+        private boolean panoChecked;
     }
 
     private static void appendFailDetail(StringBuilder failMsg, String fileName, Exception ex) {

@@ -1,6 +1,7 @@
 package com.sq.bus.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -35,6 +36,10 @@ public class BizPhoto implements Serializable {
 
     /** 文件类型：1图片 2视频 */
     private Integer fileType;
+
+    /** 是否360全景：1是 0否 空未检测 */
+    @TableField("is_pano")
+    private Integer isPano;
 
     /** 视频时长（秒） */
     private Integer duration;

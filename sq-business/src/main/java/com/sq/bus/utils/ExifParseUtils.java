@@ -6,11 +6,14 @@ import com.drew.metadata.Metadata;
 import com.drew.metadata.exif.ExifIFD0Directory;
 import com.drew.metadata.exif.ExifSubIFDDirectory;
 import com.drew.metadata.exif.GpsDirectory;
+import com.drew.metadata.xmp.XmpDirectory;
 import lombok.Data;
 
 import java.io.File;
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * 图片 EXIF 解析工具
@@ -77,10 +80,75 @@ public final class ExifParseUtils {
                     info.setShootTime(ifd0.getDate(ExifIFD0Directory.TAG_DATETIME));
                 }
             }
+            info.setPano(detectPano(metadata, file.getName()));
         } catch (Exception ignored) {
             // 解析失败不影响主流程，字段留空
+            if (info.getPano() == null) {
+                info.setPano(detectPanoByFileName(file != null ? file.getName() : null));
+            }
         }
         return info;
+    }
+
+    /**
+     * 识别 Google Photosphere / 等距柱状 360 全景（GPano XMP，文件名兜底）。
+     */
+    public static boolean detectPano(Metadata metadata, String fileName) {
+        if (metadata != null) {
+            for (XmpDirectory xmp : metadata.getDirectoriesOfType(XmpDirectory.class)) {
+                if (isGPanoPhotosphere(xmp.getXmpProperties())) {
+                    return true;
+                }
+            }
+        }
+        return detectPanoByFileName(fileName);
+    }
+
+    private static boolean isGPanoPhotosphere(Map<String, String> props) {
+        if (props == null || props.isEmpty()) {
+            return false;
+        }
+        String projection = firstProp(props, "GPano:ProjectionType", "ProjectionType");
+        if (projection != null && "equirectangular".equalsIgnoreCase(projection.trim())) {
+            return true;
+        }
+        if (isTruthy(firstProp(props, "GPano:IsPhotosphere", "IsPhotosphere"))) {
+            return true;
+        }
+        return isTruthy(firstProp(props, "GPano:UsePanoramaViewer", "UsePanoramaViewer"));
+    }
+
+    private static String firstProp(Map<String, String> props, String... keys) {
+        for (String key : keys) {
+            String v = props.get(key);
+            if (v != null && !v.trim().isEmpty()) {
+                return v;
+            }
+            // 部分写入会带命名空间前缀变体
+            for (Map.Entry<String, String> e : props.entrySet()) {
+                if (e.getKey() != null && e.getKey().endsWith(key) && e.getValue() != null && !e.getValue().trim().isEmpty()) {
+                    return e.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isTruthy(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        String v = raw.trim().toLowerCase(Locale.ROOT);
+        return "true".equals(v) || "1".equals(v) || "yes".equals(v);
+    }
+
+    public static boolean detectPanoByFileName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return false;
+        }
+        String upper = fileName.toUpperCase(Locale.ROOT);
+        return upper.contains("PHOTOSPHERE") || upper.contains(".PANO.") || upper.endsWith(".PANO.JPG")
+                || upper.endsWith(".PANO.JPEG");
     }
 
     /**
@@ -179,5 +247,7 @@ public final class ExifParseUtils {
         private String shutterSpeed;
         private Integer iso;
         private String focalLength;
+        /** true=360全景；解析失败时可能为 null */
+        private Boolean pano;
     }
 }

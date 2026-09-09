@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "2.3.1",
+    "@photo-sphere-viewer/core": "^5.15.1",
     "@vueup/vue-quill": "1.2.0",
     "@vueuse/core": "10.11.0",
     "axios": "0.28.1",

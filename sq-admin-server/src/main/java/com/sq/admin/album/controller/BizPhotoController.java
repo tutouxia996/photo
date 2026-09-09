@@ -742,6 +742,7 @@ public class BizPhotoController extends BaseController {
             photo.setShutterSpeed(null);
             photo.setIso(null);
             photo.setFocalLength(null);
+            photo.setIsPano(0);
             return;
         }
         ExifParseUtils.ExifInfo exif = ExifParseUtils.parse(dest);
@@ -753,6 +754,9 @@ public class BizPhotoController extends BaseController {
         photo.setShutterSpeed(exif.getShutterSpeed());
         photo.setIso(exif.getIso());
         photo.setFocalLength(exif.getFocalLength());
+        boolean pano = Boolean.TRUE.equals(exif.getPano())
+                || ExifParseUtils.detectPanoByFileName(dest.getName());
+        photo.setIsPano(pano ? 1 : 0);
     }
 
     /** 上传后：先尝试时间插值兜底，再对权威 GPS 同步主轨迹 */

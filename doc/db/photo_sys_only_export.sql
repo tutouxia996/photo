@@ -112,6 +112,7 @@ CREATE TABLE `biz_photo` (
   `thumb_url` varchar(255) DEFAULT NULL COMMENT '缩略图URL',
   `file_size` bigint(20) NOT NULL DEFAULT '0' COMMENT '文件大小（字节）',
   `file_type` tinyint(4) NOT NULL DEFAULT '1' COMMENT '文件类型：1图片 2视频',
+  `is_pano` tinyint(4) DEFAULT NULL COMMENT '是否360全景：1是 0否 空未检测',
   `duration` int(11) DEFAULT NULL COMMENT '视频时长（秒）',
   `shoot_time` datetime DEFAULT NULL COMMENT '拍摄时间',
   `latitude` decimal(10,7) DEFAULT NULL COMMENT '纬度',
