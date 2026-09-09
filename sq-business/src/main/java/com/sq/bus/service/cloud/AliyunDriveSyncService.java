@@ -491,7 +491,9 @@ public class AliyunDriveSyncService {
 
         Exception last = null;
         boolean ok = false;
-        for (int i = 1; i <= 2; i++) {
+        // 大视频遇超时/限流时多试几次；下次定时任务还会整轮续下
+        final int maxAttempts = 4;
+        for (int i = 1; i <= maxAttempts; i++) {
             try {
                 String url = client.getDownloadUrl(file.driveId, file.fileId);
                 beginCurrentFile(key, file.name, file.size);
@@ -505,9 +507,9 @@ public class AliyunDriveSyncService {
                 break;
             } catch (Exception e) {
                 last = e;
-                log.info("下载重试 {}/2 {} : {}", i, file.name, e.getMessage());
+                log.info("下载重试 {}/{} {} : {}", i, maxAttempts, file.name, e.getMessage());
                 try {
-                    Thread.sleep(800L * i);
+                    Thread.sleep(1500L * i);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;

@@ -627,8 +627,9 @@ public class AliyunDriveClient {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setInstanceFollowRedirects(false);
         conn.setConnectTimeout(Math.max(3000, cfg.getConnectTimeoutMs()));
-        int readTimeout = cfg.getDownloadTimeoutMs() > 0 ? cfg.getDownloadTimeoutMs() : 120000;
-        conn.setReadTimeout(Math.max(30000, Math.min(readTimeout, 180000)));
+        // 大视频空闲读超时：尊重 downloadTimeoutMs（默认 10 分钟），不再硬压到 180s
+        int readTimeout = cfg.getDownloadTimeoutMs() > 0 ? cfg.getDownloadTimeoutMs() : 600000;
+        conn.setReadTimeout(Math.max(60000, readTimeout));
         conn.setRequestMethod("GET");
         // 覆盖 JDK 默认 User-Agent: Java/x.x（部分 CDN 把 UA 算进 additional-headers）
         conn.setRequestProperty("User-Agent", "");
