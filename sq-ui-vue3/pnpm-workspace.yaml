@@ -1,0 +1,4 @@
+# pnpm 11+: lifecycle scripts must be explicitly allowed
+allowBuilds:
+  esbuild: true
+  vue-demi: true
