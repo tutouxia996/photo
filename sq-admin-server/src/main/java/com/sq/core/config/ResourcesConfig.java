@@ -36,6 +36,15 @@ public class ResourcesConfig implements WebMvcConfigurer {
         registry.addResourceHandler(Constants.RESOURCE_PREFIX + "/**")
                 .addResourceLocations("file:" + ProjectConfig.getProfile() + "/");
 
+        // 发版后 index.html 必须每次拉新版（否则会引用已删除的带 hash 资源，卡在登录加载页）
+        registry.addResourceHandler("/index.html")
+                .addResourceLocations("classpath:/static/")
+                .setCacheControl(CacheControl.noStore().mustRevalidate());
+        // Vite 产物文件名含 content hash，可长期缓存
+        registry.addResourceHandler("/assets/**")
+                .addResourceLocations("classpath:/static/assets/")
+                .setCacheControl(CacheControl.maxAge(30, TimeUnit.DAYS).cachePublic());
+
         // 相册缩略图/原文件静态直出（网格用 thumb，避免每张图走 Java media 接口）
         CacheControl albumCache = CacheControl.maxAge(7, TimeUnit.DAYS).cachePublic();
         registry.addResourceHandler("/album/files/thumb/**")
