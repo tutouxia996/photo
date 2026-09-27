@@ -1,6 +1,7 @@
 package com.sq.bus.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -55,4 +56,8 @@ public class BizAlbum implements Serializable {
 
     /** 0未删除 1已删除 2回收站 */
     private Integer deleted;
+
+    /** 当前登录用户是否可编辑/删除（非库字段，接口填充） */
+    @TableField(exist = false)
+    private Boolean canEdit;
 }

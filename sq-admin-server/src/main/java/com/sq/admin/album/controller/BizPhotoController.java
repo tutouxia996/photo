@@ -1,6 +1,7 @@
 package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.sq.admin.album.support.AlbumAccessHelper;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.constants.PhotoLocationSource;
@@ -94,6 +95,54 @@ public class BizPhotoController extends BaseController {
     @Autowired
     private com.sq.bus.service.IBizScanPathService scanPathService;
 
+    @Autowired
+    private AlbumAccessHelper albumAccessHelper;
+
+    /** 查看相册内容前校验（公开共享可看） */
+    private AjaxResult requireAlbumViewable(Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在或已删除");
+        }
+        return albumAccessHelper.denyIfCannotView(album);
+    }
+
+    /** 改删上传前校验（仅所有者/超管；回收站内仍可恢复/彻底删除） */
+    private AjaxResult requireAlbumEditable(Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        if (album == null || (album.getDeleted() != null && album.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("相册不存在或已删除");
+        }
+        return albumAccessHelper.denyIfCannotEdit(album);
+    }
+
+    private AjaxResult requirePhotoEditable(BizPhoto photo) {
+        if (photo == null || (photo.getDeleted() != null && photo.getDeleted() == AlbumDeleted.PURGED)) {
+            return error("图片不存在或已删除");
+        }
+        if (photo.getAlbumId() == null) {
+            return error("图片未关联相册");
+        }
+        return requireAlbumEditable(photo.getAlbumId());
+    }
+
+    private AjaxResult requirePhotosEditable(Long[] photoIds) {
+        if (photoIds == null || photoIds.length == 0) {
+            return error("请选择图片");
+        }
+        List<BizPhoto> photos = photoService.listByIds(Arrays.asList(photoIds));
+        if (photos == null || photos.isEmpty()) {
+            return error("图片不存在或已删除");
+        }
+        for (BizPhoto photo : photos) {
+            AjaxResult deny = requirePhotoEditable(photo);
+            if (deny != null) {
+                return deny;
+            }
+        }
+        return null;
+    }
+
     /**
      * 缩略图：优先静态文件；视频无封面时按需 ffmpeg 截帧并缓存。
      * 需 SecurityConfig 对该路径 GET 放行（img 标签无法带 Authorization）。
@@ -128,11 +177,24 @@ public class BizPhotoController extends BaseController {
     /**
      * 足迹图：已访问省/市/区县的行政区边界（GeoJSON，GCJ-02）
      */
-    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @PreAuthorize("@ss.hasAnyPermi('album:photo:list,album:photo:query,album:album:list,album:album:query')")
     @GetMapping("/visitedRegionGeo")
     public AjaxResult visitedRegionGeo() {
         try {
-            return success(visitedRegionGeoService.buildVisitedRegionGeo());
+            List<Long> albumIds = albumAccessHelper.listViewableAlbumIds();
+            if (albumIds != null && albumIds.isEmpty()) {
+                java.util.Map<String, Object> empty = new java.util.LinkedHashMap<String, Object>();
+                java.util.Map<String, Object> geo = new java.util.LinkedHashMap<String, Object>();
+                geo.put("type", "FeatureCollection");
+                geo.put("features", new java.util.ArrayList<Object>());
+                empty.put("geojson", geo);
+                empty.put("provinces", new java.util.ArrayList<String>());
+                empty.put("cities", new java.util.ArrayList<String>());
+                empty.put("districts", new java.util.ArrayList<String>());
+                empty.put("featureCount", 0);
+                return success(empty);
+            }
+            return success(visitedRegionGeoService.buildVisitedRegionGeo(albumIds));
         } catch (Exception e) {
             // 高亮失败不阻断首页点位展示
             java.util.Map<String, Object> empty = new java.util.LinkedHashMap<String, Object>();
@@ -238,12 +300,18 @@ public class BizPhotoController extends BaseController {
         return success(videoProxyService.getProgress());
     }
 
-    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @PreAuthorize("@ss.hasAnyPermi('album:photo:list,album:photo:query,album:album:list,album:album:query')")
     @GetMapping("/list")
     public TableDataInfo list(BizPhoto query,
                               @RequestParam(value = "shootTimeOrder", defaultValue = "desc") String shootTimeOrder,
                               @RequestParam(value = "scoreFilter", required = false) String scoreFilter,
                               @RequestParam(value = "originFilter", required = false) String originFilter) {
+        if (query.getAlbumId() != null) {
+            AjaxResult deny = requireAlbumViewable(query.getAlbumId());
+            if (deny != null) {
+                return getDataTable(new ArrayList<>());
+            }
+        }
         startPage();
         int deleted = query.getDeleted() == null ? AlbumDeleted.NORMAL : query.getDeleted();
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
@@ -251,6 +319,14 @@ public class BizPhotoController extends BaseController {
                 .eq(query.getFileType() != null, BizPhoto::getFileType, query.getFileType())
                 .like(StringUtils.isNotEmpty(query.getFileName()), BizPhoto::getFileName, query.getFileName())
                 .eq(BizPhoto::getDeleted, deleted);
+        // 未指定相册时：非超管只看可查看相册内的照片
+        if (query.getAlbumId() == null && !albumAccessHelper.isSuperAdmin()) {
+            List<Long> albumIds = albumAccessHelper.listViewableAlbumIds();
+            if (albumIds == null || albumIds.isEmpty()) {
+                return getDataTable(new ArrayList<>());
+            }
+            wrapper.in(BizPhoto::getAlbumId, albumIds);
+        }
         applyScoreFilter(wrapper, scoreFilter);
         applyOriginFilter(wrapper, originFilter);
         boolean asc = "asc".equalsIgnoreCase(shootTimeOrder);
@@ -265,14 +341,14 @@ public class BizPhotoController extends BaseController {
     /**
      * 地图点位（默认仅权威 GPS，不含时间插值等兜底；includeEstimated=true 可包含）
      */
-    @PreAuthorize("@ss.hasPermi('album:photo:list')")
+    @PreAuthorize("@ss.hasAnyPermi('album:photo:list,album:photo:query,album:album:list,album:album:query')")
     @GetMapping("/mapPoints")
     public AjaxResult mapPoints(@RequestParam(required = false) Long albumId,
                                 @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated) {
         if (albumId != null) {
-            BizAlbum album = albumService.getById(albumId);
-            if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-                return error("相册不存在");
+            AjaxResult deny = requireAlbumViewable(albumId);
+            if (deny != null) {
+                return deny;
             }
         }
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
@@ -282,6 +358,13 @@ public class BizPhotoController extends BaseController {
                 .eq(albumId != null, BizPhoto::getAlbumId, albumId)
                 .orderByAsc(BizPhoto::getShootTime)
                 .orderByAsc(BizPhoto::getPhotoId);
+        if (albumId == null && !albumAccessHelper.isSuperAdmin()) {
+            List<Long> albumIds = albumAccessHelper.listViewableAlbumIds();
+            if (albumIds == null || albumIds.isEmpty()) {
+                return success(new ArrayList<BizPhoto>());
+            }
+            wrapper.in(BizPhoto::getAlbumId, albumIds);
+        }
         List<BizPhoto> list = photoService.list(wrapper);
         if (list == null) {
             list = new ArrayList<BizPhoto>();
@@ -309,9 +392,9 @@ public class BizPhotoController extends BaseController {
     @Log(title = "照片坐标兜底", businessType = BusinessType.UPDATE)
     @PostMapping("/fallbackLocate/{albumId}")
     public AjaxResult fallbackLocate(@PathVariable Long albumId) {
-        BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-            return error("相册不存在");
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
         }
         int updated = fallbackLocationService.fillMissingByTimeInterp(albumId);
         return success(updated);
@@ -324,9 +407,9 @@ public class BizPhotoController extends BaseController {
     @Log(title = "相册区域粗定位", businessType = BusinessType.UPDATE)
     @PostMapping("/regionLocate/{albumId}")
     public AjaxResult regionLocate(@PathVariable Long albumId, @RequestBody RegionLocateRequest body) {
-        BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-            return error("相册不存在");
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
         }
         java.util.Map<String, Object> result = fallbackLocationService.fillMissingByRegionCenter(albumId, body);
         try {
@@ -348,9 +431,9 @@ public class BizPhotoController extends BaseController {
     @PostMapping("/aiLandmark/{albumId}")
     public AjaxResult aiLandmark(@PathVariable Long albumId,
                                  @RequestBody(required = false) com.sq.bus.domain.AiLandmarkRequest body) {
-        BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-            return error("相册不存在");
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
         }
         java.util.Map<String, Object> result = fallbackLocationService.fillMissingByAiLandmark(albumId, body);
         try {
@@ -387,8 +470,9 @@ public class BizPhotoController extends BaseController {
             return error("经纬度不能为空");
         }
         BizPhoto existing = photoService.getById(body.getPhotoId());
-        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
-            return error("图片不存在或已删除");
+        AjaxResult deny = requirePhotoEditable(existing);
+        if (deny != null) {
+            return deny;
         }
         existing.setLatitude(body.getLatitude());
         existing.setLongitude(body.getLongitude());
@@ -435,8 +519,9 @@ public class BizPhotoController extends BaseController {
             return error("经纬度不能为空");
         }
         BizPhoto existing = photoService.getById(body.getPhotoId());
-        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
-            return error("图片不存在或已删除");
+        AjaxResult deny = requirePhotoEditable(existing);
+        if (deny != null) {
+            return deny;
         }
         if (!PhotoLocationSource.isFallback(existing.getLocationSource())) {
             return error("仅允许调整估计坐标的照片/视频");
@@ -476,8 +561,9 @@ public class BizPhotoController extends BaseController {
             return error("图片ID不能为空");
         }
         BizPhoto existing = photoService.getById(body.getPhotoId());
-        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
-            return error("图片不存在或已删除");
+        AjaxResult deny = requirePhotoEditable(existing);
+        if (deny != null) {
+            return deny;
         }
         if (!PhotoLocationSource.isFallback(existing.getLocationSource())
                 && !PhotoLocationSource.MANUAL.equals(existing.getLocationSource())) {
@@ -534,9 +620,9 @@ public class BizPhotoController extends BaseController {
     @Log(title = "全部估计点确认上主轨迹", businessType = BusinessType.UPDATE)
     @PostMapping("/confirmEstimatedBatch/{albumId}")
     public AjaxResult confirmEstimatedBatch(@PathVariable Long albumId) {
-        BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-            return error("相册不存在");
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
         }
         java.util.Map<String, Object> result = fallbackLocationService.confirmAllPendingEstimated(albumId);
         try {
@@ -562,6 +648,10 @@ public class BizPhotoController extends BaseController {
     @PostMapping("/score/{albumId}")
     public AjaxResult scoreAlbum(@PathVariable Long albumId,
                                  @RequestBody(required = false) PhotoScoreRequest request) {
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
+        }
         return success(photoQualityService.startScoreAlbum(albumId, request));
     }
 
@@ -591,6 +681,11 @@ public class BizPhotoController extends BaseController {
     @PostMapping("/draw/{photoId}")
     public AjaxResult drawPhoto(@PathVariable Long photoId,
                                 @RequestBody(required = false) PhotoDrawRequest request) {
+        BizPhoto photo = photoService.getById(photoId);
+        AjaxResult deny = requirePhotoEditable(photo);
+        if (deny != null) {
+            return deny;
+        }
         return success(photoDrawService.drawPhoto(photoId, request, getUsername()));
     }
 
@@ -602,15 +697,25 @@ public class BizPhotoController extends BaseController {
     @PostMapping("/draw/batch/{albumId}")
     public AjaxResult drawPhotoBatch(@PathVariable Long albumId,
                                      @RequestBody(required = false) PhotoDrawBatchRequest request) {
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
+        }
         return success(photoDrawService.drawPhotoBatch(albumId, request, getUsername()));
     }
 
-    @PreAuthorize("@ss.hasPermi('album:photo:query')")
+    @PreAuthorize("@ss.hasAnyPermi('album:photo:query,album:photo:list,album:album:list,album:album:query')")
     @GetMapping("/{photoId}")
     public AjaxResult getInfo(@PathVariable Long photoId) {
         BizPhoto photo = photoService.getById(photoId);
         if (photo == null || photo.getDeleted() != null && photo.getDeleted() == AlbumDeleted.PURGED) {
             return error("图片不存在或已删除");
+        }
+        if (photo.getAlbumId() != null) {
+            AjaxResult deny = requireAlbumViewable(photo.getAlbumId());
+            if (deny != null) {
+                return deny;
+            }
         }
         return success(photo);
     }
@@ -623,9 +728,9 @@ public class BizPhotoController extends BaseController {
         if (file == null || file.isEmpty()) {
             return error("上传文件不能为空");
         }
-        BizAlbum album = albumService.getById(albumId);
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
-            return error("相册不存在");
+        AjaxResult deny = requireAlbumEditable(albumId);
+        if (deny != null) {
+            return deny;
         }
         String original = PhotoFieldUtils.safeFileName(file.getOriginalFilename(), 160);
         String datePath = new SimpleDateFormat("yyyy/MM/dd").format(new Date());
@@ -790,8 +895,9 @@ public class BizPhotoController extends BaseController {
             return error("图片ID不能为空");
         }
         BizPhoto existing = photoService.getById(photo.getPhotoId());
-        if (existing == null || (existing.getDeleted() != null && existing.getDeleted() == AlbumDeleted.PURGED)) {
-            return error("图片不存在或已删除");
+        AjaxResult deny = requirePhotoEditable(existing);
+        if (deny != null) {
+            return deny;
         }
         boolean coordsChanged = !sameCoord(existing.getLatitude(), photo.getLatitude())
                 || !sameCoord(existing.getLongitude(), photo.getLongitude());
@@ -834,6 +940,10 @@ public class BizPhotoController extends BaseController {
     @Log(title = "图片回收站", businessType = BusinessType.DELETE)
     @DeleteMapping("/{photoIds}")
     public AjaxResult remove(@PathVariable Long[] photoIds) {
+        AjaxResult deny = requirePhotosEditable(photoIds);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(photoService.trashPhotos(Arrays.asList(photoIds)));
     }
 
@@ -841,6 +951,10 @@ public class BizPhotoController extends BaseController {
     @Log(title = "图片恢复", businessType = BusinessType.UPDATE)
     @PutMapping("/restore/{photoIds}")
     public AjaxResult restore(@PathVariable Long[] photoIds) {
+        AjaxResult deny = requirePhotosEditable(photoIds);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(photoService.restorePhotos(Arrays.asList(photoIds)));
     }
 
@@ -848,6 +962,10 @@ public class BizPhotoController extends BaseController {
     @Log(title = "图片彻底删除", businessType = BusinessType.DELETE)
     @DeleteMapping("/purge/{photoIds}")
     public AjaxResult purge(@PathVariable Long[] photoIds) {
+        AjaxResult deny = requirePhotosEditable(photoIds);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(photoService.purgePhotos(Arrays.asList(photoIds)));
     }
 

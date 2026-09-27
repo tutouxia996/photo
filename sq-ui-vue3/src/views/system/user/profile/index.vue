@@ -26,10 +26,6 @@
                         <div class="pull-right">{{ state.user.email }}</div>
                      </li>
                      <li class="list-group-item">
-                        <svg-icon icon-class="tree" />所属机构
-                        <div class="pull-right" v-if="state.user.dept">{{ state.user.dept.deptName }} / {{ state.postGroup }}</div>
-                     </li>
-                     <li class="list-group-item">
                         <svg-icon icon-class="peoples" />所属角色
                         <div class="pull-right">{{ state.roleGroup }}</div>
                      </li>
@@ -72,15 +68,13 @@ const route = useRoute();
 const activeTab = ref(route.query.tab === 'resetPwd' ? 'resetPwd' : 'userinfo');
 const state = reactive({
   user: {},
-  roleGroup: {},
-  postGroup: {}
+  roleGroup: {}
 });
 
 function getUser() {
   getUserProfile().then(response => {
     state.user = response.data;
     state.roleGroup = response.roleGroup;
-    state.postGroup = response.postGroup;
   });
 };
 

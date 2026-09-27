@@ -14,10 +14,10 @@
           <h1 class="album-title" :title="album.albumName">{{ album.albumName || '相册' }}</h1>
           <div
             class="album-desc"
-            :class="{ placeholder: !album.albumDesc }"
+            :class="{ placeholder: !album.albumDesc, readonly: !canEditAlbum }"
             @click="startEditDesc"
           >
-            <template v-if="editingDesc">
+            <template v-if="editingDesc && canEditAlbum">
               <el-input
                 ref="descInputRef"
                 v-model="descDraft"
@@ -29,7 +29,7 @@
               />
             </template>
             <template v-else>
-              {{ album.albumDesc || '点击添加相册描述' }}
+              {{ album.albumDesc || (canEditAlbum ? '点击添加相册描述' : '暂无描述') }}
             </template>
           </div>
         </div>
@@ -43,7 +43,7 @@
           <el-icon class="mr4"><Location /></el-icon>
           照片地图
         </el-button>
-        <el-button round type="primary" plain @click="triggerUpload">
+        <el-button v-if="canEditAlbum" round type="primary" plain @click="triggerUpload">
           <el-icon class="mr4"><Plus /></el-icon>
           添加照片
         </el-button>
@@ -112,11 +112,11 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <button type="button" class="tool-btn" title="为照片打出图质量分，合格才图生图" @click="runPhotoScore">
+        <button v-if="canEditAlbum" type="button" class="tool-btn" title="为照片打出图质量分，合格才图生图" @click="runPhotoScore">
           <el-icon><Medal /></el-icon>
           <span>质量打分</span>
         </button>
-        <button type="button" class="tool-btn" title="对已选或当前预览的合格照片 AI 出图" @click="openDrawDialogFromToolbar">
+        <button v-if="canEditAlbum" type="button" class="tool-btn" title="对已选或当前预览的合格照片 AI 出图" @click="openDrawDialogFromToolbar">
           <el-icon><Brush /></el-icon>
           <span>AI 出图</span>
         </button>
@@ -246,7 +246,7 @@
     <teleport to="body">
       <transition name="sel-bar">
         <div v-if="selectedIds.length" class="selection-bar" @click.stop>
-          <button type="button" class="sel-btn" title="AI 出图" @click="openDrawDialogFromSelection">
+          <button v-if="canEditAlbum" type="button" class="sel-btn" title="AI 出图" @click="openDrawDialogFromSelection">
             <el-icon :size="20"><Brush /></el-icon>
           </button>
           <button
@@ -262,10 +262,10 @@
               <Download v-else />
             </el-icon>
           </button>
-          <button type="button" class="sel-btn" title="添加到..." @click="openAddToAlbum">
+          <button v-if="canEditAlbum" type="button" class="sel-btn" title="添加到..." @click="openAddToAlbum">
             <el-icon :size="20"><FolderAdd /></el-icon>
           </button>
-          <button type="button" class="sel-btn" title="删除" @click="removeSelected">
+          <button v-if="canEditAlbum" type="button" class="sel-btn" title="删除" @click="removeSelected">
             <el-icon :size="20"><Delete /></el-icon>
           </button>
           <button type="button" class="sel-btn" title="取消多选" @click="cancelMultiSelect">
@@ -286,20 +286,22 @@
         @contextmenu.prevent
       >
         <template v-if="ctxMenu.type === 'blank'">
-          <button type="button" class="ctx-item" @click="onCtxUploadFiles">
-            <el-icon :size="18"><Picture /></el-icon>
-            <span>上传照片/视频</span>
-          </button>
-          <button type="button" class="ctx-item" @click="onCtxUploadFolder">
-            <el-icon :size="18"><FolderOpened /></el-icon>
-            <span>上传文件夹</span>
-          </button>
-          <div class="ctx-divider"></div>
-          <button type="button" class="ctx-item" @click="onCtxCreateAlbum">
-            <el-icon :size="18"><Files /></el-icon>
-            <span>创建相册</span>
-          </button>
-          <div class="ctx-divider"></div>
+          <template v-if="canEditAlbum">
+            <button type="button" class="ctx-item" @click="onCtxUploadFiles">
+              <el-icon :size="18"><Picture /></el-icon>
+              <span>上传照片/视频</span>
+            </button>
+            <button type="button" class="ctx-item" @click="onCtxUploadFolder">
+              <el-icon :size="18"><FolderOpened /></el-icon>
+              <span>上传文件夹</span>
+            </button>
+            <div class="ctx-divider"></div>
+            <button type="button" class="ctx-item" @click="onCtxCreateAlbum">
+              <el-icon :size="18"><Files /></el-icon>
+              <span>创建相册</span>
+            </button>
+            <div class="ctx-divider"></div>
+          </template>
           <button type="button" class="ctx-item" @click="onCtxRefresh">
             <el-icon :size="18"><Refresh /></el-icon>
             <span>刷新页面</span>
@@ -307,19 +309,23 @@
         </template>
         <template v-else>
           <button type="button" class="ctx-item" @click="onItemCtxDownload">下载</button>
-          <div class="ctx-divider"></div>
-          <button type="button" class="ctx-item" @click="onItemCtxAddTo">添加到...</button>
+          <template v-if="canEditAlbum">
+            <div class="ctx-divider"></div>
+            <button type="button" class="ctx-item" @click="onItemCtxAddTo">添加到...</button>
+          </template>
           <button type="button" class="ctx-item" @click="onItemCtxDetail">查看详细信息</button>
           <button
-            v-if="ctxTargetPhoto && ctxTargetPhoto.fileType !== 2 && ctxTargetPhoto.scorePass === 1 && !isAiDraw(ctxTargetPhoto)"
+            v-if="canEditAlbum && ctxTargetPhoto && ctxTargetPhoto.fileType !== 2 && ctxTargetPhoto.scorePass === 1 && !isAiDraw(ctxTargetPhoto)"
             type="button"
             class="ctx-item"
             @click="onItemCtxDraw"
           >AI 出图</button>
-          <button type="button" class="ctx-item" @click="onItemCtxSetCover">设置为相册封面</button>
-          <div class="ctx-divider"></div>
-          <button type="button" class="ctx-item danger" @click="onItemCtxRemoveFromAlbum">从当前相册移除</button>
-          <button type="button" class="ctx-item danger" @click="onItemCtxTrash">放入回收站</button>
+          <button v-if="canEditAlbum" type="button" class="ctx-item" @click="onItemCtxSetCover">设置为相册封面</button>
+          <template v-if="canEditAlbum">
+            <div class="ctx-divider"></div>
+            <button type="button" class="ctx-item danger" @click="onItemCtxRemoveFromAlbum">从当前相册移除</button>
+            <button type="button" class="ctx-item danger" @click="onItemCtxTrash">放入回收站</button>
+          </template>
         </template>
       </div>
     </teleport>
@@ -808,6 +814,7 @@ const mediaDownloading = computed(() => {
 const loading = ref(false)
 const loadingMore = ref(false)
 const album = ref({})
+const canEditAlbum = computed(() => album.value?.canEdit === true)
 const photoList = ref([])
 const total = ref(0)
 const pageNum = ref(1)
@@ -1005,7 +1012,14 @@ const originFilterLabel = computed(() => {
 })
 
 const emptyHint = computed(() => {
-  if (originFilter.value === 'aiDraw') return '还没有 AI 创作。勾选合格原片后点「AI 出图」'
+  if (originFilter.value === 'aiDraw') {
+    return canEditAlbum.value
+      ? '还没有 AI 创作。勾选合格原片后点「AI 出图」'
+      : '该相册暂无 AI 创作内容'
+  }
+  if (!canEditAlbum.value) {
+    return '该相册暂无图片'
+  }
   if (originFilter.value === 'original') return '相册暂无原片，点击右上角添加照片'
   return '相册暂无内容，点击右上角添加照片'
 })
@@ -1591,7 +1605,7 @@ async function onSelectHeaderClick() {
 }
 
 function startEditDesc() {
-  if (editingDesc.value) return
+  if (!canEditAlbum.value || editingDesc.value) return
   descDraft.value = album.value.albumDesc || ''
   editingDesc.value = true
   nextTick(() => {
@@ -2273,7 +2287,9 @@ function loadAlbumOptions() {
   return listAlbum({ pageNum: 1, pageSize: 500 })
     .then(res => {
       const rows = res.rows || res.data || []
-      albumOptions.value = rows.filter(a => String(a.albumId) !== String(albumId.value))
+      albumOptions.value = rows.filter(a =>
+        String(a.albumId) !== String(albumId.value) && a.canEdit === true
+      )
     })
     .finally(() => {
       albumLoading.value = false
@@ -2651,6 +2667,10 @@ init()
 
   &.placeholder {
     color: var(--muted);
+  }
+
+  &.readonly {
+    cursor: default;
   }
 }
 

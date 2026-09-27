@@ -9,12 +9,6 @@
       <el-form-item label="邮箱" prop="email">
          <el-input v-model="form.email" maxlength="50" />
       </el-form-item>
-      <el-form-item label="性别">
-         <el-radio-group v-model="form.sex">
-            <el-radio value="0">男</el-radio>
-            <el-radio value="1">女</el-radio>
-         </el-radio-group>
-      </el-form-item>
       <el-form-item>
       <el-button type="primary" @click="submit">保存</el-button>
       <el-button type="danger" @click="close">关闭</el-button>
@@ -61,7 +55,7 @@ function close() {
 // 回显当前登录用户信息
 watch(() => props.user, user => {
   if (user) {
-    form.value = { nickName: user.nickName, phonenumber: user.phonenumber, email: user.email, sex: user.sex };
+    form.value = { nickName: user.nickName, phonenumber: user.phonenumber, email: user.email };
   }
 },{ immediate: true });
 </script>

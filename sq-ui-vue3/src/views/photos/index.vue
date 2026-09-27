@@ -61,7 +61,7 @@
           <span class="album-badge" :class="{ scanning: isAlbumScanning(item.albumId) }">
             {{ isAlbumScanning(item.albumId) ? '扫描中' : (item.photoCount ?? 0) }}
           </span>
-          <div class="album-more" @click.stop>
+          <div v-if="canEditAlbum(item)" class="album-more" @click.stop>
             <button
               type="button"
               class="album-more-btn"
@@ -330,6 +330,11 @@ function coverSrc(item) {
     return resolveUrl('/album/photo/media/' + item.coverPhotoId)
   }
   return ''
+}
+
+/** 仅所有者/超管可编辑；他人公开共享相册只读 */
+function canEditAlbum(item) {
+  return item?.canEdit === true
 }
 
 function formatCnDate(time) {

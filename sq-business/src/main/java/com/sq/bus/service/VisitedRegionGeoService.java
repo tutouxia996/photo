@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,8 +39,15 @@ public class VisitedRegionGeoService {
     private AmapDistrictService amapDistrictService;
 
     public Map<String, Object> buildVisitedRegionGeo() {
+        return buildVisitedRegionGeo(null);
+    }
+
+    /**
+     * @param albumIds null=不限制（超管）；空列表=无数据；非空=仅这些相册
+     */
+    public Map<String, Object> buildVisitedRegionGeo(Collection<Long> albumIds) {
         try {
-            VisitedAdcodes visited = collectVisitedAdcodes();
+            VisitedAdcodes visited = collectVisitedAdcodes(albumIds);
             List<Map<String, Object>> features = new ArrayList<Map<String, Object>>();
             Set<String> seen = new LinkedHashSet<String>();
 
@@ -141,13 +149,20 @@ public class VisitedRegionGeoService {
      * 以坐标逆地理为主：凡是有定位的媒体所在网格都采样，拿到区县 adcode 后再推导省市。
      * 字段里的省市区仅作补充（逆地理失败时再按名称查 adcode）。
      */
-    private VisitedAdcodes collectVisitedAdcodes() {
-        List<BizPhoto> list = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+    private VisitedAdcodes collectVisitedAdcodes(Collection<Long> albumIds) {
+        if (albumIds != null && albumIds.isEmpty()) {
+            return new VisitedAdcodes();
+        }
+        LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .isNotNull(BizPhoto::getLatitude)
                 .isNotNull(BizPhoto::getLongitude)
                 .select(BizPhoto::getProvince, BizPhoto::getCity, BizPhoto::getDistrict,
-                        BizPhoto::getLatitude, BizPhoto::getLongitude));
+                        BizPhoto::getLatitude, BizPhoto::getLongitude);
+        if (albumIds != null) {
+            wrapper.in(BizPhoto::getAlbumId, albumIds);
+        }
+        List<BizPhoto> list = photoService.list(wrapper);
         VisitedAdcodes visited = new VisitedAdcodes();
         if (list == null || list.isEmpty()) {
             return visited;

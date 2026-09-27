@@ -265,6 +265,7 @@ const loading = ref(false)
 const points = ref([])
 const albumId = ref(undefined)
 const albumName = ref('')
+const albumCanEdit = ref(false)
 const mapRef = ref(null)
 const saving = ref(false)
 const aiLoading = ref(false)
@@ -280,7 +281,7 @@ const placePickId = ref('')
 const placeSearching = ref(false)
 const selectedPlace = ref(null)
 let placeSearchTimer = 0
-const canEditEstimated = computed(() => checkPermi(['album:photo:edit']))
+const canEditEstimated = computed(() => checkPermi(['album:photo:edit']) && albumCanEdit.value)
 
 /** 照片地图本地开关：叠显示相册轨迹线（不改库里的 enabled） */
 const showTrackLine = ref(true)
@@ -396,12 +397,15 @@ function resolveAlbumIdFromRoute() {
 function loadAlbumMeta() {
   if (albumId.value == null || albumId.value === '') {
     albumName.value = ''
+    albumCanEdit.value = false
     return Promise.resolve()
   }
   return getAlbum(albumId.value).then(res => {
     albumName.value = res.data?.albumName || ''
+    albumCanEdit.value = res.data?.canEdit === true
   }).catch(() => {
     albumName.value = ''
+    albumCanEdit.value = false
   })
 }
 

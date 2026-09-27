@@ -1,6 +1,7 @@
 package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.sq.admin.album.support.AlbumAccessHelper;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizScanPath;
@@ -47,6 +48,9 @@ public class BizAlbumController extends BaseController {
     @Autowired
     private IAlbumDownloadService albumDownloadService;
 
+    @Autowired
+    private AlbumAccessHelper albumAccessHelper;
+
     @PreAuthorize("@ss.hasPermi('album:album:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizAlbum query) {
@@ -58,7 +62,19 @@ public class BizAlbumController extends BaseController {
                 .eq(BizAlbum::getDeleted, deleted)
                 .orderByAsc(BizAlbum::getSortOrder)
                 .orderByDesc(BizAlbum::getAlbumId);
+        // 非超管：正常列表=自己的+公开共享；回收站仅自己的
+        if (!albumAccessHelper.isSuperAdmin()) {
+            String username = albumAccessHelper.currentUsername();
+            if (deleted == AlbumDeleted.NORMAL) {
+                wrapper.and(w -> w.eq(BizAlbum::getCreateBy, username)
+                        .or()
+                        .eq(BizAlbum::getIsPublic, 1));
+            } else {
+                wrapper.eq(BizAlbum::getCreateBy, username);
+            }
+        }
         List<BizAlbum> list = albumService.list(wrapper);
+        albumAccessHelper.fillCanEdit(list);
         return getDataTable(list);
     }
 
@@ -69,6 +85,14 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册下载", businessType = BusinessType.EXPORT)
     @PostMapping("/{albumId}/download")
     public AjaxResult startDownload(@PathVariable Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        AjaxResult deny = albumAccessHelper.denyIfCannotView(album);
+        if (deny != null) {
+            return deny;
+        }
+        if (album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+            return error("相册不存在或已删除");
+        }
         AlbumDownloadProgress p = albumDownloadService.start(albumId);
         return success(p);
     }
@@ -114,13 +138,18 @@ public class BizAlbumController extends BaseController {
         }
     }
 
-    @PreAuthorize("@ss.hasPermi('album:album:query')")
+    @PreAuthorize("@ss.hasAnyPermi('album:album:query,album:album:list,album:photo:list')")
     @GetMapping("/{albumId}")
     public AjaxResult getInfo(@PathVariable Long albumId) {
         BizAlbum album = albumService.getById(albumId);
         if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
             return error("相册不存在或已删除");
         }
+        AjaxResult deny = albumAccessHelper.denyIfCannotView(album);
+        if (deny != null) {
+            return deny;
+        }
+        album.setCanEdit(albumAccessHelper.canEdit(album));
         return success(album);
     }
 
@@ -218,6 +247,14 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册管理", businessType = BusinessType.UPDATE)
     @PutMapping
     public AjaxResult edit(@RequestBody BizAlbum album) {
+        if (album.getAlbumId() == null) {
+            return error("相册ID不能为空");
+        }
+        BizAlbum existing = albumService.getById(album.getAlbumId());
+        AjaxResult deny = albumAccessHelper.denyIfCannotEdit(existing);
+        if (deny != null) {
+            return deny;
+        }
         album.setUpdateBy(getUsername());
         album.setUpdateTime(new Date());
         return toAjax(albumService.updateById(album));
@@ -227,6 +264,11 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{albumIds}")
     public AjaxResult remove(@PathVariable Long[] albumIds) {
+        List<BizAlbum> albums = albumService.listByIds(Arrays.asList(albumIds));
+        AjaxResult deny = albumAccessHelper.denyIfCannotEditAny(albums);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(albumService.trashAlbums(Arrays.asList(albumIds)));
     }
 
@@ -234,6 +276,11 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册恢复", businessType = BusinessType.UPDATE)
     @PutMapping("/restore/{albumIds}")
     public AjaxResult restore(@PathVariable Long[] albumIds) {
+        List<BizAlbum> albums = albumService.listByIds(Arrays.asList(albumIds));
+        AjaxResult deny = albumAccessHelper.denyIfCannotEditAny(albums);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(albumService.restoreAlbums(Arrays.asList(albumIds)));
     }
 
@@ -241,6 +288,11 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册彻底删除", businessType = BusinessType.DELETE)
     @DeleteMapping("/purge/{albumIds}")
     public AjaxResult purge(@PathVariable Long[] albumIds) {
+        List<BizAlbum> albums = albumService.listByIds(Arrays.asList(albumIds));
+        AjaxResult deny = albumAccessHelper.denyIfCannotEditAny(albums);
+        if (deny != null) {
+            return deny;
+        }
         return toAjax(albumService.purgeAlbums(Arrays.asList(albumIds)));
     }
 
@@ -248,6 +300,11 @@ public class BizAlbumController extends BaseController {
     @Log(title = "相册管理", businessType = BusinessType.UPDATE)
     @PutMapping("/refreshStats/{albumId}")
     public AjaxResult refreshStats(@PathVariable Long albumId) {
+        BizAlbum album = albumService.getById(albumId);
+        AjaxResult deny = albumAccessHelper.denyIfCannotEdit(album);
+        if (deny != null) {
+            return deny;
+        }
         albumService.refreshAlbumStats(albumId);
         return success();
     }
