@@ -18,7 +18,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -66,7 +65,6 @@ public class AliyunDriveSyncService {
     private final AtomicInteger progressRemaining = new AtomicInteger();
     private volatile String progressPhase = "done";
     private volatile String progressMessage = "";
-    private volatile String activeTokenFile = "";
     /** 多相册批次：相册总数 */
     private volatile int batchAlbumCount;
     /** 多相册批次：当前相册序号（1-based） */
@@ -95,18 +93,8 @@ public class AliyunDriveSyncService {
 
     @PostConstruct
     public void restorePersistedProgress() {
-        try {
-            AlbumProperties.AliyunDriveConfig cfg = resolveConfig();
-            if (cfg == null || StringUtils.isEmpty(cfg.getTokenFile())) {
-                return;
-            }
-            activeTokenFile = cfg.getTokenFile();
-            TokenStore store = TokenStore.load(cfg.getTokenFile());
-            persistStore = store;
-            applyPersistedProgress(store.syncProgress, true);
-        } catch (Exception e) {
-            log.warn("恢复云盘下载进度失败：{}", e.getMessage());
-        }
+        // refresh_token 只存数据库；进度仅进程内内存，不再读写 token 文件
+        persistStore = new TokenStore();
     }
 
     public boolean isRunning() {
@@ -193,7 +181,6 @@ public class AliyunDriveSyncService {
             return "上一次同步仍在进行中，已跳过";
         }
         paused.set(false);
-        activeTokenFile = cfg.getTokenFile();
         try {
             markProgress(0, "listing", "正在登录并列举云盘文件…");
             persistProgressQuiet();
@@ -301,17 +288,20 @@ public class AliyunDriveSyncService {
             throw new ServiceException("无法创建本机目录：" + cfg.getLocalPath() + "，" + e.getMessage());
         }
 
-        TokenStore store = TokenStore.load(cfg.getTokenFile());
+        TokenStore store = persistStore != null ? persistStore : new TokenStore();
+        if (StringUtils.isNotEmpty(cfg.getRefreshToken())) {
+            store.refreshToken = cfg.getRefreshToken();
+        }
         persistStore = store;
-        String refresh = StringUtils.isNotEmpty(store.refreshToken) ? store.refreshToken : cfg.getRefreshToken();
+        String refresh = store.refreshToken;
         if (StringUtils.isEmpty(refresh)) {
-            throw new ServiceException("未配置 refreshToken（请在「云盘同步」页面填写，或确认 tokenFile 可读写）");
+            throw new ServiceException("未配置 refreshToken（请在「云盘同步」页面粘贴并保存）");
         }
 
         AliyunDriveClient client = new AliyunDriveClient(cfg, refresh);
         client.ensureLogin();
         store.refreshToken = client.getRefreshToken();
-        store.save(cfg.getTokenFile());
+        persistRotatedToken(store.refreshToken);
 
         String albumId = client.resolveAlbumId(cfg.getRemoteAlbumId(), cfg.getRemoteAlbumName());
         List<DriveFile> listed = client.listAlbumFiles(albumId);
@@ -649,29 +639,47 @@ public class AliyunDriveSyncService {
     private void persistProgressQuiet() {
         try {
             TokenStore store = persistStore;
-            String file = activeTokenFile;
-            if (StringUtils.isEmpty(file)) {
-                AlbumProperties.AliyunDriveConfig cfg = resolveConfig();
-                if (cfg != null) {
-                    file = cfg.getTokenFile();
-                }
-            }
-            if (store == null && StringUtils.isNotEmpty(file)) {
-                store = TokenStore.load(file);
+            if (store == null) {
+                store = new TokenStore();
                 persistStore = store;
             }
-            persistProgress(store, file);
+            AlbumProperties.AliyunDriveConfig cfg = null;
+            try {
+                cfg = resolveConfig();
+            } catch (Exception ignored) {
+                // ignore
+            }
+            if (cfg != null && StringUtils.isNotEmpty(cfg.getRefreshToken()) && !running.get()) {
+                store.refreshToken = cfg.getRefreshToken();
+            }
+            store.syncProgress = snapshotProgressJson();
         } catch (Exception e) {
-            log.warn("持久化下载进度失败：{}", e.getMessage());
+            log.warn("更新下载进度失败：{}", e.getMessage());
         }
     }
 
+    /**
+     * 页面保存新 token 后同步到内存，供后续同步使用。
+     */
+    public void adoptRefreshToken(String refreshToken) {
+        if (StringUtils.isEmpty(refreshToken)) {
+            return;
+        }
+        String token = refreshToken.trim();
+        TokenStore store = persistStore;
+        if (store == null) {
+            store = new TokenStore();
+            persistStore = store;
+        }
+        store.refreshToken = token;
+    }
+
     private void persistProgress(TokenStore store, String tokenFile) {
-        if (store == null || StringUtils.isEmpty(tokenFile)) {
+        if (store == null) {
             return;
         }
         store.syncProgress = snapshotProgressJson();
-        store.save(tokenFile);
+        // 不再写入 token 文件
     }
 
     private JSONObject snapshotProgressJson() {
@@ -909,6 +917,17 @@ public class AliyunDriveSyncService {
         return Math.min(99, Math.max(0, pct));
     }
 
+    private void persistRotatedToken(String refreshToken) {
+        if (aliyunDriveSettingService == null || StringUtils.isEmpty(refreshToken)) {
+            return;
+        }
+        try {
+            aliyunDriveSettingService.persistRotatedRefreshToken(refreshToken);
+        } catch (Exception e) {
+            log.warn("回写轮换后的 refresh_token 失败：{}", e.getMessage());
+        }
+    }
+
     private AlbumProperties.AliyunDriveConfig resolveConfig() {
         try {
             if (aliyunDriveSettingService != null) {
@@ -1045,59 +1064,10 @@ public class AliyunDriveSyncService {
         boolean paused;
     }
 
+    /** 同步过程内存状态（refresh_token 以数据库为准，不再落盘）。 */
     private static class TokenStore {
         String refreshToken;
         JSONObject files = new JSONObject();
         JSONObject syncProgress;
-
-        static TokenStore load(String tokenFile) {
-            TokenStore store = new TokenStore();
-            if (StringUtils.isEmpty(tokenFile)) {
-                return store;
-            }
-            Path path = Paths.get(tokenFile);
-            if (!Files.isRegularFile(path)) {
-                return store;
-            }
-            try {
-                String text = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-                JSONObject obj = JSON.parseObject(text);
-                if (obj != null) {
-                    store.refreshToken = obj.getString("refreshToken");
-                    JSONObject files = obj.getJSONObject("files");
-                    if (files != null) {
-                        store.files = files;
-                    }
-                    store.syncProgress = obj.getJSONObject("syncProgress");
-                }
-            } catch (Exception e) {
-                log.warn("读取 tokenFile 失败 {}: {}", tokenFile, e.getMessage());
-            }
-            return store;
-        }
-
-        void save(String tokenFile) {
-            if (StringUtils.isEmpty(tokenFile)) {
-                return;
-            }
-            synchronized (this) {
-                try {
-                    Path path = Paths.get(tokenFile);
-                    Path parent = path.getParent();
-                    if (parent != null) {
-                        Files.createDirectories(parent);
-                    }
-                    JSONObject obj = new JSONObject();
-                    obj.put("refreshToken", refreshToken);
-                    obj.put("files", files == null ? new JSONObject() : files);
-                    if (syncProgress != null) {
-                        obj.put("syncProgress", syncProgress);
-                    }
-                    Files.write(path, obj.toJSONString().getBytes(StandardCharsets.UTF_8));
-                } catch (Exception e) {
-                    log.warn("写入 tokenFile 失败 {}: {}", tokenFile, e.getMessage());
-                }
-            }
-        }
     }
 }

@@ -266,7 +266,8 @@ album:
     scanPathId:
     triggerScan: true
     fullScan: false
-    tokenFile: ${ALIYUN_DRIVE_TOKEN_FILE:D:/uploadPath/album/aliyun-drive-token.json}
+    # 已废弃：refresh_token 只存数据库，勿再配置 token 文件
+    tokenFile: ""
     connectTimeoutMs: 15000
     readTimeoutMs: 120000
     downloadTimeoutMs: 600000

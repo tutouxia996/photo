@@ -42,4 +42,9 @@ public interface IAliyunDriveSettingService {
      * 列举云盘个人相册（需有效 refresh_token）。
      */
     java.util.List<java.util.Map<String, String>> listRemoteAlbums(String refreshToken);
+
+    /**
+     * 将轮换后的 refresh_token 写回数据库（阿里云盘每次刷新会使旧 token 失效）。
+     */
+    void persistRotatedRefreshToken(String refreshToken);
 }

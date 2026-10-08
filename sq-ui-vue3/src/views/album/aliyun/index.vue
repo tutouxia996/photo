@@ -4,7 +4,7 @@
       class="mb8"
       type="info"
       :closable="false"
-      title="在此保存后立即生效，不必再改 application-local.yml。refresh_token 只回显脱敏值，留空保存表示不改动。"
+      title="粘贴 refresh_token 后点「保存」即可（服务端校验并轮换后只写入数据库）。留空保存表示不改动 token。保存成功后再点「开始同步」。"
     />
 
     <el-form
@@ -103,10 +103,6 @@
         <el-switch v-model="form.mediaOnly" />
         <span class="form-tip">关闭=相册内全部原文件（推荐）</span>
       </el-form-item>
-      <el-form-item label="token 文件" prop="tokenFile">
-        <el-input v-model="form.tokenFile" placeholder="D:/uploadPath/album/aliyun-drive-token.json" />
-      </el-form-item>
-
       <el-divider content-position="left">下载速度</el-divider>
       <el-form-item label="同时下载文件数" prop="downloadConcurrency">
         <el-input-number v-model="form.downloadConcurrency" :min="1" :max="8" />
@@ -204,7 +200,6 @@ const form = ref({
   bindAlbumId: undefined,
   triggerScan: true,
   fullScan: false,
-  tokenFile: '',
   mediaOnly: false,
   downloadConcurrency: 2,
   chunkConcurrency: 8,
@@ -429,9 +424,10 @@ function submitForm() {
 
     saveAliyunSetting(payload).then(() => {
       const names = selectedRemoteAlbums.value.map(a => a.name).join('、')
+      const tokenHint = payload.refreshToken ? '，token 已校验并保存' : ''
       proxy.$modal.msgSuccess(willAutoCreate
-        ? `已保存，将同步 ${selectedRemoteAlbums.value.length} 个相册：${names}`
-        : '已保存')
+        ? `已保存${tokenHint}，将同步 ${selectedRemoteAlbums.value.length} 个相册：${names}`
+        : `已保存${tokenHint}`)
       loadLocalAlbums()
       load()
     }).finally(() => { saving.value = false })

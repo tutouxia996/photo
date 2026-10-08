@@ -16,18 +16,16 @@ import com.sq.bus.service.IAliyunDriveSettingService;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizScanPathService;
 import com.sq.bus.service.cloud.AliyunDriveClient;
+import com.sq.bus.service.cloud.AliyunDriveSyncService;
 import com.sq.common.exception.ServiceException;
 import com.sq.common.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -50,6 +48,10 @@ public class AliyunDriveSettingServiceImpl
 
     @Autowired
     private IBizAlbumService albumService;
+
+    @Lazy
+    @Autowired(required = false)
+    private AliyunDriveSyncService aliyunDriveSyncService;
 
     @Override
     public AliyunDriveSettingVo getForPage() {
@@ -97,15 +99,16 @@ public class AliyunDriveSettingServiceImpl
         applyVo(row, vo);
         row.setRemark(JSON.toJSONString(albums));
         String incoming = vo.getRefreshToken() == null ? "" : vo.getRefreshToken().trim();
-        if (StringUtils.isEmpty(incoming) || looksMasked(incoming)) {
-            // 保留库中 / yml 原 token
-        } else {
-            row.setRefreshToken(incoming);
+        boolean tokenUpdated = StringUtils.isNotEmpty(incoming) && !looksMasked(incoming);
+        // 不再使用 token 文件，refresh_token 只存数据库
+        row.setTokenFile("");
+
+        // 页面粘贴新 token：校验并轮换后写入数据库
+        if (tokenUpdated) {
+            String verified = verifyAndRotateRefreshToken(incoming);
+            row.setRefreshToken(verified);
         }
-        if (StringUtils.isEmpty(row.getTokenFile())) {
-            AlbumProperties.AliyunDriveConfig yml = albumProperties.getAliyunDrive();
-            row.setTokenFile(yml == null ? "D:/uploadPath/album/aliyun-drive-token.json" : yml.getTokenFile());
-        }
+
         row.setUpdateBy(updateBy);
         row.setUpdateTime(new Date());
 
@@ -121,11 +124,28 @@ public class AliyunDriveSettingServiceImpl
         }
 
         saveOrUpdate(row);
+        if (tokenUpdated && aliyunDriveSyncService != null) {
+            aliyunDriveSyncService.adoptRefreshToken(row.getRefreshToken());
+        }
+    }
 
-        if (StringUtils.isNotEmpty(row.getRefreshToken())) {
-            writeTokenFile(row.getTokenFile(), row.getRefreshToken(), albums);
-        } else {
-            writeSyncAlbumsToTokenFile(row.getTokenFile(), albums);
+    /**
+     * 用页面提交的 refresh_token 调阿里云盘刷新接口；成功则返回轮换后的新 token。
+     */
+    private String verifyAndRotateRefreshToken(String refreshToken) {
+        AlbumProperties.AliyunDriveConfig cfg = getEffectiveConfig();
+        try {
+            AliyunDriveClient client = new AliyunDriveClient(cfg, refreshToken);
+            client.ensureLogin();
+            String rotated = client.getRefreshToken();
+            if (StringUtils.isEmpty(rotated)) {
+                throw new ServiceException("阿里云盘未返回新的 refresh_token，请重新从浏览器复制");
+            }
+            return rotated.trim();
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ServiceException("refresh_token 无效或已失效，请重新登录阿里云盘并复制最新值：" + e.getMessage());
         }
     }
 
@@ -187,24 +207,53 @@ public class AliyunDriveSettingServiceImpl
         AliyunDriveClient client = new AliyunDriveClient(cfg, token);
         client.ensureLogin();
         List<Map<String, String>> out = new ArrayList<Map<String, String>>();
-        for (JSONObject item : client.listAlbums()) {
-            if (item == null) {
-                continue;
+        try {
+            for (JSONObject item : client.listAlbums()) {
+                if (item == null) {
+                    continue;
+                }
+                String name = item.getString("name");
+                String id = item.getString("album_id");
+                if (StringUtils.isEmpty(id)) {
+                    id = item.getString("albumId");
+                }
+                if (StringUtils.isEmpty(name) || StringUtils.isEmpty(id)) {
+                    continue;
+                }
+                Map<String, String> row = new LinkedHashMap<String, String>();
+                row.put("albumId", id);
+                row.put("name", name);
+                out.add(row);
             }
-            String name = item.getString("name");
-            String id = item.getString("album_id");
-            if (StringUtils.isEmpty(id)) {
-                id = item.getString("albumId");
-            }
-            if (StringUtils.isEmpty(name) || StringUtils.isEmpty(id)) {
-                continue;
-            }
-            Map<String, String> row = new LinkedHashMap<String, String>();
-            row.put("albumId", id);
-            row.put("name", name);
-            out.add(row);
+        } finally {
+            // 刷新会使旧 refresh_token 立即失效，必须落盘，否则后续同步必失败
+            persistRotatedRefreshToken(client.getRefreshToken());
         }
         return out;
+    }
+
+    @Override
+    public void persistRotatedRefreshToken(String refreshToken) {
+        if (StringUtils.isEmpty(refreshToken)) {
+            return;
+        }
+        String token = refreshToken.trim();
+        BizAliyunDriveSetting row = getByIdQuiet();
+        if (row == null) {
+            return;
+        }
+        boolean changed = !token.equals(nvl(row.getRefreshToken())) || StringUtils.isNotEmpty(row.getTokenFile());
+        if (!changed) {
+            return;
+        }
+        row.setRefreshToken(token);
+        row.setTokenFile("");
+        row.setUpdateTime(new Date());
+        try {
+            updateById(row);
+        } catch (Exception e) {
+            log.warn("回写库 refresh_token 失败：{}", e.getMessage());
+        }
     }
 
     @Override
@@ -215,6 +264,8 @@ public class AliyunDriveSettingServiceImpl
         if (row != null) {
             overlay(cfg, row);
         }
+        // refresh_token 只从数据库读取，不再使用 token 文件
+        cfg.setTokenFile("");
         return cfg;
     }
 
@@ -257,9 +308,8 @@ public class AliyunDriveSettingServiceImpl
         if (row.getFullScan() != null) {
             cfg.setFullScan(row.getFullScan() == 1);
         }
-        if (StringUtils.isNotEmpty(row.getTokenFile())) {
-            cfg.setTokenFile(row.getTokenFile());
-        }
+        // 废弃 token 文件：配置层始终为空，refresh_token 仅存库
+        cfg.setTokenFile("");
         if (row.getConnectTimeoutMs() != null) {
             cfg.setConnectTimeoutMs(row.getConnectTimeoutMs());
         }
@@ -358,7 +408,7 @@ public class AliyunDriveSettingServiceImpl
         vo.setScanPathId(cfg.getScanPathId());
         vo.setTriggerScan(cfg.isTriggerScan());
         vo.setFullScan(cfg.isFullScan());
-        vo.setTokenFile(cfg.getTokenFile());
+        vo.setTokenFile("");
         vo.setConnectTimeoutMs(cfg.getConnectTimeoutMs());
         vo.setReadTimeoutMs(cfg.getReadTimeoutMs());
         vo.setDownloadTimeoutMs(cfg.getDownloadTimeoutMs());
@@ -383,7 +433,7 @@ public class AliyunDriveSettingServiceImpl
         row.setScanPathId(cfg.getScanPathId());
         row.setTriggerScan(cfg.isTriggerScan() ? 1 : 0);
         row.setFullScan(cfg.isFullScan() ? 1 : 0);
-        row.setTokenFile(cfg.getTokenFile());
+        row.setTokenFile("");
         row.setConnectTimeoutMs(cfg.getConnectTimeoutMs());
         row.setReadTimeoutMs(cfg.getReadTimeoutMs());
         row.setDownloadTimeoutMs(cfg.getDownloadTimeoutMs());
@@ -403,9 +453,7 @@ public class AliyunDriveSettingServiceImpl
         // scanPathId 仅由保存逻辑根据 bindAlbumId 自动写入，不接受页面旧值（如历史 ID 41）
         row.setTriggerScan(vo.isTriggerScan() ? 1 : 0);
         row.setFullScan(vo.isFullScan() ? 1 : 0);
-        if (StringUtils.isNotEmpty(vo.getTokenFile())) {
-            row.setTokenFile(vo.getTokenFile().trim());
-        }
+        row.setTokenFile("");
         if (vo.getConnectTimeoutMs() != null) {
             row.setConnectTimeoutMs(vo.getConnectTimeoutMs());
         }
@@ -428,46 +476,6 @@ public class AliyunDriveSettingServiceImpl
         if (vo.getMultipartMinBytes() != null) {
             row.setMultipartMinBytes(Math.max(0L, vo.getMultipartMinBytes()));
         }
-    }
-
-    private static void writeTokenFile(String tokenFile, String refreshToken, List<RemoteAlbumItem> albums) {
-        if (StringUtils.isEmpty(tokenFile)) {
-            return;
-        }
-        try {
-            Path path = Paths.get(tokenFile);
-            Path parent = path.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            JSONObject obj = new JSONObject();
-            if (Files.isRegularFile(path)) {
-                try {
-                    JSONObject old = JSON.parseObject(new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
-                    if (old != null) {
-                        obj = old;
-                    }
-                } catch (Exception ignored) {
-                    // ignore
-                }
-            }
-            if (StringUtils.isNotEmpty(refreshToken)) {
-                obj.put("refreshToken", refreshToken);
-            }
-            if (obj.getJSONObject("files") == null) {
-                obj.put("files", new JSONObject());
-            }
-            if (albums != null && !albums.isEmpty()) {
-                obj.put("syncAlbums", albums);
-            }
-            Files.write(path, obj.toJSONString().getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            log.warn("写入 tokenFile 失败 {}: {}", tokenFile, e.getMessage());
-        }
-    }
-
-    private static void writeSyncAlbumsToTokenFile(String tokenFile, List<RemoteAlbumItem> albums) {
-        writeTokenFile(tokenFile, null, albums);
     }
 
     private static String maskToken(String token) {

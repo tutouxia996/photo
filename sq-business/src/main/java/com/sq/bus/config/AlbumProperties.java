@@ -332,7 +332,7 @@ public class AlbumProperties {
         private boolean enabled = false;
         /**
          * 网页版 refresh_token（浏览器登录阿里云盘后获取）。
-         * 刷新后会轮换，运行时以 tokenFile 中的值为准。
+         * 刷新后会轮换，以数据库 biz_aliyun_drive_setting 为准。
          */
         private String refreshToken = "";
         /** 云盘个人相册名称（与 remoteAlbumId 二选一；id 优先） */
@@ -353,10 +353,9 @@ public class AlbumProperties {
         /** true=全量扫描，false=增量 */
         private boolean fullScan = false;
         /**
-         * refresh_token 与同步状态持久化文件。
-         * 必须可写：每次刷新 token 后旧 refresh_token 会失效。
+         * 已废弃：refresh_token 只存数据库，此字段忽略。
          */
-        private String tokenFile = "D:/uploadPath/album/aliyun-drive-token.json";
+        private String tokenFile = "";
         private int connectTimeoutMs = 15000;
         private int readTimeoutMs = 120000;
         /** 单文件下载超时（毫秒） */
