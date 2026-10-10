@@ -14,6 +14,8 @@ import org.springframework.web.filter.CorsFilter;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.EncodedResourceResolver;
+import org.springframework.web.servlet.resource.PathResourceResolver;
 
 import java.util.concurrent.TimeUnit;
 
@@ -39,11 +41,17 @@ public class ResourcesConfig implements WebMvcConfigurer {
         // 发版后 index.html 必须每次拉新版（否则会引用已删除的带 hash 资源，卡在登录加载页）
         registry.addResourceHandler("/index.html")
                 .addResourceLocations("classpath:/static/")
-                .setCacheControl(CacheControl.noStore().mustRevalidate());
-        // Vite 产物文件名含 content hash，可长期缓存
+                .setCacheControl(CacheControl.noStore().mustRevalidate())
+                .resourceChain(true)
+                .addResolver(new EncodedResourceResolver())
+                .addResolver(new PathResourceResolver());
+        // Vite 产物含 content hash + 旁路 .gz；按 Accept-Encoding 直出预压缩，省家里上行带宽
         registry.addResourceHandler("/assets/**")
                 .addResourceLocations("classpath:/static/assets/")
-                .setCacheControl(CacheControl.maxAge(30, TimeUnit.DAYS).cachePublic());
+                .setCacheControl(CacheControl.maxAge(30, TimeUnit.DAYS).cachePublic())
+                .resourceChain(true)
+                .addResolver(new EncodedResourceResolver())
+                .addResolver(new PathResourceResolver());
 
         // 相册缩略图/原文件静态直出（网格用 thumb，避免每张图走 Java media 接口）
         CacheControl albumCache = CacheControl.maxAge(7, TimeUnit.DAYS).cachePublic();

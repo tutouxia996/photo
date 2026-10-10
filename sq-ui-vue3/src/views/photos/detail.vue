@@ -1273,12 +1273,24 @@ async function reloadVideoProxy() {
       try {
         await ensureVideoProxy(item.photoId, quality, VIDEO_PLAY_FPS)
       } catch (_) { /* ignore */ }
+      if (seq !== videoProxyReqSeq) return
+      playOriginalNow(item.photoId)
+      return
     }
+    // pending / 其它状态：先试浏览档 URL，避免外网隧道下误拉原片
+    videoUsingOriginal.value = false
+    videoPlayUrl.value = videoPlaySrc(item.photoId, quality, VIDEO_PLAY_FPS)
+    videoPlayerKey.value = `${item.photoId}-${quality}-pending`
+    nextTick(() => applyPendingSeek())
+    return
   } catch (_) {
-    /* 查状态失败则播原片 */
+    /* 查状态超时/失败：外网优先试浏览档，勿立刻回退原片（易 Failed to fetch） */
+    if (seq !== videoProxyReqSeq) return
+    videoUsingOriginal.value = false
+    videoPlayUrl.value = videoPlaySrc(item.photoId, quality, VIDEO_PLAY_FPS)
+    videoPlayerKey.value = `${item.photoId}-${quality}-fallback`
+    nextTick(() => applyPendingSeek())
   }
-  if (seq !== videoProxyReqSeq) return
-  playOriginalNow(item.photoId)
 }
 
 function onVideoQualityChange() {

@@ -43,8 +43,26 @@ protocol: http2
 ingress:
   - hostname: album.pengorbit.top
     service: http://127.0.0.1:18080
+    originRequest:
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+      connectTimeout: 30s
   - service: http_status:404
 ```
+
+## 免费加速（不买套餐）
+
+Tunnel 再优化也绕不开「家宽上行」。优先做这些 **$0** 项：
+
+1. **本机已开 gzip / 预压缩 `.gz`**：重启部署包 `start.bat`，让首屏 JS 压缩后再上行。  
+2. **Cloudflare 控制台缓存静态资源**（域名已橙云代理时有效）  
+   - Caching → Cache Rules → Create rule  
+   - 条件：Hostname = `album.pengorbit.top` 且 URI Path 以 `/assets/` 开头  
+   - 动作：Eligible for cache + Edge TTL 建议 1 个月  
+   - 效果：第二次及以后访问 JS/CSS 走 Cloudflare 边缘，不再从家里传一遍  
+3. **Speed → Optimization**：打开 **Brotli**；关掉 **Rocket Loader**（易搞坏 Vue）。  
+4. **协议**：能通 UDP 7844 时把 `protocol` 改成 `quic`（或删掉该行自动协商），通常比 http2 更稳更快；不通再改回 `http2`。  
+5. **使用习惯**：外网只看缩略图/480p；电脑别休眠；尽量网线；外网访问时少占上行（网盘同步等）。
 
 ## 首次搭建回顾（新机器可照做）
 

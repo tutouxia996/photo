@@ -25,6 +25,12 @@ echo.
 echo ingress:
 echo   - hostname: album.pengorbit.top
 echo     service: http://127.0.0.1:18080
+echo     originRequest:
+echo       keepAliveConnections: 100
+echo       keepAliveTimeout: 90s
+echo       connectTimeout: 30s
+echo       noTLSVerify: false
+echo       disableChunkedEncoding: false
 echo   - service: http_status:404
 )
 

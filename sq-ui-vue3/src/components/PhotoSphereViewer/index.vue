@@ -35,22 +35,29 @@ async function mountViewer(url) {
   if (!url) return
   await nextTick()
   if (token !== mountToken || !containerRef.value) return
-  viewer = new Viewer({
-    container: containerRef.value,
-    panorama: url,
-    navbar: ['zoom', 'move', 'fullscreen'],
-    defaultZoomLvl: 50,
-    mousewheel: true,
-    mousemove: true,
-    touchmoveTwoFingers: false,
-    loadingTxt: '加载全景…',
-    lang: {
-      zoom: '缩放',
-      move: '拖动',
-      fullscreen: '全屏',
-      loadError: '全景加载失败'
-    }
-  })
+  try {
+    viewer = new Viewer({
+      container: containerRef.value,
+      panorama: url,
+      navbar: ['zoom', 'move', 'fullscreen'],
+      defaultZoomLvl: 50,
+      mousewheel: true,
+      mousemove: true,
+      touchmoveTwoFingers: false,
+      loadingTxt: '加载全景…',
+      lang: {
+        zoom: '缩放',
+        move: '拖动',
+        fullscreen: '全屏',
+        loadError: '全景加载失败（外网较慢或文件过大时常见）'
+      }
+    })
+    viewer.addEventListener('error', () => {
+      /* 隧道/大文件 fetch 失败时由组件文案提示，避免未捕获 Promise */
+    })
+  } catch (_) {
+    /* ignore mount race / network */
+  }
 }
 
 watch(

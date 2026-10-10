@@ -4,7 +4,8 @@ export function listPhoto(query) {
   return request({
     url: '/album/photo/list',
     method: 'get',
-    params: query
+    params: query,
+    timeout: 120000
   })
 }
 
@@ -89,7 +90,9 @@ export function getVideoProxyStatus(photoId, quality = '480p', fps = 30) {
   return request({
     url: '/album/photo/videoProxy/' + photoId,
     method: 'get',
-    params: { quality, fps }
+    params: { quality, fps },
+    timeout: 60000,
+    silent: true
   })
 }
 
