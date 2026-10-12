@@ -124,6 +124,11 @@
         <button type="button" class="seg-close" @click="closeGpxPanel">×</button>
       </div>
       <p class="path-tip">{{ activeGpx.fileName || ('GPX #' + activeGpx.gpxId) }}</p>
+      <p v-if="gpxClickMode" class="path-tip">
+        当前点击段：
+        <i class="legend-dot" :style="{ background: travelModeColor(gpxClickMode) }" />
+        {{ travelModeLabel(gpxClickMode) || gpxClickMode }}
+      </p>
       <div class="seg-label">出行方式</div>
       <el-select
         v-model="gpxDraftMode"
@@ -143,7 +148,10 @@
           </span>
         </el-option>
       </el-select>
-      <p class="path-tip">根据平均速度自动推断；可手动改为与照片/自定义路段一致的颜色。</p>
+      <p class="path-tip">
+        地图按速度自动分段着色；下拉默认显示你点击的那一段。
+        保存会把整条 GPX 改成所选方式（单色覆盖自动分段）。
+      </p>
       <div class="seg-actions" v-if="editable">
         <el-button type="primary" :loading="gpxModeSaving" @click="saveGpxTravelMode">保存</el-button>
         <el-button :disabled="gpxModeSaving" @click="closeGpxPanel">取消</el-button>
@@ -637,7 +645,7 @@ import {
   updateTrackPoints
 } from '@/api/album/track'
 import { correctPhotoPosition } from '@/api/album/photo'
-import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
+import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, travelModeLabel, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const props = defineProps({
@@ -688,6 +696,8 @@ watch(() => props.gpxOverlays, (list) => {
 const gpxPanelOpen = ref(false)
 const activeGpx = ref(null)
 const gpxDraftMode = ref('walk')
+/** 地图上当前点击段的出行方式（与整条 GPX 主方式可能不同） */
+const gpxClickMode = ref('')
 const gpxModeSaving = ref(false)
 
 const customOpen = ref(false)
@@ -874,7 +884,14 @@ const legendItems = computed(() => {
     if (!o || o.showPath === false) return
     const hasPath = (Array.isArray(o.path) && o.path.length >= 2) || Number(o.pathPointCount) >= 2
     if (!hasPath) return
-    if (o.travelMode) keys.add(String(o.travelMode).toLowerCase())
+    const segs = Array.isArray(o.segments) ? o.segments : []
+    if (segs.length) {
+      segs.forEach(s => {
+        if (s?.travelMode) keys.add(String(s.travelMode).toLowerCase())
+      })
+    } else if (o.travelMode) {
+      keys.add(String(o.travelMode).toLowerCase())
+    }
   })
   return TRAVEL_MODES.filter(m => keys.has(m.key))
 })
@@ -921,12 +938,15 @@ watch(editing, (val) => {
   }
 })
 
-function onGpxClick({ overlay }) {
+function onGpxClick({ overlay, nearest, segmentMode }) {
   // 增补选点时不打开出行方式面板，避免打断锚点选择
   if (customOpen.value) return
   if (!overlay?.gpxId) return
   activeGpx.value = overlay
-  gpxDraftMode.value = overlay.travelMode || 'walk'
+  // 优先用点击段/最近点方式，避免仍显示整条 GPX 旧的主方式
+  const mode = segmentMode || nearest?.travelMode || overlay.travelMode || 'walk'
+  gpxClickMode.value = mode
+  gpxDraftMode.value = mode
   gpxPanelOpen.value = true
 }
 
@@ -1026,6 +1046,7 @@ function onTrackPointPick({ point }) {
 function closeGpxPanel() {
   gpxPanelOpen.value = false
   activeGpx.value = null
+  gpxClickMode.value = ''
 }
 
 async function saveGpxTravelMode() {
@@ -1038,7 +1059,12 @@ async function saveGpxTravelMode() {
     const color = travelModeColor(mode, gpx.color || '#10B981')
     localGpxOverlays.value = localGpxOverlays.value.map(o => {
       if (!o || o.gpxId !== gpx.gpxId) return o
-      return { ...o, travelMode: mode, color }
+      // 手动整轨指定时压成单段单色；刷新后仍会按速度重新分段
+      const path = Array.isArray(o.path) ? o.path : []
+      const segments = path.length >= 2
+        ? [{ travelMode: mode, color, fromIndex: 0, toIndex: path.length - 1, path }]
+        : []
+      return { ...o, travelMode: mode, color, segments }
     })
     activeGpx.value = { ...gpx, travelMode: mode, color }
     proxy.$modal.msgSuccess('已更新 GPX 出行方式')

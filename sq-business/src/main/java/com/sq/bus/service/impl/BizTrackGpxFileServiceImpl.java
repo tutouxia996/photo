@@ -64,7 +64,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
     private static final String GPX_OVERLAY_COLOR = "#10B981";
 
     private static final Set<String> VALID_TRAVEL_MODES = new HashSet<String>(Arrays.asList(
-            "hsr", "train", "bus", "metro", "walk", "drive", "bike", "flight", "other"
+            "hsr", "train", "bus", "metro", "walk", "drive", "bike", "flight", "stay", "other"
     ));
 
     @Autowired
@@ -143,12 +143,8 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             replaced += retireSameNameFiles(albumId, original);
 
             double distKm = pathDistanceKm(samples);
-            long durationSec = Math.max(0L,
-                    (samples.get(samples.size() - 1).timeMs - samples.get(0).timeMs) / 1000L);
-            String travelMode = TravelModeInferUtils.inferFromGpx(
-                    durationSec > 0 ? distKm / (durationSec / 3600.0) : 0D,
-                    distKm,
-                    durationSec);
+            // 按逐段速度分布推断（排除等灯停顿，兼顾上坡骑行变慢）
+            String travelMode = TravelModeInferUtils.inferFromGpx(samples);
 
             BizTrackGpxFile row = new BizTrackGpxFile();
             row.setAlbumId(albumId);
@@ -312,7 +308,9 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         } else if (f.getStartTime() != null && f.getEndTime() != null) {
             durationSec = Math.max(0L, (f.getEndTime().getTime() - f.getStartTime().getTime()) / 1000L);
         }
-        String inferred = TravelModeInferUtils.inferFromGpx(
+        String inferred = samples != null && samples.size() >= 2
+                ? TravelModeInferUtils.inferFromGpx(samples)
+                : TravelModeInferUtils.inferFromGpx(
                 durationSec > 0 ? distKm / (durationSec / 3600.0) : 0D,
                 distKm,
                 durationSec);
@@ -330,21 +328,23 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             case "hsr":
                 return "#E11D48";
             case "train":
-                return "#C2410C";
+                return "#92400E";
             case "bus":
                 return "#CA8A04";
             case "metro":
-                return "#2563EB";
+                return "#7C3AED";
             case "walk":
                 return "#16A34A";
             case "drive":
-                return "#7C3AED";
+                return "#F97316";
             case "bike":
-                return "#0D9488";
+                return "#2563EB";
             case "flight":
                 return "#0891B2";
+            case "stay":
+                return "#57534E";
             case "other":
-                return "#64748B";
+                return "#94A3B8";
             default:
                 return GPX_OVERLAY_COLOR;
         }
@@ -645,20 +645,31 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             if (path.size() < 2) {
                 continue;
             }
-            String travelMode = resolveTravelMode(f, samples);
+            // 同一 GPX 内按局部速度切多段（骑行→步行→自驾），分段着色
+            List<TravelModeInferUtils.ModeSegment> modeSegs = TravelModeInferUtils.segmentGpx(samples);
+            List<Map<String, Object>> segments = toOverlaySegments(path, modeSegs);
+            applyPathPointModes(path, modeSegs);
+            // 主方式取分段里程多数；地图着色以 segments 为准
+            String travelMode = primaryModeFromSegments(samples, modeSegs);
+            if (normalizeTravelMode(f.getTravelMode()) == null) {
+                f.setTravelMode(travelMode);
+                updateById(f);
+            }
             Map<String, Object> item = new HashMap<String, Object>();
             item.put("gpxId", f.getGpxId());
             item.put("fileName", f.getFileName());
             item.put("travelMode", travelMode);
             item.put("color", colorForTravelMode(travelMode));
             item.put("path", path);
+            item.put("segments", segments);
             item.put("pointCount", samples.size());
             item.put("pathPointCount", path.size());
             item.put("stats", buildGpxStats(f, samples));
             item.put("readOnly", true);
             item.put("matchedPhotos", new ArrayList<Map<String, Object>>());
-            log.info("GPX叠层 albumId={} gpxId={} file={} mode={} rawPoints={} pathPoints={}",
-                    albumId, f.getGpxId(), f.getFileName(), travelMode, samples.size(), path.size());
+            log.info("GPX叠层 albumId={} gpxId={} file={} mode={} segments={} rawPoints={} pathPoints={}",
+                    albumId, f.getGpxId(), f.getFileName(), travelMode, segments.size(),
+                    samples.size(), path.size());
             overlays.add(item);
             overlayByGpxId.put(f.getGpxId(), item);
             for (GpxSample s : samples) {
@@ -1289,6 +1300,102 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         } catch (Exception e) {
             log.warn("解析 GPX 失败 gpxId={}", f.getGpxId(), e);
             return new ArrayList<GpxSample>();
+        }
+    }
+
+    private static String primaryModeFromSegments(List<GpxSample> samples,
+                                                  List<TravelModeInferUtils.ModeSegment> modeSegs) {
+        if (modeSegs == null || modeSegs.isEmpty()) {
+            return TravelModeInferUtils.inferFromGpx(samples);
+        }
+        if (modeSegs.size() == 1) {
+            return modeSegs.get(0).travelMode;
+        }
+        Map<String, Double> distByMode = new HashMap<String, Double>();
+        for (TravelModeInferUtils.ModeSegment seg : modeSegs) {
+            if ("stay".equals(seg.travelMode)) {
+                continue;
+            }
+            double d = 0D;
+            int to = Math.min(seg.toIndex, samples.size() - 1);
+            for (int i = seg.fromIndex + 1; i <= to; i++) {
+                GpxSample a = samples.get(i - 1);
+                GpxSample b = samples.get(i);
+                d += GeoDistanceUtils.haversineKm(a.latWgs, a.lngWgs, b.latWgs, b.lngWgs);
+            }
+            Double prev = distByMode.get(seg.travelMode);
+            distByMode.put(seg.travelMode, (prev == null ? 0D : prev) + d);
+        }
+        String best = modeSegs.get(0).travelMode;
+        double bestDist = -1;
+        for (Map.Entry<String, Double> e : distByMode.entrySet()) {
+            if (e.getValue() > bestDist) {
+                bestDist = e.getValue();
+                best = e.getKey();
+            }
+        }
+        return best;
+    }
+
+    /** 将推断出的方式段转为叠层 segments（含 path 切片与颜色） */
+    private List<Map<String, Object>> toOverlaySegments(List<Map<String, Object>> path,
+                                                        List<TravelModeInferUtils.ModeSegment> modeSegs) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        if (path == null || path.size() < 2) {
+            return out;
+        }
+        if (modeSegs == null || modeSegs.isEmpty()) {
+            Map<String, Object> one = new HashMap<String, Object>();
+            one.put("travelMode", "walk");
+            one.put("color", colorForTravelMode("walk"));
+            one.put("fromIndex", 0);
+            one.put("toIndex", path.size() - 1);
+            one.put("path", path);
+            out.add(one);
+            return out;
+        }
+        for (TravelModeInferUtils.ModeSegment seg : modeSegs) {
+            int from = Math.max(0, seg.fromIndex);
+            int to = Math.min(path.size() - 1, seg.toIndex);
+            if (to - from < 1) {
+                continue;
+            }
+            List<Map<String, Object>> sub = new ArrayList<Map<String, Object>>(to - from + 1);
+            for (int i = from; i <= to; i++) {
+                sub.add(path.get(i));
+            }
+            Map<String, Object> row = new HashMap<String, Object>();
+            row.put("travelMode", seg.travelMode);
+            row.put("color", colorForTravelMode(seg.travelMode));
+            row.put("fromIndex", from);
+            row.put("toIndex", to);
+            row.put("path", sub);
+            out.add(row);
+        }
+        if (out.isEmpty()) {
+            Map<String, Object> one = new HashMap<String, Object>();
+            one.put("travelMode", "walk");
+            one.put("color", colorForTravelMode("walk"));
+            one.put("fromIndex", 0);
+            one.put("toIndex", path.size() - 1);
+            one.put("path", path);
+            out.add(one);
+        }
+        return out;
+    }
+
+    /** 给每个轨迹点打上所属出行方式，便于弹窗展示最近点方式 */
+    private static void applyPathPointModes(List<Map<String, Object>> path,
+                                            List<TravelModeInferUtils.ModeSegment> modeSegs) {
+        if (path == null || modeSegs == null) {
+            return;
+        }
+        for (TravelModeInferUtils.ModeSegment seg : modeSegs) {
+            int from = Math.max(0, seg.fromIndex);
+            int to = Math.min(path.size() - 1, seg.toIndex);
+            for (int i = from; i <= to; i++) {
+                path.get(i).put("travelMode", seg.travelMode);
+            }
         }
     }
 

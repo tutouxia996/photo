@@ -8,6 +8,7 @@ import com.sq.bus.utils.CoordTransformUtils;
 import com.sq.bus.utils.GeoDistanceUtils;
 import com.sq.bus.utils.GpxParseUtils;
 import com.sq.bus.utils.GpxParseUtils.GpxSample;
+import com.sq.bus.utils.TravelModeInferUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -73,7 +74,7 @@ public class GpxTrackBuildService {
         GpxSample last = gpx.get(gpx.size() - 1);
 
         BizTrackPoint start = gpxWaypoint(first, GPX_DESC_PREFIX + "起点");
-        start.setTravelMode("other");
+        start.setTravelMode(TravelModeInferUtils.inferFromGpx(gpx));
         start.setRoutePath(pathJson(gpx, cfg));
 
         BizTrackPoint end = gpxWaypoint(last, GPX_DESC_PREFIX + "终点");

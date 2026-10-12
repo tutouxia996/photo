@@ -37,16 +37,18 @@ export const MAP_STYLES = [
 ]
 
 /** 轨迹路段出行方式（存于起点 travelMode，表示到下一站） */
+/** 各方式颜色刻意拉开色相，避免火车/自驾等暖色撞车 */
 export const TRAVEL_MODES = [
   { key: 'hsr', label: '高铁', color: '#E11D48' },
-  { key: 'train', label: '火车', color: '#C2410C' },
+  { key: 'train', label: '火车', color: '#92400E' },
   { key: 'bus', label: '公交', color: '#CA8A04' },
-  { key: 'metro', label: '地铁', color: '#2563EB' },
+  { key: 'metro', label: '地铁', color: '#7C3AED' },
   { key: 'walk', label: '步行', color: '#16A34A' },
-  { key: 'drive', label: '自驾', color: '#7C3AED' },
-  { key: 'bike', label: '骑行', color: '#0D9488' },
+  { key: 'drive', label: '自驾', color: '#F97316' },
+  { key: 'bike', label: '骑行', color: '#2563EB' },
   { key: 'flight', label: '飞机', color: '#0891B2' },
-  { key: 'other', label: '其他', color: '#64748B' }
+  { key: 'stay', label: '停留', color: '#57534E' },
+  { key: 'other', label: '其他', color: '#94A3B8' }
 ]
 
 const TRAVEL_MODE_MAP = Object.fromEntries(TRAVEL_MODES.map(m => [m.key, m]))

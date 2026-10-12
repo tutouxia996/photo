@@ -222,8 +222,37 @@ function isGpxItemVisible(item) {
   const set = modeFilterSet.value
   if (!set) return true
   if (set.has('gpx')) return true
+  const segs = Array.isArray(item?.segments) ? item.segments : []
+  if (segs.length) {
+    return segs.some(s => {
+      const mode = String(s?.travelMode || '').toLowerCase()
+      return mode && set.has(mode)
+    })
+  }
   const mode = String(item?.travelMode || '').toLowerCase()
   return mode ? set.has(mode) : false
+}
+
+/** GPX 分段列表；无 segments 时回退为整条单色 */
+function gpxDrawSegments(item) {
+  const segs = Array.isArray(item?.segments) ? item.segments.filter(s => s && (s.path?.length >= 2 || (s.toIndex != null && s.fromIndex != null))) : []
+  if (segs.length) {
+    return segs.map(s => {
+      const path = Array.isArray(s.path) && s.path.length >= 2
+        ? s.path
+        : (Array.isArray(item.path) ? item.path.slice(s.fromIndex, s.toIndex + 1) : [])
+      return {
+        travelMode: s.travelMode || item.travelMode,
+        color: s.color,
+        path
+      }
+    }).filter(s => Array.isArray(s.path) && s.path.length >= 2)
+  }
+  return [{
+    travelMode: item?.travelMode,
+    color: item?.color,
+    path: item?.path
+  }]
 }
 
 /** 图例只筛线路，不隐藏 GPX 匹配到的照片/视频 */
@@ -697,14 +726,22 @@ function findNearestGpxPoint(path, latlng) {
   return best
 }
 
-function buildGpxPopupHtml(item, nearest) {
+function buildGpxPopupHtml(item, nearest, segmentMode) {
   const stats = item.stats || {}
-  const mode = item.travelMode || ''
-  const modeText = travelModeLabel(mode) || mode || '-'
+  const pointMode = nearest?.travelMode || segmentMode || ''
+  const primaryMode = item.travelMode || ''
+  const segs = Array.isArray(item.segments) ? item.segments : []
+  const modeSet = [...new Set(segs.map(s => s?.travelMode).filter(Boolean))]
+  const mixText = modeSet.length > 1
+    ? modeSet.map(m => travelModeLabel(m) || m).join(' → ')
+    : (travelModeLabel(primaryMode) || primaryMode || '-')
   const rows = []
   rows.push(`<div class="pmc-gpx-title">GPX：${escapeHtml(item.fileName || '')}</div>`)
   rows.push(`<div class="pmc-gpx-tag">线路不可贴合路网 · 可修改出行方式</div>`)
-  rows.push(metaRow('出行方式', modeText))
+  rows.push(metaRow(modeSet.length > 1 ? '行程构成' : '出行方式', mixText))
+  if (pointMode) {
+    rows.push(metaRow('当前段', travelModeLabel(pointMode) || pointMode))
+  }
   if (stats.startTime) rows.push(metaRow('开始', stats.startTime))
   if (stats.endTime) rows.push(metaRow('结束', stats.endTime))
   if (stats.durationText) rows.push(metaRow('时长', stats.durationText))
@@ -824,61 +861,64 @@ function drawGpxOverlays() {
   overlayList.value.forEach((item) => {
     if (item?.showPath === false) return
     if (!isGpxItemVisible(item)) return
-    let latlngs = normalizeOverlayLatLngs(item.path)
-    if (latlngs.length < 2) {
+    const fullLatLngs = normalizeOverlayLatLngs(item.path)
+    if (fullLatLngs.length < 2) {
       console.warn('[GPX] path points too few', item.fileName, item.pathPointCount, item.path?.length)
       return
     }
-    if (isRailTravelMode(item.travelMode)) {
-      latlngs = cleanRailDisplayPath(latlngs, { minMeters: 35 })
-    }
-    all.push(...(all.length ? latlngs.slice(1) : latlngs))
-    const color = travelModeColor(item.travelMode, item.color || '#10B981')
-    // 底线：可点击查看/改出行方式，不可贴合路网编辑折线
-    const line = L.polyline(latlngs, {
-      color,
-      weight: 5,
-      opacity: 0.92,
-      smoothFactor: 0,
-      noClip: true,
-      lineJoin: 'round',
-      lineCap: 'round',
-      interactive: true,
-      className: 'pmc-gpx-overlay'
-    }).addTo(gpxOverlayLayer)
-    // 加宽命中层，方便点击
-    const hit = L.polyline(latlngs, {
-      color,
-      weight: 16,
-      opacity: 0,
-      smoothFactor: 0,
-      interactive: true,
-      className: 'pmc-gpx-hit'
-    }).addTo(gpxOverlayLayer)
+    all.push(...(all.length ? fullLatLngs.slice(1) : fullLatLngs))
 
-    const openPopup = (e) => {
-      // 增补选点模式下点线路不弹窗，避免挡住选端点
-      if (props.gpxEndpointPickable) return
-      L.DomEvent.stopPropagation(e)
-      const nearest = findNearestGpxPoint(item.path, e.latlng)
-      const html = buildGpxPopupHtml(item, nearest)
-      L.popup({ maxWidth: 320, className: 'pmc-popup-wrap', autoPan: true })
-        .setLatLng(e.latlng)
-        .setContent(html)
-        .openOn(map)
-      emit('gpx-click', { overlay: item, nearest, latlng: e.latlng })
-    }
-    line.on('click', openPopup)
-    hit.on('click', openPopup)
-    const modeText = travelModeLabel(item.travelMode) || item.travelMode || 'GPX'
-    line.bindTooltip(
-      props.gpxEndpointPickable
-        ? `GPX：${item.fileName || ''} · 请点「起/终」标记选用为增补锚点`
-        : `GPX：${item.fileName || ''}（${modeText}，${item.pathPointCount || latlngs.length}点）· 点击查看/修改`,
-      { sticky: true, direction: 'top' }
-    )
+    const segments = gpxDrawSegments(item)
+    segments.forEach((seg) => {
+      if (!isSegmentModeVisible(seg.travelMode)) return
+      let latlngs = normalizeOverlayLatLngs(seg.path)
+      if (latlngs.length < 2) return
+      if (isRailTravelMode(seg.travelMode)) {
+        latlngs = cleanRailDisplayPath(latlngs, { minMeters: 35 })
+      }
+      const color = travelModeColor(seg.travelMode, seg.color || item.color || '#10B981')
+      const line = L.polyline(latlngs, {
+        color,
+        weight: 5,
+        opacity: 0.92,
+        smoothFactor: 0,
+        noClip: true,
+        lineJoin: 'round',
+        lineCap: 'round',
+        interactive: true,
+        className: 'pmc-gpx-overlay'
+      }).addTo(gpxOverlayLayer)
+      const hit = L.polyline(latlngs, {
+        color,
+        weight: 16,
+        opacity: 0,
+        smoothFactor: 0,
+        interactive: true,
+        className: 'pmc-gpx-hit'
+      }).addTo(gpxOverlayLayer)
 
-    drawGpxFlow(latlngs, color)
+      const openPopup = (e) => {
+        if (props.gpxEndpointPickable) return
+        L.DomEvent.stopPropagation(e)
+        const nearest = findNearestGpxPoint(item.path, e.latlng)
+        const html = buildGpxPopupHtml(item, nearest, seg.travelMode)
+        L.popup({ maxWidth: 320, className: 'pmc-popup-wrap', autoPan: true })
+          .setLatLng(e.latlng)
+          .setContent(html)
+          .openOn(map)
+        emit('gpx-click', { overlay: item, nearest, latlng: e.latlng, segmentMode: seg.travelMode })
+      }
+      line.on('click', openPopup)
+      hit.on('click', openPopup)
+      const modeText = travelModeLabel(seg.travelMode) || seg.travelMode || 'GPX'
+      line.bindTooltip(
+        props.gpxEndpointPickable
+          ? `GPX：${item.fileName || ''} · 请点「起/终」标记选用为增补锚点`
+          : `GPX：${item.fileName || ''}（${modeText}）· 点击查看/修改`,
+        { sticky: true, direction: 'top' }
+      )
+      drawGpxFlow(latlngs, color)
+    })
 
     const pickable = !!props.gpxEndpointPickable
     const pinClass = pickable ? 'pmc-gpx-pin is-pickable' : 'pmc-gpx-pin'
@@ -894,13 +934,13 @@ function drawGpxOverlays() {
       iconSize: [40, 28],
       iconAnchor: [12, 14]
     })
-    const startMarker = L.marker(latlngs[0], {
+    const startMarker = L.marker(fullLatLngs[0], {
       icon: startIcon,
       interactive: pickable,
       zIndexOffset: 650,
       keyboard: false
     }).addTo(gpxOverlayLayer)
-    const endMarker = L.marker(latlngs[latlngs.length - 1], {
+    const endMarker = L.marker(fullLatLngs[fullLatLngs.length - 1], {
       icon: endIcon,
       interactive: pickable,
       zIndexOffset: 650,
@@ -912,7 +952,7 @@ function drawGpxOverlays() {
         emit('gpx-endpoint-click', {
           overlay: item,
           kind,
-          latlng: e.latlng || (kind === 'start' ? latlngs[0] : latlngs[latlngs.length - 1])
+          latlng: e.latlng || (kind === 'start' ? fullLatLngs[0] : fullLatLngs[fullLatLngs.length - 1])
         })
       }
       startMarker.on('click', (e) => emitEndpoint('start', e))
