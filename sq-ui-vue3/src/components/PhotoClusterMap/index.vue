@@ -97,7 +97,11 @@ const props = defineProps({
   /** 已访问行政区 GeoJSON FeatureCollection（GCJ-02） */
   regionGeoJson: { type: Object, default: null },
   /** 是否绘制行政区蓝色高亮 */
-  showRegionHighlight: { type: Boolean, default: true }
+  showRegionHighlight: { type: Boolean, default: true },
+  /**
+   * 是否显示照片/视频标记；关闭后仅保留轨迹线、GPX 与途经点
+   */
+  showMediaMarkers: { type: Boolean, default: true }
 })
 
 const emit = defineEmits([
@@ -964,6 +968,7 @@ function drawGpxOverlays() {
 
 /** 把时间匹配的照片/视频画在 GPX 坐标上 */
 function drawGpxMatchedPhotos() {
+  if (!props.showMediaMarkers) return []
   const photos = visibleMatchedPhotos()
   if (!clusterGroup || !photos.length) return []
   const markers = []
@@ -1152,9 +1157,14 @@ function renderPoints({ fit = props.autoFit } = {}) {
 
   if (list.length) {
     const photoMarkers = []
+    const showMedia = props.showMediaMarkers !== false
     list.forEach((p, index) => {
       // 已挂到 GPX 上的媒体不再在照片轨坐标重复打点
       if (p.photoId != null && matchedIds.has(String(p.photoId))) {
+        return
+      }
+      // 途经点属于轨迹，始终保留；照片/视频可按开关隐藏
+      if (!isWaypointPoint(p) && !showMedia) {
         return
       }
       const estimated = isEstimatedLocation(p)
@@ -1427,7 +1437,8 @@ watch(
     props.locationCorrectable,
     props.aiPickMode,
     props.selectedPhotoIds,
-    props.selectedSegmentIndexes
+    props.selectedSegmentIndexes,
+    props.showMediaMarkers
   ],
   () => refresh({ fit: props.autoFit && !props.editable && !props.boxSelectActive }),
   { deep: true }

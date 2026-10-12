@@ -19,6 +19,7 @@
       :location-correctable="correcting"
       :box-select-active="editing && boxSelectMode"
       :selected-segment-indexes="selectedSegmentIndexes"
+      :show-media-markers="!tracksOnly"
       :auto-fit="!editing && !correcting"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
@@ -95,6 +96,17 @@
         </div>
       </template>
     </PhotoClusterMap>
+
+    <div class="tracks-only-toggle" title="开启后仅显示轨迹线与途经点，隐藏照片/视频">
+      <span class="tracks-only-label">只显示轨迹</span>
+      <el-switch
+        v-model="tracksOnly"
+        inline-prompt
+        active-text="开"
+        inactive-text="关"
+        :disabled="correcting"
+      />
+    </div>
 
     <div v-if="legendItems.length && !editing" class="mode-legend" :class="{ 'is-filtering': modeFilter.length > 0 }">
       <button
@@ -662,6 +674,8 @@ const emit = defineEmits(['saved', 'replan', 'location-corrected'])
 const { proxy } = getCurrentInstance()
 const clusterMapRef = ref(null)
 const metaOpen = ref(false)
+/** 只显示轨迹线/途经点，隐藏照片与视频标记 */
+const tracksOnly = ref(false)
 const editing = ref(false)
 const correcting = ref(false)
 const correctEdit = ref(null)
@@ -1618,6 +1632,7 @@ function toggleCorrectMode() {
     cancelEdit()
   }
   closeGpxPanel()
+  tracksOnly.value = false
   localCorrectPoints.value = clonePoints(props.points)
   correcting.value = true
   correctEdit.value = null
@@ -2308,6 +2323,28 @@ defineExpose({
   color: #909399;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.tracks-only-toggle {
+  position: absolute;
+  z-index: 500;
+  left: 12px;
+  bottom: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+}
+
+.tracks-only-label {
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .mode-legend {

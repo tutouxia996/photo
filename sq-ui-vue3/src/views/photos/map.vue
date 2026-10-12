@@ -8,17 +8,30 @@
         <h1 class="page-title">照片地图</h1>
         <span class="page-sub">{{ headerSub }}</span>
       </div>
-      <div class="track-toggle" :title="trackToggleTitle">
-        <span class="track-toggle-label">显示轨迹</span>
-        <el-switch
-          v-model="showTrackLine"
-          inline-prompt
-          active-text="开"
-          inactive-text="关"
-          :disabled="!canToggleTrack"
-          :loading="trackLoading"
-          @change="onTrackToggleChange"
-        />
+      <div class="header-toggles">
+        <div class="track-toggle" :title="trackToggleTitle">
+          <span class="track-toggle-label">显示轨迹</span>
+          <el-switch
+            v-model="showTrackLine"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :disabled="!canToggleTrack"
+            :loading="trackLoading"
+            @change="onTrackToggleChange"
+          />
+        </div>
+        <div class="track-toggle" title="开启后仅显示轨迹线，隐藏照片与视频">
+          <span class="track-toggle-label">只显示轨迹</span>
+          <el-switch
+            v-model="tracksOnly"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :disabled="!canToggleTrack || correctMode || aiPickMode"
+            @change="onTracksOnlyChange"
+          />
+        </div>
       </div>
     </header>
     <div v-if="estimatedCount > 0 || correctMode" class="est-banner">
@@ -106,6 +119,7 @@
         :segment-by-travel-mode="trackLineActive"
         :show-direction="trackLineActive"
         :overlay-paths="trackLineActive ? trackGpxOverlays : []"
+        :show-media-markers="!tracksOnly"
         :estimated-draggable="canEditEstimated && !aiPickMode && !correctMode"
         :location-correctable="canEditEstimated && correctMode && !aiPickMode"
         :ai-pick-mode="aiPickMode"
@@ -285,6 +299,8 @@ const canEditEstimated = computed(() => checkPermi(['album:photo:edit']) && albu
 
 /** 照片地图本地开关：叠显示相册轨迹线（不改库里的 enabled） */
 const showTrackLine = ref(true)
+/** 只显示轨迹线，隐藏照片/视频标记 */
+const tracksOnly = ref(false)
 const trackLoading = ref(false)
 const trackPoints = ref([])
 const trackGpxOverlays = ref([])
@@ -505,7 +521,19 @@ async function loadTrackIfNeeded() {
 }
 
 function onTrackToggleChange() {
+  if (!showTrackLine.value) {
+    tracksOnly.value = false
+  }
   loadTrackIfNeeded()
+}
+
+function onTracksOnlyChange(val) {
+  if (!val) return
+  // 只显示轨迹时需要先叠上轨迹线
+  if (!showTrackLine.value && canToggleTrack.value) {
+    showTrackLine.value = true
+    loadTrackIfNeeded()
+  }
 }
 
 function patchLocalPoint(photoId, patch) {
@@ -658,6 +686,7 @@ function enterAiPickMode() {
     return
   }
   correctMode.value = false
+  tracksOnly.value = false
   editEst.value = null
   resetPlaceSearch()
   aiPickMode.value = true
@@ -729,6 +758,7 @@ function toggleCorrectMode() {
     return
   }
   exitAiPickMode()
+  tracksOnly.value = false
   correctMode.value = true
   proxy?.$modal?.msgSuccess?.('已进入纠正：拖动缩略图到正确位置后点「保存纠正」')
   nextTick(() => mapRef.value?.refresh?.({ fit: false }))
@@ -1057,6 +1087,13 @@ watch(() => route.query.albumId, (val) => {
   margin-top: 2px;
   font-size: 12px;
   color: #909399;
+}
+
+.header-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .track-toggle {
