@@ -4,8 +4,8 @@ import com.sq.common.constant.Constants;
 import com.sq.common.utils.LogUtils;
 import com.sq.common.utils.ServletUtils;
 import com.sq.common.utils.StringUtils;
-import com.sq.common.utils.ip.AddressUtils;
 import com.sq.common.utils.ip.IpUtils;
+import com.sq.system.utils.IpLocationUtils;
 import com.sq.common.utils.spring.SpringUtils;
 import com.sq.system.domain.SysLogininfor;
 import com.sq.system.domain.SysOperLog;
@@ -41,7 +41,7 @@ public class AsyncFactory {
         return new TimerTask() {
             @Override
             public void run() {
-                String address = AddressUtils.getRealAddressByIP(ip);
+                String address = IpLocationUtils.getRealAddressByIP(ip);
                 StringBuilder s = new StringBuilder();
                 s.append(LogUtils.getBlock(ip));
                 s.append(address);
@@ -88,7 +88,7 @@ public class AsyncFactory {
             @Override
             public void run() {
                 // 远程查询操作地点
-                operLog.setOperLocation(AddressUtils.getRealAddressByIP(operLog.getOperIp()));
+                operLog.setOperLocation(IpLocationUtils.getRealAddressByIP(operLog.getOperIp()));
                 SpringUtils.getBean(ISysOperLogService.class).insertOperlog(operLog);
             }
         };

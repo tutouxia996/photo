@@ -113,7 +113,7 @@
     </div>
     <div class="login-footer">
       <span class="foot-line"></span>
-      <span class="foot-text">COPYRIGHT &copy; 2026 SQ ALL RIGHTS RESERVED</span>
+      <span class="foot-text">COPYRIGHT &copy; 2026 TTX ALL RIGHTS RESERVED</span>
       <span class="foot-line"></span>
     </div>
   </div>

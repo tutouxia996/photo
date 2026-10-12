@@ -9,7 +9,7 @@ import com.sq.common.core.redis.RedisCache;
 import com.sq.common.crypto.Sm3Utils;
 import com.sq.common.utils.ServletUtils;
 import com.sq.common.utils.StringUtils;
-import com.sq.common.utils.ip.AddressUtils;
+import com.sq.system.utils.IpLocationUtils;
 import com.sq.common.utils.ip.IpUtils;
 import com.sq.common.utils.uuid.IdUtils;
 import eu.bitwalker.useragentutils.UserAgent;
@@ -111,7 +111,7 @@ public class TokenService {
         UserAgent userAgent = UserAgent.parseUserAgentString(ServletUtils.getRequest().getHeader("User-Agent"));
         String ip = IpUtils.getIpAddr(ServletUtils.getRequest());
         loginUser.setIpaddr(ip);
-        loginUser.setLoginLocation(AddressUtils.getRealAddressByIP(ip));
+        loginUser.setLoginLocation(IpLocationUtils.getRealAddressByIP(ip));
         loginUser.setBrowser(userAgent.getBrowser().getName());
         loginUser.setOs(userAgent.getOperatingSystem().getName());
     }

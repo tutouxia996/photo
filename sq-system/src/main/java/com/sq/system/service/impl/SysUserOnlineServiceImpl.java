@@ -4,6 +4,7 @@ import com.sq.common.core.domain.model.LoginUser;
 import com.sq.common.utils.StringUtils;
 import com.sq.system.domain.SysUserOnline;
 import com.sq.system.service.ISysUserOnlineService;
+import com.sq.system.utils.IpLocationUtils;
 import org.springframework.stereotype.Service;
 
 /**
@@ -74,13 +75,15 @@ public class SysUserOnlineServiceImpl implements ISysUserOnlineService {
         sysUserOnline.setTokenId(user.getToken());
         sysUserOnline.setUserName(user.getUsername());
         sysUserOnline.setIpaddr(user.getIpaddr());
-        sysUserOnline.setLoginLocation(user.getLoginLocation());
+        // 列表展示时按 IP 解析详细中文地名（省 市 区），兼容已登录会话中的旧格式
+        String loginLocation = IpLocationUtils.getRealAddressByIP(user.getIpaddr());
+        if (StringUtils.isEmpty(loginLocation)) {
+            loginLocation = user.getLoginLocation();
+        }
+        sysUserOnline.setLoginLocation(loginLocation);
         sysUserOnline.setBrowser(user.getBrowser());
         sysUserOnline.setOs(user.getOs());
         sysUserOnline.setLoginTime(user.getLoginTime());
-        if (StringUtils.isNotNull(user.getUser().getDept())) {
-            sysUserOnline.setDeptName(user.getUser().getDept().getDeptName());
-        }
         return sysUserOnline;
     }
 }

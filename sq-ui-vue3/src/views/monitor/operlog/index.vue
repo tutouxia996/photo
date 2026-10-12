@@ -116,7 +116,7 @@
             </template>
          </el-table-column>
          <el-table-column label="操作人员" align="center" width="110" prop="operName" :show-overflow-tooltip="true" sortable="custom" :sort-orders="['descending', 'ascending']" />
-         <el-table-column label="操作地址" align="center" prop="operIp" width="130" :show-overflow-tooltip="true" />
+         <el-table-column label="操作地址" align="center" prop="operLocation" width="180" :show-overflow-tooltip="true" />
          <el-table-column label="操作状态" align="center" prop="status">
             <template #default="scope">
                <dict-tag :options="sys_common_status" :value="scope.row.status" />
@@ -148,27 +148,37 @@
       />
 
       <!-- 操作日志详细 -->
-      <el-dialog title="操作日志详细" v-model="open" width="800px" append-to-body>
+      <el-dialog title="操作日志详细" v-model="open" width="800px" append-to-body class="operlog-detail-dialog">
          <el-form :model="form" label-width="100px">
             <el-row>
                <el-col :span="12">
-                  <el-form-item label="操作模块：">{{ form.title }} / {{ typeFormat(form) }}</el-form-item>
-                  <el-form-item
-                    label="登录信息："
-                  >{{ form.operName }} / {{ form.operIp }} / {{ form.operLocation }}</el-form-item>
+                  <el-form-item label="操作模块：">
+                     <div class="detail-text">{{ form.title }} / {{ typeFormat(form) }}</div>
+                  </el-form-item>
+                  <el-form-item label="登录信息：">
+                     <div class="detail-text">{{ form.operName }} / {{ form.operIp }} / {{ form.operLocation }}</div>
+                  </el-form-item>
                </el-col>
                <el-col :span="12">
-                  <el-form-item label="请求地址：">{{ form.operUrl }}</el-form-item>
+                  <el-form-item label="请求地址：">
+                     <div class="detail-text">{{ form.operUrl }}</div>
+                  </el-form-item>
                   <el-form-item label="请求方式：">{{ form.requestMethod }}</el-form-item>
                </el-col>
                <el-col :span="24">
-                  <el-form-item label="操作方法：">{{ form.method }}</el-form-item>
+                  <el-form-item label="操作方法：">
+                     <div class="detail-text">{{ form.method }}</div>
+                  </el-form-item>
                </el-col>
                <el-col :span="24">
-                  <el-form-item label="请求参数：">{{ form.operParam }}</el-form-item>
+                  <el-form-item label="请求参数：">
+                     <div class="detail-text detail-text--scroll">{{ form.operParam }}</div>
+                  </el-form-item>
                </el-col>
                <el-col :span="24">
-                  <el-form-item label="返回参数：">{{ form.jsonResult }}</el-form-item>
+                  <el-form-item label="返回参数：">
+                     <div class="detail-text detail-text--scroll">{{ form.jsonResult }}</div>
+                  </el-form-item>
                </el-col>
                <el-col :span="8">
                   <el-form-item label="操作状态：">
@@ -183,7 +193,9 @@
                   <el-form-item label="操作时间：">{{ parseTime(form.operTime) }}</el-form-item>
                </el-col>
                <el-col :span="24">
-                  <el-form-item label="异常信息：" v-if="form.status === 1">{{ form.errorMsg }}</el-form-item>
+                  <el-form-item label="异常信息：" v-if="form.status === 1">
+                     <div class="detail-text detail-text--scroll">{{ form.errorMsg }}</div>
+                  </el-form-item>
                </el-col>
             </el-row>
          </el-form>
@@ -307,3 +319,29 @@ function handleExport() {
 
 getList();
 </script>
+
+<style scoped>
+.detail-text {
+  width: 100%;
+  max-width: 100%;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.detail-text--scroll {
+  max-height: 220px;
+  overflow-y: auto;
+}
+</style>
+
+<style>
+/* append-to-body 弹窗需非 scoped，避免长文本撑破弹窗 */
+.operlog-detail-dialog .el-dialog__body {
+  overflow-x: hidden;
+}
+.operlog-detail-dialog .el-form-item__content {
+  min-width: 0;
+  overflow: hidden;
+}
+</style>
