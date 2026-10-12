@@ -8,13 +8,11 @@ import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizAliyunDriveSetting;
-import com.sq.bus.domain.BizScanPath;
 import com.sq.bus.domain.vo.RemoteAlbumItem;
 import com.sq.bus.domain.vo.AliyunDriveSettingVo;
 import com.sq.bus.mapper.BizAliyunDriveSettingMapper;
 import com.sq.bus.service.IAliyunDriveSettingService;
 import com.sq.bus.service.IBizAlbumService;
-import com.sq.bus.service.IBizScanPathService;
 import com.sq.bus.service.cloud.AliyunDriveClient;
 import com.sq.bus.service.cloud.AliyunDriveSyncService;
 import com.sq.common.exception.ServiceException;
@@ -29,9 +27,11 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class AliyunDriveSettingServiceImpl
@@ -42,9 +42,6 @@ public class AliyunDriveSettingServiceImpl
 
     @Autowired
     private AlbumProperties albumProperties;
-
-    @Autowired
-    private IBizScanPathService scanPathService;
 
     @Autowired
     private IBizAlbumService albumService;
@@ -73,18 +70,16 @@ public class AliyunDriveSettingServiceImpl
         if (vo == null) {
             throw new ServiceException("配置不能为空");
         }
-        List<RemoteAlbumItem> albums = normalizeRemoteAlbums(vo);
-        if (albums.isEmpty()) {
-            throw new ServiceException("请至少选择一个云盘相册");
-        }
-        vo.setRemoteAlbums(albums);
-        RemoteAlbumItem first = albums.get(0);
-        vo.setRemoteAlbumId(first.getAlbumId());
-        vo.setRemoteAlbumName(first.getName());
+        List<RemoteAlbumItem> excluded = normalizeExcludedAlbums(vo);
+        vo.setExcludedAlbums(excluded);
+        // 新逻辑：默认同步全部，不再保存白名单
+        vo.setRemoteAlbums(Collections.<RemoteAlbumItem>emptyList());
+        vo.setRemoteAlbumId("");
+        vo.setRemoteAlbumName("");
 
         String basePath = normalizePath(nvl(vo.getLocalBasePath()));
         if (StringUtils.isEmpty(basePath)) {
-            basePath = inferBasePathFromLegacy(nvl(vo.getLocalPath()), albums);
+            basePath = normalizePath(nvl(vo.getLocalPath()));
         }
         if (StringUtils.isEmpty(basePath)) {
             throw new ServiceException("本机父目录不能为空");
@@ -97,7 +92,7 @@ public class AliyunDriveSettingServiceImpl
             row.setId(BizAliyunDriveSetting.SINGLE_ID);
         }
         applyVo(row, vo);
-        row.setRemark(JSON.toJSONString(albums));
+        row.setRemark(toRemarkJson(excluded));
         String incoming = vo.getRefreshToken() == null ? "" : vo.getRefreshToken().trim();
         boolean tokenUpdated = StringUtils.isNotEmpty(incoming) && !looksMasked(incoming);
         // 不再使用 token 文件，refresh_token 只存数据库
@@ -111,17 +106,8 @@ public class AliyunDriveSettingServiceImpl
 
         row.setUpdateBy(updateBy);
         row.setUpdateTime(new Date());
-
-        if (vo.isTriggerScan()) {
-            row.setScanPathId(null);
-            for (RemoteAlbumItem album : albums) {
-                Long bindAlbumId = resolveOrCreateLocalAlbumId(album.getName(), updateBy);
-                String albumLocalPath = composeAlbumLocalPath(basePath, album.getName());
-                scanPathService.upsertScanPathForSync(albumLocalPath, bindAlbumId, album.getName());
-            }
-        } else {
-            row.setScanPathId(null);
-        }
+        // 扫描目录在每次同步时按实际相册自动维护，保存时不预创建
+        row.setScanPathId(null);
 
         saveOrUpdate(row);
         if (tokenUpdated && aliyunDriveSyncService != null) {
@@ -150,7 +136,41 @@ public class AliyunDriveSettingServiceImpl
     }
 
     @Override
+    public List<RemoteAlbumItem> resolveAlbumsToSync(AlbumProperties.AliyunDriveConfig cfg) {
+        if (cfg == null) {
+            return Collections.emptyList();
+        }
+        List<Map<String, String>> remote = listRemoteAlbums(null);
+        Set<String> excludedIds = new HashSet<String>();
+        if (cfg.getExcludedAlbums() != null) {
+            for (RemoteAlbumItem item : cfg.getExcludedAlbums()) {
+                if (item != null && StringUtils.isNotEmpty(item.getAlbumId())) {
+                    excludedIds.add(item.getAlbumId().trim());
+                }
+            }
+        }
+        List<RemoteAlbumItem> out = new ArrayList<RemoteAlbumItem>();
+        for (Map<String, String> row : remote) {
+            if (row == null) {
+                continue;
+            }
+            String id = row.get("albumId");
+            String name = row.get("name");
+            if (StringUtils.isEmpty(id) || excludedIds.contains(id)) {
+                continue;
+            }
+            RemoteAlbumItem item = new RemoteAlbumItem();
+            item.setAlbumId(id);
+            item.setName(StringUtils.isNotEmpty(name) ? name : id);
+            out.add(item);
+        }
+        log.info("云盘同步目标相册 {} 个（已排除 {} 个）", out.size(), excludedIds.size());
+        return out;
+    }
+
+    @Override
     public List<RemoteAlbumItem> listRemoteAlbumsFromConfig(AlbumProperties.AliyunDriveConfig cfg) {
+        // 兼容旧调用：优先返回实时解析结果不可用时的配置列表
         if (cfg == null) {
             return Collections.emptyList();
         }
@@ -334,68 +354,72 @@ public class AliyunDriveSettingServiceImpl
         if (row.getMultipartMinBytes() != null) {
             cfg.setMultipartMinBytes(row.getMultipartMinBytes());
         }
-        parseRemoteAlbumsIntoCfg(cfg, row.getRemark());
+        parseRemarkIntoCfg(cfg, row.getRemark());
     }
 
-    private static void parseRemoteAlbumsIntoCfg(AlbumProperties.AliyunDriveConfig cfg, String remark) {
+    /**
+     * remark 新格式：{"excludedAlbums":[...]}；旧格式纯数组为白名单，升级后视为无排除（同步全部）。
+     */
+    private static void parseRemarkIntoCfg(AlbumProperties.AliyunDriveConfig cfg, String remark) {
         if (cfg == null) {
             return;
         }
-        List<RemoteAlbumItem> parsed = parseAlbumsJson(remark);
-        if (!parsed.isEmpty()) {
-            cfg.setRemoteAlbums(parsed);
-            RemoteAlbumItem first = parsed.get(0);
-            cfg.setRemoteAlbumId(first.getAlbumId());
-            cfg.setRemoteAlbumName(first.getName());
-        }
+        RemarkPayload payload = parseRemark(remark);
+        cfg.setExcludedAlbums(payload.excludedAlbums);
+        // 旧白名单不再作为同步目标
+        cfg.setRemoteAlbums(Collections.<RemoteAlbumItem>emptyList());
     }
 
-    private static List<RemoteAlbumItem> parseAlbumsJson(String remark) {
+    private static String toRemarkJson(List<RemoteAlbumItem> excluded) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("excludedAlbums", excluded == null ? Collections.emptyList() : excluded);
+        return JSON.toJSONString(payload);
+    }
+
+    private static RemarkPayload parseRemark(String remark) {
+        RemarkPayload payload = new RemarkPayload();
         if (StringUtils.isEmpty(remark)) {
-            return Collections.emptyList();
+            return payload;
         }
         String text = remark.trim();
-        if (!text.startsWith("[")) {
-            return Collections.emptyList();
-        }
         try {
-            List<RemoteAlbumItem> list = JSON.parseArray(text, RemoteAlbumItem.class);
-            if (list == null || list.isEmpty()) {
-                return Collections.emptyList();
-            }
-            List<RemoteAlbumItem> out = new ArrayList<RemoteAlbumItem>();
-            for (RemoteAlbumItem item : list) {
-                if (item == null || StringUtils.isEmpty(item.getAlbumId())) {
-                    continue;
+            if (text.startsWith("{")) {
+                JSONObject obj = JSON.parseObject(text);
+                if (obj != null) {
+                    payload.excludedAlbums = normalizeAlbumList(
+                            obj.getList("excludedAlbums", RemoteAlbumItem.class));
                 }
-                if (StringUtils.isEmpty(item.getName())) {
-                    item.setName(item.getAlbumId());
-                }
-                out.add(item);
+                return payload;
             }
-            return out;
+            if (text.startsWith("[")) {
+                // 旧版白名单：升级后改为同步全部，排除列表为空
+                return payload;
+            }
         } catch (Exception e) {
-            return Collections.emptyList();
+            // ignore
         }
+        return payload;
     }
 
-    private static List<RemoteAlbumItem> parseAlbumsFromCfg(AlbumProperties.AliyunDriveConfig cfg) {
-        if (cfg == null) {
+    private static List<RemoteAlbumItem> normalizeAlbumList(List<RemoteAlbumItem> list) {
+        if (list == null || list.isEmpty()) {
             return Collections.emptyList();
         }
-        if (cfg.getRemoteAlbums() != null && !cfg.getRemoteAlbums().isEmpty()) {
-            return cfg.getRemoteAlbums();
-        }
-        if (StringUtils.isNotEmpty(cfg.getRemoteAlbumId()) || StringUtils.isNotEmpty(cfg.getRemoteAlbumName())) {
-            RemoteAlbumItem one = new RemoteAlbumItem();
-            one.setAlbumId(nvl(cfg.getRemoteAlbumId()));
-            one.setName(nvl(cfg.getRemoteAlbumName()));
-            if (StringUtils.isEmpty(one.getName())) {
-                one.setName(one.getAlbumId());
+        List<RemoteAlbumItem> out = new ArrayList<RemoteAlbumItem>();
+        for (RemoteAlbumItem item : list) {
+            if (item == null || StringUtils.isEmpty(item.getAlbumId())) {
+                continue;
             }
-            return Collections.singletonList(one);
+            RemoteAlbumItem copy = new RemoteAlbumItem();
+            copy.setAlbumId(item.getAlbumId().trim());
+            copy.setName(StringUtils.isNotEmpty(item.getName()) ? item.getName().trim() : copy.getAlbumId());
+            out.add(copy);
         }
-        return Collections.emptyList();
+        return out;
+    }
+
+    private static class RemarkPayload {
+        private List<RemoteAlbumItem> excludedAlbums = Collections.emptyList();
     }
 
     private static AliyunDriveSettingVo toVo(AlbumProperties.AliyunDriveConfig cfg) {
@@ -403,7 +427,10 @@ public class AliyunDriveSettingServiceImpl
         vo.setEnabled(cfg.isEnabled());
         vo.setRemoteAlbumName(cfg.getRemoteAlbumName());
         vo.setRemoteAlbumId(cfg.getRemoteAlbumId());
-        vo.setRemoteAlbums(parseAlbumsFromCfg(cfg));
+        vo.setRemoteAlbums(Collections.<RemoteAlbumItem>emptyList());
+        vo.setExcludedAlbums(cfg.getExcludedAlbums() == null
+                ? Collections.<RemoteAlbumItem>emptyList()
+                : cfg.getExcludedAlbums());
         vo.setLocalPath(cfg.getLocalPath());
         vo.setScanPathId(cfg.getScanPathId());
         vo.setTriggerScan(cfg.isTriggerScan());
@@ -447,10 +474,10 @@ public class AliyunDriveSettingServiceImpl
 
     private static void applyVo(BizAliyunDriveSetting row, AliyunDriveSettingVo vo) {
         row.setEnabled(vo.isEnabled() ? 1 : 0);
-        row.setRemoteAlbumName(nvl(vo.getRemoteAlbumName()));
-        row.setRemoteAlbumId(nvl(vo.getRemoteAlbumId()));
+        row.setRemoteAlbumName("");
+        row.setRemoteAlbumId("");
         row.setLocalPath(nvl(vo.getLocalPath()));
-        // scanPathId 仅由保存逻辑根据 bindAlbumId 自动写入，不接受页面旧值（如历史 ID 41）
+        // scanPathId 由同步任务按相册自动维护
         row.setTriggerScan(vo.isTriggerScan() ? 1 : 0);
         row.setFullScan(vo.isFullScan() ? 1 : 0);
         row.setTokenFile("");
@@ -501,60 +528,24 @@ public class AliyunDriveSettingServiceImpl
         if (vo == null) {
             return;
         }
-        List<RemoteAlbumItem> albums = vo.getRemoteAlbums();
-        if (albums == null) {
-            albums = Collections.emptyList();
+        if (vo.getExcludedAlbums() == null) {
+            vo.setExcludedAlbums(Collections.<RemoteAlbumItem>emptyList());
         }
+        // localPath 存的就是本机父目录
         vo.setLocalBasePath(normalizePath(nvl(vo.getLocalPath())));
-        if (albums.size() == 1) {
-            vo.setLocalBasePath(splitLocalBasePath(nvl(vo.getLocalPath()), albums.get(0).getName()));
-        }
-        if (albums.size() == 1 && vo.getBindAlbumId() == null) {
-            BizAlbum matched = findAlbumByName(albums.get(0).getName());
-            if (matched != null) {
-                vo.setBindAlbumId(matched.getAlbumId());
-            }
-        }
     }
 
-    private List<RemoteAlbumItem> normalizeRemoteAlbums(AliyunDriveSettingVo vo) {
-        List<RemoteAlbumItem> list = new ArrayList<RemoteAlbumItem>();
-        if (vo.getRemoteAlbums() != null) {
-            for (RemoteAlbumItem item : vo.getRemoteAlbums()) {
-                if (item == null || StringUtils.isEmpty(item.getAlbumId())) {
-                    continue;
-                }
-                RemoteAlbumItem copy = new RemoteAlbumItem();
-                copy.setAlbumId(item.getAlbumId().trim());
-                copy.setName(StringUtils.isNotEmpty(item.getName()) ? item.getName().trim() : copy.getAlbumId());
-                list.add(copy);
-            }
+    private List<RemoteAlbumItem> normalizeExcludedAlbums(AliyunDriveSettingVo vo) {
+        List<RemoteAlbumItem> source = vo.getExcludedAlbums();
+        if (source == null || source.isEmpty()) {
+            // 兼容旧前端仍提交 remoteAlbums 作为排除项的误用：忽略
+            return Collections.emptyList();
         }
-        if (list.isEmpty() && StringUtils.isNotEmpty(vo.getRemoteAlbumId())) {
-            RemoteAlbumItem one = new RemoteAlbumItem();
-            one.setAlbumId(vo.getRemoteAlbumId().trim());
-            one.setName(nvl(vo.getRemoteAlbumName()));
-            if (StringUtils.isEmpty(one.getName())) {
-                one.setName(one.getAlbumId());
-            }
-            list.add(one);
-        }
-        return list;
-    }
-
-    private static String inferBasePathFromLegacy(String localPath, List<RemoteAlbumItem> albums) {
-        String path = normalizePath(localPath);
-        if (StringUtils.isEmpty(path) || albums == null || albums.isEmpty()) {
-            return path;
-        }
-        if (albums.size() == 1) {
-            return splitLocalBasePathStatic(path, albums.get(0).getName());
-        }
-        return path;
+        return normalizeAlbumList(source);
     }
 
     private static String composeAlbumLocalPathStatic(String basePath, String albumName) {
-        String base = normalizePathStatic(basePath);
+        String base = normalizePath(basePath);
         String name = sanitizeFolderName(albumName);
         if (StringUtils.isEmpty(base)) {
             return name;
@@ -563,14 +554,6 @@ public class AliyunDriveSettingServiceImpl
             return base;
         }
         return base + File.separator + name;
-    }
-
-    private static String splitLocalBasePathStatic(String localPath, String albumName) {
-        return splitLocalBasePath(localPath, albumName);
-    }
-
-    private static String normalizePathStatic(String path) {
-        return normalizePath(path);
     }
 
     private BizAlbum findAlbumByName(String albumName) {
@@ -582,21 +565,6 @@ public class AliyunDriveSettingServiceImpl
                 .eq(BizAlbum::getDeleted, AlbumDeleted.NORMAL)
                 .orderByDesc(BizAlbum::getAlbumId)
                 .last("LIMIT 1"), false);
-    }
-
-    private static String splitLocalBasePath(String localPath, String albumName) {
-        String path = normalizePath(localPath);
-        if (StringUtils.isEmpty(path)) {
-            return "";
-        }
-        if (StringUtils.isNotEmpty(albumName)) {
-            String suffix = File.separator + sanitizeFolderName(albumName);
-            if (path.endsWith(suffix)) {
-                return path.substring(0, path.length() - suffix.length());
-            }
-        }
-        int idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-        return idx > 0 ? path.substring(0, idx) : path;
     }
 
     private static String normalizePath(String path) {

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
  * 若依 Quartz 可调用任务：阿里云盘个人相册同步 + 磁盘扫描入库。
  * <p>
  * 调用目标：{@code aliyunAlbumSyncTask.syncAndScan()}
+ * 每次触发会实时列举云盘全部相册（去掉排除项），检测新相册与未同步文件后增量下载。
  * </p>
  */
 @Component("aliyunAlbumSyncTask")

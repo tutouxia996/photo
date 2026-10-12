@@ -335,14 +335,18 @@ public class AlbumProperties {
          * 刷新后会轮换，以数据库 biz_aliyun_drive_setting 为准。
          */
         private String refreshToken = "";
-        /** 云盘个人相册名称（与 remoteAlbumId 二选一；id 优先） */
+        /** 云盘个人相册名称（兼容旧配置；同步时改为实时列举全部相册） */
         private String remoteAlbumName = "";
-        /** 云盘个人相册 ID（优先于名称；多相册时为首项，兼容旧逻辑） */
+        /** 云盘个人相册 ID（兼容旧配置） */
         private String remoteAlbumId = "";
-        /** 本机下载父目录（多相册时各相册落到其子文件夹） */
+        /** 本机下载父目录（各相册落到其子文件夹） */
         private String localPath = "F:/照片视频备份/平时拍照";
-        /** 多相册同步列表（页面保存；优先于单项 remoteAlbumId/Name） */
+        /**
+         * 兼容旧版：曾为「要同步的相册」白名单；现已改为 sync-all + excludedAlbums。
+         */
         private List<com.sq.bus.domain.vo.RemoteAlbumItem> remoteAlbums = new ArrayList<com.sq.bus.domain.vo.RemoteAlbumItem>();
+        /** 不同步的云盘相册（黑名单）；其余相册每次任务都会检测并增量下载 */
+        private List<com.sq.bus.domain.vo.RemoteAlbumItem> excludedAlbums = new ArrayList<com.sq.bus.domain.vo.RemoteAlbumItem>();
         /**
          * 下载完成后触发扫描的 biz_scan_path.path_id。
          * 为空时按 localPath 匹配已启用的扫描目录。

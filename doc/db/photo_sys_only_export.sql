@@ -8,7 +8,7 @@
 --   - 不含 sys_oper_log / sys_logininfor / sys_job_log 日志
 --   - 不含 biz_* 业务数据
 -- 变更（2026-08-25）:
---   - biz_aliyun_drive_setting.remark 改为 TEXT（多选云盘相册 JSON）
+--   - biz_aliyun_drive_setting.remark 改为 TEXT（排除相册 JSON）
 --   - 修正 biz_photo / biz_photo_draw / biz_photo_draw_preset 乱码注释
 --   - biz 表 AUTO_INCREMENT 重置为 1（新库初始化）
 -- 已有库升级多相册: 执行 doc/db/album_aliyun_remark_text.sql
@@ -91,7 +91,7 @@ CREATE TABLE `biz_aliyun_drive_setting` (
   `multipart_min_bytes` bigint(20) DEFAULT '2097152',
   `update_by` varchar(64) DEFAULT '',
   `update_time` datetime DEFAULT NULL,
-  `remark` text COMMENT '多选云盘相册 JSON（remoteAlbums）',
+  `remark` text COMMENT '云盘同步排除相册 JSON（excludedAlbums）',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='阿里云盘相册同步配置';
 /*!40101 SET character_set_client = @saved_cs_client */;

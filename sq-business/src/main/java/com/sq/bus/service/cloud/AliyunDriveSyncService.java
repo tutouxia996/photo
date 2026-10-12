@@ -182,12 +182,13 @@ public class AliyunDriveSyncService {
         }
         paused.set(false);
         try {
-            markProgress(0, "listing", "正在登录并列举云盘文件…");
+            markProgress(0, "listing", "正在登录并检测云盘相册与未同步文件…");
             persistProgressQuiet();
 
-            List<RemoteAlbumItem> albums = aliyunDriveSettingService.listRemoteAlbumsFromConfig(cfg);
+            // 每次任务实时拉全部相册，去掉排除项；新相册与旧相册增量文件都会进队列
+            List<RemoteAlbumItem> albums = aliyunDriveSettingService.resolveAlbumsToSync(cfg);
             if (albums.isEmpty()) {
-                throw new ServiceException("未配置云盘相册，请先在云盘同步页选择并保存");
+                throw new ServiceException("没有可同步的云盘相册（可能全部被排除，或云盘尚无相册）");
             }
             String basePath = cfg.getLocalPath();
             int albumCount = albums.size();

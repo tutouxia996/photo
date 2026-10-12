@@ -24,7 +24,13 @@ public interface IAliyunDriveSettingService {
     AlbumProperties.AliyunDriveConfig getEffectiveConfig();
 
     /**
-     * 解析配置中的云盘相册列表（多相册优先，否则回落单项）。
+     * 解析本次要同步的云盘相册：实时列举全部个人相册，再去掉排除列表。
+     * 已存在的本地文件仍会增量跳过；新相册与旧相册中的新文件都会被检测。
+     */
+    List<RemoteAlbumItem> resolveAlbumsToSync(AlbumProperties.AliyunDriveConfig cfg);
+
+    /**
+     * 兼容旧调用：仅返回配置里写死的相册列表（不含实时列举）。
      */
     List<RemoteAlbumItem> listRemoteAlbumsFromConfig(AlbumProperties.AliyunDriveConfig cfg);
 

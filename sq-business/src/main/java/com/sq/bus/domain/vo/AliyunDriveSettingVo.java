@@ -16,11 +16,13 @@ public class AliyunDriveSettingVo {
     /** 是否已保存过 token（脱敏展示） */
     private boolean hasRefreshToken;
     private String refreshTokenMasked;
-    /** 兼容：首个云盘相册 */
+    /** 兼容旧字段（已不再作为同步目标） */
     private String remoteAlbumName;
     private String remoteAlbumId;
-    /** 多选云盘相册 */
+    /** 兼容旧版白名单；新逻辑忽略 */
     private List<RemoteAlbumItem> remoteAlbums;
+    /** 排除不同步的云盘相册；空=同步全部 */
+    private List<RemoteAlbumItem> excludedAlbums;
     private String localPath;
     /** 页面用：本机父目录（不含相册名子文件夹） */
     private String localBasePath;

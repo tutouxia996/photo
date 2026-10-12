@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS `biz_aliyun_drive_setting` (
   `multipart_min_bytes` bigint(20) DEFAULT '2097152',
   `update_by` varchar(64) DEFAULT '',
   `update_time` datetime DEFAULT NULL,
-  `remark` text COMMENT '多选云盘相册 JSON（remoteAlbums）',
+  `remark` text COMMENT '云盘同步排除相册 JSON（excludedAlbums）',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='阿里云盘相册同步配置';
 

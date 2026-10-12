@@ -4,7 +4,7 @@
       class="mb8"
       type="info"
       :closable="false"
-      title="粘贴 refresh_token 后点「保存」即可（服务端校验并轮换后只写入数据库）。留空保存表示不改动 token。保存成功后再点「开始同步」。"
+      title="默认同步云盘全部相册（含新相册与旧相册中的新文件）。粘贴 refresh_token 后点「保存」，再点「开始同步」。可手动排除不需要的相册。"
     />
 
     <el-form
@@ -31,18 +31,18 @@
         <div class="form-tip" v-if="form.hasRefreshToken">当前已保存：{{ form.refreshTokenMasked }}</div>
         <div class="form-tip">浏览器登录 alipan.com → F12 → Application → Local Storage → token → refresh_token</div>
       </el-form-item>
-      <el-form-item label="云盘相册" prop="selectedRemoteAlbumIds">
+      <el-form-item label="排除相册" prop="excludedRemoteAlbumIds">
         <div class="album-row">
           <el-select
-            v-model="selectedRemoteAlbumIds"
+            v-model="excludedRemoteAlbumIds"
             multiple
             collapse-tags
             collapse-tags-tooltip
             clearable
             filterable
-            placeholder="先刷新列表，可多选云盘相册"
+            placeholder="可选：勾选后这些相册不同步"
             style="flex: 1"
-            @change="onCloudAlbumsChange"
+            @change="onExcludedAlbumsChange"
           >
             <el-option
               v-for="item in cloudAlbums"
@@ -53,8 +53,11 @@
           </el-select>
           <el-button :loading="loadingAlbums" @click="loadCloudAlbums">刷新列表</el-button>
         </div>
-        <div class="form-tip" v-if="selectedRemoteAlbums.length">
-          已选 {{ selectedRemoteAlbums.length }} 个：{{ selectedRemoteAlbums.map(a => a.name).join('、') }}
+        <div class="form-tip">
+          默认同步全部云盘相册；定时任务会自动检测新相册与未下载文件。已排除 {{ excludedRemoteAlbums.length }} 个。
+        </div>
+        <div class="form-tip" v-if="excludedRemoteAlbums.length">
+          排除：{{ excludedRemoteAlbums.map(a => a.name).join('、') }}
         </div>
       </el-form-item>
 
@@ -62,35 +65,18 @@
       <el-form-item label="本机父目录" prop="localBasePath">
         <el-input v-model="form.localBasePath" placeholder="如 F:/照片视频备份" />
         <div v-if="downloadPathPreview.length" class="path-preview">
-          <div class="path-preview-title">各相册下载到：</div>
+          <div class="path-preview-title">将同步 {{ downloadPathPreview.length }} 个相册到：</div>
           <div v-for="p in downloadPathPreview" :key="p.albumId" class="path-preview-item">
             <span class="path-name">{{ p.name }}</span>
             <code>{{ p.path }}</code>
           </div>
         </div>
-        <div v-else class="form-tip">选择云盘相册并填写父目录后，将显示各相册的完整下载路径</div>
-      </el-form-item>
-      <el-form-item v-if="selectedRemoteAlbums.length <= 1" label="入库相册" prop="bindAlbumId">
-        <el-select
-          v-model="form.bindAlbumId"
-          clearable
-          filterable
-          placeholder="可选；留空则自动用云盘相册名创建/匹配本地相册"
-          style="width: 100%"
-        >
-          <el-option
-            v-for="a in localAlbums"
-            :key="a.albumId"
-            :label="`${a.albumName || '未命名'}（ID ${a.albumId}）`"
-            :value="a.albumId"
-          />
-        </el-select>
-        <div class="form-tip">
-          单相册时可选手动指定；多相册时每个云盘相册名会自动对应一个本地相册。
+        <div v-else class="form-tip">
+          各相册下载到「父目录/相册名」。刷新云盘列表后可预览将同步的相册路径。
         </div>
       </el-form-item>
-      <el-form-item v-else label="入库相册">
-        <span class="form-tip block-tip">已选 {{ selectedRemoteAlbums.length }} 个云盘相册，将分别按相册名自动创建/匹配本地相册并扫描入库。</span>
+      <el-form-item label="入库相册">
+        <span class="form-tip block-tip">每个云盘相册名会自动创建/匹配本地相册并扫描入库，无需再选手动指定。</span>
       </el-form-item>
       <el-form-item label="下载后扫描">
         <el-switch v-model="form.triggerScan" />
@@ -176,7 +162,6 @@
 
 <script setup name="AlbumAliyun">
 import { getAliyunSetting, saveAliyunSetting, listAliyunAlbums } from '@/api/album/aliyun'
-import { listAlbum } from '@/api/album/album'
 import useAliyunSyncStore from '@/store/modules/aliyunSync'
 
 const { proxy } = getCurrentInstance()
@@ -185,8 +170,7 @@ const loading = ref(false)
 const saving = ref(false)
 const loadingAlbums = ref(false)
 const cloudAlbums = ref([])
-const localAlbums = ref([])
-const selectedRemoteAlbumIds = ref([])
+const excludedRemoteAlbumIds = ref([])
 const form = ref({
   enabled: false,
   refreshToken: '',
@@ -195,9 +179,9 @@ const form = ref({
   remoteAlbumName: '',
   remoteAlbumId: '',
   remoteAlbums: [],
+  excludedAlbums: [],
   localPath: '',
   localBasePath: '',
-  bindAlbumId: undefined,
   triggerScan: true,
   fullScan: false,
   mediaOnly: false,
@@ -209,16 +193,6 @@ const form = ref({
   running: false
 })
 const rules = {
-  selectedRemoteAlbumIds: [{
-    validator: (_rule, _value, callback) => {
-      if (!selectedRemoteAlbumIds.value.length) {
-        callback(new Error('请至少选择一个云盘相册'))
-      } else {
-        callback()
-      }
-    },
-    trigger: 'change'
-  }],
   localBasePath: [{ required: true, message: '本机父目录不能为空', trigger: 'blur' }]
 }
 
@@ -263,7 +237,7 @@ const overallRemainingText = computed(() => {
 })
 const progressLabel = computed(() => {
   if (listingPhase.value) {
-    return sync.value.phase === 'scanning' ? '扫描入库中' : '列举云盘文件中'
+    return sync.value.phase === 'scanning' ? '扫描入库中' : '检测云盘相册/文件中'
   }
   if (isMultiAlbum.value) {
     return `总进度 · 本相册剩余 ${sync.value.remaining || 0}`
@@ -276,7 +250,7 @@ const statusText = computed(() => {
   const st = Number(sync.value.status)
   const phase = sync.value.phase || ''
   if (sync.value.running || st === 0) {
-    if (phase === 'listing') return '列举文件中'
+    if (phase === 'listing') return '检测相册/列举文件中'
     if (phase === 'scanning') return '扫描入库中'
     if (phase === 'downloading') return '下载中'
     return '同步中'
@@ -296,18 +270,23 @@ function formatBytes(n) {
   return (v / 1073741824).toFixed(2) + ' GB'
 }
 
-const selectedRemoteAlbums = computed(() => {
-  const ids = selectedRemoteAlbumIds.value || []
+const excludedRemoteAlbums = computed(() => {
+  const ids = excludedRemoteAlbumIds.value || []
   return ids.map(id => {
     const hit = cloudAlbums.value.find(a => a.albumId === id)
     return hit || { albumId: id, name: id }
   })
 })
 
+const syncTargetAlbums = computed(() => {
+  const excluded = new Set(excludedRemoteAlbumIds.value || [])
+  return (cloudAlbums.value || []).filter(a => a?.albumId && !excluded.has(a.albumId))
+})
+
 const downloadPathPreview = computed(() => {
   const base = String(form.value.localBasePath || '').trim().replace(/[\\/]+$/, '')
-  if (!base) return []
-  return selectedRemoteAlbums.value.map(a => ({
+  if (!base || !syncTargetAlbums.value.length) return []
+  return syncTargetAlbums.value.map(a => ({
     albumId: a.albumId,
     name: a.name,
     path: composeLocalPath(base, a.name)
@@ -325,34 +304,15 @@ function composeLocalPath(base, albumName) {
   return `${b}/${name}`
 }
 
-function syncFormRemoteAlbums() {
-  const albums = selectedRemoteAlbums.value.map(a => ({
+function syncFormExcludedAlbums() {
+  form.value.excludedAlbums = excludedRemoteAlbums.value.map(a => ({
     albumId: a.albumId,
     name: a.name
   }))
-  form.value.remoteAlbums = albums
-  const first = albums[0]
-  form.value.remoteAlbumId = first?.albumId || ''
-  form.value.remoteAlbumName = first?.name || ''
 }
 
-function onCloudAlbumsChange() {
-  syncFormRemoteAlbums()
-  if (selectedRemoteAlbums.value.length === 1) {
-    const name = selectedRemoteAlbums.value[0]?.name
-    if (name && !form.value.bindAlbumId) {
-      const matched = localAlbums.value.find(a => (a.albumName || '').trim() === name.trim())
-      if (matched) form.value.bindAlbumId = matched.albumId
-    }
-  } else {
-    form.value.bindAlbumId = undefined
-  }
-}
-
-function loadLocalAlbums() {
-  listAlbum({ pageNum: 1, pageSize: 500 }).then(res => {
-    localAlbums.value = res.rows || []
-  }).catch(() => {})
+function onExcludedAlbumsChange() {
+  syncFormExcludedAlbums()
 }
 
 function loadCloudAlbums() {
@@ -363,13 +323,13 @@ function loadCloudAlbums() {
     if (!cloudAlbums.value.length) {
       proxy.$modal.msgWarning('未获取到云盘相册，请确认 refresh_token 有效')
     }
-    mergeSavedAlbumsIntoOptions()
-    onCloudAlbumsChange()
+    mergeSavedExcludedIntoOptions()
+    onExcludedAlbumsChange()
   }).finally(() => { loadingAlbums.value = false })
 }
 
-function mergeSavedAlbumsIntoOptions() {
-  const saved = form.value.remoteAlbums || []
+function mergeSavedExcludedIntoOptions() {
+  const saved = form.value.excludedAlbums || []
   const map = new Map(cloudAlbums.value.map(a => [a.albumId, a]))
   saved.forEach(a => {
     if (a?.albumId && !map.has(a.albumId)) {
@@ -378,16 +338,12 @@ function mergeSavedAlbumsIntoOptions() {
   })
 }
 
-function applyLoadedAlbums(data) {
-  const albums = Array.isArray(data.remoteAlbums) && data.remoteAlbums.length
-    ? data.remoteAlbums
-    : (data.remoteAlbumId
-      ? [{ albumId: data.remoteAlbumId, name: data.remoteAlbumName || data.remoteAlbumId }]
-      : [])
-  form.value.remoteAlbums = albums
-  selectedRemoteAlbumIds.value = albums.map(a => a.albumId).filter(Boolean)
-  mergeSavedAlbumsIntoOptions()
-  onCloudAlbumsChange()
+function applyLoadedExcluded(data) {
+  const albums = Array.isArray(data.excludedAlbums) ? data.excludedAlbums : []
+  form.value.excludedAlbums = albums
+  excludedRemoteAlbumIds.value = albums.map(a => a.albumId).filter(Boolean)
+  mergeSavedExcludedIntoOptions()
+  onExcludedAlbumsChange()
 }
 
 function load() {
@@ -395,40 +351,37 @@ function load() {
   getAliyunSetting().then(res => {
     const data = res.data || {}
     form.value = { ...form.value, ...data, refreshToken: '' }
-    applyLoadedAlbums(data)
+    applyLoadedExcluded(data)
+    if (data.hasRefreshToken) {
+      loadCloudAlbums()
+    }
   }).finally(() => { loading.value = false })
   syncStore.refresh()
 }
 
 function submitForm() {
-  syncFormRemoteAlbums()
+  syncFormExcludedAlbums()
   proxy.$refs.formRef.validate(valid => {
     if (!valid) return
-    if (!selectedRemoteAlbumIds.value.length) {
-      proxy.$modal.msgError('请至少选择一个云盘相册')
-      return
-    }
-    const multi = selectedRemoteAlbums.value.length > 1
-    const willAutoCreate = form.value.triggerScan && (multi || !form.value.bindAlbumId)
     saving.value = true
     const payload = {
       ...form.value,
-      remoteAlbums: selectedRemoteAlbums.value.map(a => ({ albumId: a.albumId, name: a.name })),
+      excludedAlbums: excludedRemoteAlbums.value.map(a => ({ albumId: a.albumId, name: a.name })),
+      remoteAlbums: [],
       localPath: String(form.value.localBasePath || '').trim().replace(/[\\/]+$/, '')
     }
     delete payload.scanPathId
     delete payload.linkedScanPathName
     delete payload.linkedScanPathLocal
+    delete payload.bindAlbumId
     if (!payload.refreshToken) payload.refreshToken = ''
-    if (multi) payload.bindAlbumId = undefined
 
     saveAliyunSetting(payload).then(() => {
-      const names = selectedRemoteAlbums.value.map(a => a.name).join('、')
       const tokenHint = payload.refreshToken ? '，token 已校验并保存' : ''
-      proxy.$modal.msgSuccess(willAutoCreate
-        ? `已保存${tokenHint}，将同步 ${selectedRemoteAlbums.value.length} 个相册：${names}`
-        : `已保存${tokenHint}`)
-      loadLocalAlbums()
+      const excludeHint = payload.excludedAlbums.length
+        ? `，已排除 ${payload.excludedAlbums.length} 个相册`
+        : '，将同步全部云盘相册'
+      proxy.$modal.msgSuccess(`已保存${tokenHint}${excludeHint}`)
       load()
     }).finally(() => { saving.value = false })
   })
@@ -439,8 +392,11 @@ function handleRun() {
     proxy.$modal.msgWarning('下载进行中，可暂停或到右下角查看进度')
     return
   }
+  const targetHint = syncTargetAlbums.value.length
+    ? `约 ${syncTargetAlbums.value.length} 个相册（已排除 ${excludedRemoteAlbums.value.length} 个）`
+    : '全部未排除的云盘相册'
   proxy.$modal.confirm(
-    `将按已保存配置顺序下载 ${selectedRemoteAlbums.value.length || form.value.remoteAlbums?.length || 1} 个云盘相册，可切换到其他页面。`
+    `将检测并下载 ${targetHint} 中尚未同步的文件，可切换到其他页面。`
   ).then(() => syncStore.start()).then(() => {
     proxy.$modal.msgSuccess('已开始下载，进度在右下角')
   }).catch(() => {})
@@ -454,7 +410,6 @@ function handleResume() {
   syncStore.resume().then(() => proxy.$modal.msgSuccess('继续下载剩余文件'))
 }
 
-loadLocalAlbums()
 load()
 syncStore.startPolling()
 </script>
@@ -488,6 +443,8 @@ syncStore.startPolling()
   background: #f5f7fa;
   border-radius: 4px;
   font-size: 12px;
+  max-height: 200px;
+  overflow: auto;
 }
 .path-preview-title {
   color: #606266;
