@@ -10,7 +10,10 @@ import java.util.Map;
 
 /**
  * 照片轨迹自动贴路：以 GPS 点为锚点，段间调用高德导航（默认步行）。
- * GPX 叠层：按「连续移动片段」推断出行方式。
+ * GPX 叠层：按「连续移动片段」的速度/海拔推断出行方式。
+ * <p>
+ * <b>不使用</b> GPX 文件头 / metadata 中的 Activity、keywords 等标签
+ * （如 walking、running），这些常不准，仅作记录仪备注。
  * 长停顿标为 stay；短停（等红绿灯）并入当前骑行/自驾/步行片段，不单独切开。
  */
 public final class TravelModeInferUtils {
@@ -150,10 +153,17 @@ public final class TravelModeInferUtils {
 
     /**
      * 将移动片段写入 edgeModes。
-     * 若整体判为 bike/drive，把前后持续慢走前缀/后缀剥成 walk（如骑车前先走一段）。
+     * <ul>
+     *   <li>整体 bike/drive：前后持续慢走剥成 walk（先走后骑）</li>
+     *   <li>整体 walk：内部持续较快段提升为 bike/drive（先走后骑、长时间步行夹骑行）</li>
+     * </ul>
      */
     private static void assignBoutModes(String[] edgeModes, Edge[] edges, int fromEdge, int toEdge) {
         String mode = classifyBout(edges, fromEdge, toEdge);
+        if ("walk".equals(mode) || "stay".equals(mode)) {
+            promoteFastInsideWalkBout(edgeModes, edges, fromEdge, toEdge);
+            return;
+        }
         if (!"bike".equals(mode) && !"drive".equals(mode)) {
             for (int i = fromEdge; i <= toEdge; i++) {
                 edgeModes[i] = mode;
@@ -192,6 +202,37 @@ public final class TravelModeInferUtils {
         }
         for (int i = fastTo + 1; i <= toEdge; i++) {
             edgeModes[i] = "walk";
+        }
+    }
+
+    /**
+     * 长步行片段内找出持续较快的子段，提升为 bike/drive（园博园傍晚骑行这类）。
+     */
+    private static void promoteFastInsideWalkBout(String[] edgeModes, Edge[] edges,
+                                                 int fromEdge, int toEdge) {
+        for (int i = fromEdge; i <= toEdge; i++) {
+            edgeModes[i] = "walk";
+        }
+        int i = fromEdge;
+        while (i <= toEdge) {
+            if (isPeelWalkWindow(edges, i, fromEdge, toEdge)) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j <= toEdge && !isPeelWalkWindow(edges, j, fromEdge, toEdge)) {
+                j++;
+            }
+            int hi = j - 1;
+            long dur = spanMs(edges, i, hi);
+            String fastMode = classifyBout(edges, i, hi);
+            if (dur >= MIN_BIKE_MOVE_MS
+                    && ("bike".equals(fastMode) || "drive".equals(fastMode))) {
+                for (int k = i; k <= hi; k++) {
+                    edgeModes[k] = fastMode;
+                }
+            }
+            i = j;
         }
     }
 
