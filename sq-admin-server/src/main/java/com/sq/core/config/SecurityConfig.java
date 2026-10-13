@@ -113,7 +113,7 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 // 静态资源 / 前端入口，可匿名访问（合并部署）
                 .antMatchers(HttpMethod.GET, "/", "/index.html", "/assets/**", "/*.html", "/**/*.html",
                         "/**/*.css", "/**/*.js", "/**/*.map", "/**/*.ico", "/**/*.png", "/**/*.svg",
-                        "/**/*.woff", "/**/*.woff2", "/**/*.ttf", "/profile/**").permitAll()
+                        "/**/*.woff", "/**/*.woff2", "/**/*.ttf", "/*.txt", "/profile/**").permitAll()
                 // 相册媒体预览（img/video 标签无法带 Token）
                 .antMatchers(HttpMethod.GET, "/album/photo/media/**", "/album/photo/thumb/**", "/album/files/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/album/photo/videoProxy/**").permitAll()

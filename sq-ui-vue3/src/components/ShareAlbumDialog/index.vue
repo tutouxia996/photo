@@ -2,14 +2,23 @@
   <el-dialog
     :model-value="modelValue"
     title="分享相册"
-    width="720px"
+    width="780px"
     append-to-body
     destroy-on-close
     class="share-album-dialog"
     @update:model-value="onVisible"
   >
     <div v-loading="loading" class="share-body">
-      <template v-if="!sharePath">
+      <div class="share-tabs">
+        <button type="button" class="share-tab" :class="{ active: tab === 'create' }" @click="tab = 'create'">新建分享</button>
+        <button type="button" class="share-tab" :class="{ active: tab === 'manage' }" @click="openManage">
+          管理分享
+          <span v-if="shareList.length" class="tab-count">{{ shareList.length }}</span>
+        </button>
+      </div>
+
+      <!-- 新建 -->
+      <template v-if="tab === 'create' && !sharePath">
         <div class="share-album-name">{{ albumName || '未命名相册' }}</div>
 
         <div class="share-row">
@@ -25,6 +34,27 @@
             <el-option label="只分享图片" value="image" />
             <el-option label="只分享视频" value="video" />
           </el-select>
+        </div>
+
+        <div class="share-row">
+          <span class="share-label">有效期</span>
+          <el-select v-model="form.expirePreset" style="width: 200px" @change="onExpirePresetChange">
+            <el-option label="永久有效" value="never" />
+            <el-option label="1 天后" value="1d" />
+            <el-option label="7 天后" value="7d" />
+            <el-option label="30 天后" value="30d" />
+            <el-option label="自定义时间" value="custom" />
+          </el-select>
+          <el-date-picker
+            v-if="form.expirePreset === 'custom'"
+            v-model="form.expireTime"
+            type="datetime"
+            placeholder="选择过期时间"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            :disabled-date="disablePastDate"
+            style="width: 220px"
+          />
+          <span v-else-if="expireHint" class="share-hint">{{ expireHint }}</span>
         </div>
 
         <div class="share-select-bar">
@@ -60,14 +90,17 @@
         </div>
       </template>
 
-      <template v-else>
+      <!-- 新建成功结果 -->
+      <template v-else-if="tab === 'create' && sharePath">
         <div class="share-result">
           <p class="result-tip">
-            分享已生成。链接与二维码均使用外网域名（不含内网地址与端口），复制或扫码均可打开。
+            分享已生成。可随时在「管理分享」中关闭或删除。
+            <template v-if="resultExpireText">有效期至 {{ resultExpireText }}。</template>
+            <template v-else>永久有效。</template>
           </p>
           <div class="result-url-row">
             <el-input :model-value="shareUrl" readonly />
-            <el-button type="primary" @click="copyUrl">复制</el-button>
+            <el-button type="primary" @click="copyText(shareUrl)">复制</el-button>
           </div>
           <div class="result-qr">
             <canvas ref="qrCanvasRef" width="200" height="200" />
@@ -75,18 +108,68 @@
           </div>
         </div>
       </template>
+
+      <!-- 管理已有分享 -->
+      <template v-else>
+        <div v-if="!shareList.length" class="share-empty">暂无分享记录，可先新建分享</div>
+        <div v-else class="share-manage-list">
+          <div v-for="item in shareList" :key="item.shareId" class="share-manage-card">
+            <div class="manage-main">
+              <div class="manage-title">
+                <el-tag size="small" :type="shareStatusType(item)">{{ shareStatusLabel(item) }}</el-tag>
+                <span class="manage-scope">{{ scopeLabel(item.mediaScope) }}</span>
+                <span v-if="item.shareTrack === 1" class="manage-scope">含轨迹</span>
+              </div>
+              <div class="manage-meta">
+                <span>创建 {{ formatTime(item.createTime) }}</span>
+                <span>· {{ expireLabel(item) }}</span>
+              </div>
+              <div class="manage-url">{{ buildUrlForShare(item) }}</div>
+            </div>
+            <div class="manage-actions">
+              <el-switch
+                :model-value="item.status === 1 && !isExpired(item)"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                :disabled="isExpired(item) || togglingId === item.shareId"
+                :loading="togglingId === item.shareId"
+                @change="(val) => toggleShareStatus(item, val)"
+              />
+              <el-button size="small" @click="showShareLink(item)">链接/二维码</el-button>
+              <el-button size="small" type="danger" plain :loading="deletingId === item.shareId" @click="removeShare(item)">
+                删除
+              </el-button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="managePreviewUrl" class="share-result manage-preview">
+          <div class="result-url-row">
+            <el-input :model-value="managePreviewUrl" readonly />
+            <el-button type="primary" @click="copyText(managePreviewUrl)">复制</el-button>
+          </div>
+          <div class="result-qr">
+            <canvas ref="manageQrRef" width="180" height="180" />
+          </div>
+        </div>
+      </template>
     </div>
 
     <template #footer>
-      <template v-if="!sharePath">
+      <template v-if="tab === 'create' && !sharePath">
         <el-button @click="close">取消</el-button>
         <el-button type="primary" :loading="saving" :disabled="!canSubmit" @click="createShare">
           生成分享链接
         </el-button>
       </template>
-      <template v-else>
-        <el-button @click="backToSettings">继续设置</el-button>
+      <template v-else-if="tab === 'create' && sharePath">
+        <el-button @click="backToSettings">再建一个</el-button>
+        <el-button @click="openManage">管理分享</el-button>
         <el-button type="primary" @click="close">完成</el-button>
+      </template>
+      <template v-else>
+        <el-button type="primary" @click="close">关闭</el-button>
       </template>
     </template>
   </el-dialog>
@@ -96,7 +179,12 @@
 import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { listPhoto } from '@/api/photos/photo'
-import { createAlbumShare } from '@/api/photos/share'
+import {
+  createAlbumShare,
+  updateAlbumShare,
+  listAlbumShare,
+  delAlbumShare
+} from '@/api/photos/share'
 import { isExternal } from '@/utils/validate'
 import { buildShareUrl, normalizeSharePath } from '@/utils/shareLink'
 
@@ -107,7 +195,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:modelValue'])
-
 const { proxy } = getCurrentInstance()
 
 const loading = ref(false)
@@ -115,25 +202,28 @@ const photosLoading = ref(false)
 const saving = ref(false)
 const photos = ref([])
 const selectedIds = ref([])
-/** 路由路径，如 /share/xxx */
 const sharePath = ref('')
-/** 可访问的完整分享地址（复制与二维码相同，无内网 IP/端口） */
 const shareUrl = ref('')
+const resultExpireText = ref('')
 const qrCanvasRef = ref(null)
+const manageQrRef = ref(null)
+const tab = ref('create')
+const shareList = ref([])
+const togglingId = ref(null)
+const deletingId = ref(null)
+const managePreviewUrl = ref('')
 
 const form = ref({
   shareTrack: false,
-  mediaScope: 'all'
+  mediaScope: 'all',
+  expirePreset: 'never',
+  expireTime: ''
 })
 
 const filteredPhotos = computed(() => {
   const list = photos.value || []
-  if (form.value.mediaScope === 'image') {
-    return list.filter(p => p.fileType !== 2)
-  }
-  if (form.value.mediaScope === 'video') {
-    return list.filter(p => p.fileType === 2)
-  }
+  if (form.value.mediaScope === 'image') return list.filter(p => p.fileType !== 2)
+  if (form.value.mediaScope === 'video') return list.filter(p => p.fileType === 2)
   return list
 })
 
@@ -149,8 +239,11 @@ const isIndeterminate = computed(() => {
   return n > 0 && n < list.length
 })
 
-const canSubmit = computed(() => {
-  return !!props.albumId && selectedIds.value.length > 0
+const canSubmit = computed(() => !!props.albumId && selectedIds.value.length > 0)
+
+const expireHint = computed(() => {
+  const t = resolveExpireTime()
+  return t ? `将于 ${t} 失效` : ''
 })
 
 function resolveUrl(url) {
@@ -172,40 +265,117 @@ function isSelected(id) {
 
 function toggleOne(id) {
   const i = selectedIds.value.indexOf(id)
-  if (i >= 0) {
-    selectedIds.value = selectedIds.value.filter(x => x !== id)
-  } else {
-    selectedIds.value = [...selectedIds.value, id]
-  }
+  if (i >= 0) selectedIds.value = selectedIds.value.filter(x => x !== id)
+  else selectedIds.value = [...selectedIds.value, id]
 }
 
 function toggleAll(val) {
   const ids = filteredPhotos.value.map(p => p.photoId)
-  if (val) {
-    const set = new Set([...selectedIds.value, ...ids])
-    selectedIds.value = [...set]
-  } else {
+  if (val) selectedIds.value = [...new Set([...selectedIds.value, ...ids])]
+  else {
     const drop = new Set(ids)
     selectedIds.value = selectedIds.value.filter(id => !drop.has(id))
   }
 }
 
 function onScopeChange() {
-  // 切换范围后，默认勾选当前可见项
   selectedIds.value = filteredPhotos.value.map(p => p.photoId)
+}
+
+function disablePastDate(date) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return date.getTime() < today.getTime()
+}
+
+function pad(n) {
+  return String(n).padStart(2, '0')
+}
+
+function formatDateTime(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function formatTime(raw) {
+  if (!raw) return '-'
+  const d = new Date(typeof raw === 'string' ? raw.replace(/-/g, '/') : raw)
+  if (Number.isNaN(d.getTime())) return String(raw)
+  return formatDateTime(d)
+}
+
+function onExpirePresetChange() {
+  if (form.value.expirePreset !== 'custom') form.value.expireTime = ''
+}
+
+function resolveExpireTime() {
+  const preset = form.value.expirePreset
+  if (preset === 'never') return null
+  if (preset === 'custom') return form.value.expireTime || null
+  const days = preset === '1d' ? 1 : preset === '7d' ? 7 : preset === '30d' ? 30 : 0
+  if (!days) return null
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return formatDateTime(d)
+}
+
+function scopeLabel(scope) {
+  if (scope === 'image') return '仅图片'
+  if (scope === 'video') return '仅视频'
+  return '全部文件'
+}
+
+function isExpired(item) {
+  if (!item?.expireTime) return false
+  const t = new Date(typeof item.expireTime === 'string' ? item.expireTime.replace(/-/g, '/') : item.expireTime).getTime()
+  return Number.isFinite(t) && t < Date.now()
+}
+
+function shareStatusLabel(item) {
+  if (isExpired(item)) return '已过期'
+  if (item.status === 1) return '生效中'
+  return '已关闭'
+}
+
+function shareStatusType(item) {
+  if (isExpired(item)) return 'info'
+  if (item.status === 1) return 'success'
+  return 'danger'
+}
+
+function expireLabel(item) {
+  if (!item?.expireTime) return '永久有效'
+  if (isExpired(item)) return `已于 ${formatTime(item.expireTime)} 过期`
+  return `有效至 ${formatTime(item.expireTime)}`
+}
+
+function buildUrlForShare(item) {
+  if (!item?.shareToken) return ''
+  return buildShareUrl('/share/' + item.shareToken)
 }
 
 async function loadPhotos() {
   if (!props.albumId) return
   photosLoading.value = true
   try {
-    const res = await listPhoto({
-      albumId: props.albumId,
-      pageNum: 1,
-      pageSize: 2000,
-      shootTimeOrder: 'desc'
-    })
-    photos.value = res.rows || []
+    const pageSize = 500
+    let pageNum = 1
+    let all = []
+    let total = 0
+    do {
+      const res = await listPhoto({
+        albumId: props.albumId,
+        pageNum,
+        pageSize,
+        shootTimeOrder: 'desc'
+      })
+      const rows = res.rows || []
+      total = Number(res.total) || 0
+      all = all.concat(rows)
+      if (!rows.length || all.length >= total) break
+      pageNum += 1
+    } while (pageNum <= 50)
+    photos.value = all
     selectedIds.value = filteredPhotos.value.map(p => p.photoId)
   } catch (e) {
     photos.value = []
@@ -215,13 +385,26 @@ async function loadPhotos() {
   }
 }
 
-async function renderQr(url) {
+async function loadShareList() {
+  if (!props.albumId) {
+    shareList.value = []
+    return
+  }
+  try {
+    const res = await listAlbumShare(props.albumId)
+    shareList.value = res.rows || []
+  } catch (e) {
+    shareList.value = []
+  }
+}
+
+async function renderQr(canvasRef, url) {
   await nextTick()
-  const canvas = qrCanvasRef.value
+  const canvas = canvasRef?.value
   if (!canvas || !url) return
   try {
     await QRCode.toCanvas(canvas, url, {
-      width: 200,
+      width: canvas.width || 200,
       margin: 2,
       color: { dark: '#111827', light: '#ffffff' }
     })
@@ -235,17 +418,23 @@ async function createShare() {
     proxy?.$modal?.msgWarning?.('请至少选择一个文件')
     return
   }
+  if (form.value.expirePreset === 'custom' && !form.value.expireTime) {
+    proxy?.$modal?.msgWarning?.('请选择过期时间')
+    return
+  }
   saving.value = true
   try {
     const allIds = filteredPhotos.value.map(p => p.photoId)
     const selected = selectedIds.value.filter(id => allIds.includes(id))
     const selectAll = selected.length === allIds.length && allIds.length > 0
+    const expireTime = resolveExpireTime()
     const res = await createAlbumShare({
       albumId: props.albumId,
       shareTrack: form.value.shareTrack ? 1 : 0,
       mediaScope: form.value.mediaScope,
       selectMode: selectAll ? 'all' : 'include',
       photoIdList: selectAll ? [] : selected,
+      expireTime,
       status: 1
     })
     const data = res.data || {}
@@ -256,7 +445,9 @@ async function createShare() {
     }
     sharePath.value = normalizeSharePath(path)
     shareUrl.value = buildShareUrl(sharePath.value)
-    await renderQr(shareUrl.value)
+    resultExpireText.value = expireTime || ''
+    await renderQr(qrCanvasRef, shareUrl.value)
+    await loadShareList()
     proxy?.$modal?.msgSuccess?.('分享链接已生成')
   } catch (e) {
     /* 全局已提示 */
@@ -265,13 +456,11 @@ async function createShare() {
   }
 }
 
-async function copyUrl() {
-  const text = shareUrl.value
+async function copyText(text) {
   if (!text) return
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
+    else {
       const ta = document.createElement('textarea')
       ta.value = text
       document.body.appendChild(ta)
@@ -285,17 +474,76 @@ async function copyUrl() {
   }
 }
 
+async function toggleShareStatus(item, enabled) {
+  if (!item?.shareId || isExpired(item)) return
+  togglingId.value = item.shareId
+  try {
+    await updateAlbumShare({
+      shareId: item.shareId,
+      shareTrack: item.shareTrack,
+      mediaScope: item.mediaScope,
+      selectMode: item.selectMode,
+      photoIdList: item.photoIdList || [],
+      expireTime: item.expireTime || null,
+      status: enabled ? 1 : 0
+    })
+    item.status = enabled ? 1 : 0
+    proxy?.$modal?.msgSuccess?.(enabled ? '已重新开启分享' : '已关闭分享，访客将无法打开')
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    togglingId.value = null
+  }
+}
+
+async function removeShare(item) {
+  if (!item?.shareId) return
+  try {
+    await proxy?.$modal?.confirm?.('删除后该分享链接将永久失效，确定删除？')
+  } catch (e) {
+    return
+  }
+  deletingId.value = item.shareId
+  try {
+    await delAlbumShare(item.shareId)
+    shareList.value = shareList.value.filter(s => s.shareId !== item.shareId)
+    if (managePreviewUrl.value === buildUrlForShare(item)) managePreviewUrl.value = ''
+    proxy?.$modal?.msgSuccess?.('已删除分享')
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    deletingId.value = null
+  }
+}
+
+async function showShareLink(item) {
+  managePreviewUrl.value = buildUrlForShare(item)
+  await renderQr(manageQrRef, managePreviewUrl.value)
+}
+
+async function openManage() {
+  tab.value = 'manage'
+  sharePath.value = ''
+  shareUrl.value = ''
+  managePreviewUrl.value = ''
+  await loadShareList()
+}
+
 function resetForm() {
-  form.value = { shareTrack: false, mediaScope: 'all' }
+  form.value = { shareTrack: false, mediaScope: 'all', expirePreset: 'never', expireTime: '' }
   photos.value = []
   selectedIds.value = []
   sharePath.value = ''
   shareUrl.value = ''
+  resultExpireText.value = ''
+  managePreviewUrl.value = ''
+  tab.value = 'create'
 }
 
 function backToSettings() {
   sharePath.value = ''
   shareUrl.value = ''
+  resultExpireText.value = ''
 }
 
 function close() {
@@ -313,12 +561,13 @@ watch(
       loading.value = true
       resetForm()
       try {
-        await loadPhotos()
+        await Promise.all([loadPhotos(), loadShareList()])
       } finally {
         loading.value = false
       }
     } else {
       resetForm()
+      shareList.value = []
     }
   }
 )
@@ -326,7 +575,42 @@ watch(
 
 <style scoped>
 .share-body {
-  min-height: 240px;
+  min-height: 280px;
+}
+
+.share-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #f3f4f6;
+}
+
+.share-tab {
+  position: relative;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: #606266;
+  cursor: pointer;
+}
+
+.share-tab.active {
+  background: #fff;
+  color: #303133;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.tab-count {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  font-size: 11px;
 }
 
 .share-album-name {
@@ -339,6 +623,7 @@ watch(
 .share-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 14px;
 }
@@ -384,7 +669,7 @@ watch(
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 8px;
-  max-height: 340px;
+  max-height: 300px;
   overflow: auto;
   padding: 4px;
   border: 1px solid #ebeef5;
@@ -479,5 +764,81 @@ watch(
 .result-qr canvas {
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.share-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.share-manage-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.manage-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.manage-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.manage-scope {
+  font-size: 12px;
+  color: #606266;
+}
+
+.manage-meta {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 6px;
+}
+
+.manage-url {
+  font-size: 12px;
+  color: #409eff;
+  word-break: break-all;
+}
+
+.manage-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.manage-preview {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+@media (max-width: 720px) {
+  .share-manage-card {
+    flex-direction: column;
+  }
+
+  .manage-actions {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 }
 </style>

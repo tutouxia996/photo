@@ -7,7 +7,8 @@
           <h1 class="share-title">{{ album.albumName || '相册' }}</h1>
           <p v-if="album.albumDesc" class="share-desc">{{ album.albumDesc }}</p>
           <p class="share-meta">
-            <span>共 {{ total }} 项</span>
+            <span>共 {{ total || photos.length }} 项</span>
+            <span v-if="photos.length && total && photos.length < total">· 已加载 {{ photos.length }}</span>
             <span v-if="album.locationSummary">· {{ album.locationSummary }}</span>
             <span v-if="trackName && shareTrack">· 轨迹 {{ trackName }}</span>
           </p>
@@ -41,6 +42,7 @@
           >
             <img :src="thumbSrc(item)" :alt="item.fileName || ''" loading="lazy" />
             <span v-if="item.fileType === 2" class="video-badge">▶</span>
+            <span v-else-if="isPanoPhoto(item)" class="pano-badge" title="360 全景">360</span>
           </button>
         </div>
         <div v-if="!photos.length && !loading" class="share-empty">
@@ -131,34 +133,93 @@
       </div>
     </template>
 
-    <el-dialog
-      v-model="viewerOpen"
-      fullscreen
-      append-to-body
-      destroy-on-close
-      class="share-viewer-dialog"
-      :show-close="true"
-    >
-      <div class="viewer-body" v-if="currentMedia">
-        <video
-          v-if="currentMedia.fileType === 2"
-          :src="mediaSrc(currentMedia)"
-          controls
-          autoplay
-          class="viewer-media"
-        />
-        <img v-else :src="mediaSrc(currentMedia)" class="viewer-media" alt="" />
-        <div class="viewer-nav">
-          <el-button circle :disabled="viewerIndex <= 0" @click="viewerIndex--">
-            <el-icon><ArrowLeft /></el-icon>
-          </el-button>
-          <span>{{ viewerIndex + 1 }} / {{ photos.length }}</span>
-          <el-button circle :disabled="viewerIndex >= photos.length - 1" @click="viewerIndex++">
-            <el-icon><ArrowRight /></el-icon>
-          </el-button>
+    <!-- 与相册详情一致的白底全屏预览 -->
+    <teleport to="body">
+      <div v-if="viewerOpen && currentMedia" class="media-viewer" @keydown.stop>
+        <div class="media-stage">
+          <button
+            v-if="viewerIndex > 0"
+            type="button"
+            class="media-nav prev"
+            title="上一张"
+            @click.stop="shiftMedia(-1)"
+          >
+            <el-icon :size="22"><ArrowLeft /></el-icon>
+          </button>
+          <button
+            v-if="viewerIndex < photos.length - 1 || hasMore"
+            type="button"
+            class="media-nav next"
+            title="下一张"
+            @click.stop="shiftMedia(1)"
+          >
+            <el-icon :size="22"><ArrowRight /></el-icon>
+          </button>
+
+          <div
+            v-if="isPanoViewing"
+            class="media-pano-wrap"
+            @click.stop
+          >
+            <PhotoSphereViewer :src="originalSrc(currentMedia)" :key="currentMedia.photoId" />
+          </div>
+          <div
+            v-else-if="currentMedia.fileType !== 2"
+            class="media-canvas"
+          >
+            <div class="media-image-layer">
+              <img
+                class="media-image"
+                :src="originalSrc(currentMedia)"
+                :alt="currentMedia.fileName || ''"
+                draggable="false"
+                decoding="async"
+              />
+            </div>
+          </div>
+          <div v-else class="media-video-wrap">
+            <video
+              :key="'v-' + currentMedia.photoId"
+              class="media-video"
+              :src="originalSrc(currentMedia)"
+              controls
+              autoplay
+              playsinline
+            />
+          </div>
+
+          <div class="media-index">
+            {{ viewerIndex + 1 }} / {{ total || photos.length }}
+          </div>
         </div>
       </div>
-    </el-dialog>
+    </teleport>
+
+    <teleport to="body">
+      <template v-if="viewerOpen && currentMedia">
+        <button
+          type="button"
+          class="media-close"
+          :class="{ 'on-dark': isPanoViewing }"
+          title="返回"
+          @click="closeViewer"
+        >
+          <el-icon :size="22"><ArrowLeft /></el-icon>
+        </button>
+        <div class="media-actions" :class="{ 'on-dark': isPanoViewing }">
+          <span v-if="isPanoViewing" class="media-pano-label">360 全景</span>
+          <button
+            v-if="isPanoViewing"
+            type="button"
+            class="media-action-btn media-close-x"
+            title="关闭"
+            @click="closeViewer"
+          >
+            <el-icon :size="20"><Close /></el-icon>
+          </button>
+        </div>
+      </template>
+    </teleport>
   </div>
 </template>
 
@@ -167,6 +228,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { isExternal } from '@/utils/validate'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
+import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
 import {
   TRAVEL_MODES,
   travelModeIconSvg
@@ -189,7 +251,7 @@ const shareTrack = ref(false)
 const photos = ref([])
 const total = ref(0)
 const pageNum = ref(1)
-const pageSize = 60
+const pageSize = 200
 const hasMore = ref(true)
 const viewMode = ref('grid')
 const mapReady = ref(false)
@@ -207,6 +269,15 @@ const viewerIndex = ref(0)
 
 const token = computed(() => String(route.params.token || '').trim())
 const currentMedia = computed(() => photos.value[viewerIndex.value] || null)
+const isPanoViewing = computed(() => isPanoPhoto(currentMedia.value))
+
+/** 与相册详情一致：库字段优先，文件名 PHOTOSPHERE / .PANO. 兜底 */
+function isPanoPhoto(item) {
+  if (!item || item.fileType === 2) return false
+  if (item.isPano === 1 || item.isPano === true) return true
+  const name = item.fileName || ''
+  return /PHOTOSPHERE|\.PANO\./i.test(name)
+}
 
 const hasTrackData = computed(() =>
   trackPoints.value.length > 1 || trackGpxOverlays.value.some(o => {
@@ -310,14 +381,49 @@ function thumbSrc(item) {
   return ''
 }
 
-function mediaSrc(item) {
+/** 列表缩略图用；预览必须走原图/原视频 */
+function originalSrc(item) {
   if (!item?.photoId) return ''
-  return resolveUrl('/album/photo/media/' + item.photoId)
+  return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
 }
 
 function openViewer(index) {
   viewerIndex.value = index
   viewerOpen.value = true
+  ensureAllPhotosLoaded()
+}
+
+function closeViewer() {
+  viewerOpen.value = false
+}
+
+async function shiftMedia(delta) {
+  const next = viewerIndex.value + delta
+  if (next < 0) return
+  if (next < photos.value.length) {
+    viewerIndex.value = next
+    return
+  }
+  if (delta > 0 && hasMore.value) {
+    await loadPhotos(false)
+    if (viewerIndex.value < photos.value.length - 1) {
+      viewerIndex.value += 1
+    }
+  }
+}
+
+function onViewerKeydown(e) {
+  if (!viewerOpen.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeViewer()
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault()
+    shiftMedia(-1)
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault()
+    shiftMedia(1)
+  }
 }
 
 async function loadMeta() {
@@ -334,10 +440,9 @@ async function loadPhotos(reset = false) {
     photos.value = []
     hasMore.value = true
   }
-  if (!hasMore.value) return
-  const isFirst = pageNum.value === 1
-  if (isFirst) loadingMore.value = false
-  else loadingMore.value = true
+  if (!hasMore.value || loadingMore.value) return
+  const isFirst = pageNum.value === 1 && photos.value.length === 0
+  loadingMore.value = true
   try {
     const res = await listSharePhotos(token.value, {
       pageNum: pageNum.value,
@@ -346,12 +451,35 @@ async function loadPhotos(reset = false) {
     const rows = res.rows || []
     total.value = Number(res.total) || 0
     photos.value = isFirst ? rows : photos.value.concat(rows)
-    hasMore.value = photos.value.length < total.value
+    hasMore.value = photos.value.length < total.value && rows.length > 0
     if (rows.length) pageNum.value += 1
     else hasMore.value = false
   } finally {
     loadingMore.value = false
   }
+}
+
+/** 自动把剩余页全部拉完，避免只看到第一页 */
+let allLoadPromise = null
+async function ensureAllPhotosLoaded() {
+  if (!hasMore.value) return
+  if (allLoadPromise) return allLoadPromise
+  allLoadPromise = (async () => {
+    let guard = 0
+    while (hasMore.value && guard < 50) {
+      guard += 1
+      await loadPhotos(false)
+    }
+  })().finally(() => {
+    allLoadPromise = null
+  })
+  return allLoadPromise
+}
+
+/** 首次进入：先拉第一页，再把剩余页全部加载完 */
+async function loadAllPhotos() {
+  await loadPhotos(true)
+  await ensureAllPhotosLoaded()
 }
 
 function loadMore() {
@@ -362,7 +490,7 @@ function loadMore() {
 function onWindowScroll() {
   if (viewMode.value !== 'grid' || !hasMore.value || loading.value || loadingMore.value) return
   const remain = document.documentElement.scrollHeight - window.scrollY - window.innerHeight
-  if (remain < 240) loadMore()
+  if (remain < 480) loadMore()
 }
 
 async function loadMapData() {
@@ -419,6 +547,7 @@ async function toggleMap() {
 
 onMounted(async () => {
   window.addEventListener('scroll', onWindowScroll, { passive: true })
+  window.addEventListener('keydown', onViewerKeydown)
   if (!token.value) {
     errorMsg.value = '无效的分享链接'
     loading.value = false
@@ -427,7 +556,7 @@ onMounted(async () => {
   loading.value = true
   try {
     await loadMeta()
-    await loadPhotos(true)
+    await loadAllPhotos()
   } catch (e) {
     errorMsg.value = e?.message || '分享不存在或已失效'
   } finally {
@@ -437,6 +566,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('scroll', onWindowScroll)
+  window.removeEventListener('keydown', onViewerKeydown)
 })
 
 watch(
@@ -453,7 +583,7 @@ watch(
     loading.value = true
     try {
       await loadMeta()
-      await loadPhotos(true)
+      await loadAllPhotos()
     } catch (e) {
       errorMsg.value = e?.message || '分享不存在或已失效'
     } finally {
@@ -587,7 +717,8 @@ watch(
   display: block;
 }
 
-.video-badge {
+.video-badge,
+.pano-badge {
   position: absolute;
   left: 8px;
   bottom: 8px;
@@ -596,6 +727,12 @@ watch(
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-size: 11px;
+  line-height: 1.2;
+}
+
+.pano-badge {
+  background: rgba(37, 99, 235, 0.85);
+  letter-spacing: 0.02em;
 }
 
 .share-empty,
@@ -734,27 +871,186 @@ watch(
   cursor: pointer;
 }
 
-.viewer-body {
+/* —— 预览层：对齐相册详情 media-viewer —— */
+.media-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: #fff;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: calc(100vh - 80px);
-  gap: 16px;
-  background: #0f172a;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.viewer-media {
-  max-width: min(96vw, 1400px);
-  max-height: calc(100vh - 140px);
-  object-fit: contain;
+.media-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 
-.viewer-nav {
+.media-close,
+.media-nav {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06);
+  color: #333;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  transition: background 0.15s ease;
+}
+
+.media-close:hover,
+.media-nav:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.media-close {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 3200;
+}
+
+.media-close.on-dark {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.media-close.on-dark:hover {
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.media-nav.prev {
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.media-nav.next {
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.media-actions {
+  position: fixed;
+  top: 18px;
+  right: 24px;
+  z-index: 3200;
   display: flex;
   align-items: center;
-  gap: 16px;
-  color: #e2e8f0;
+  gap: 6px;
+}
+
+.media-pano-label {
+  margin-right: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+}
+
+.media-action-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #3a3a3a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.media-actions.on-dark .media-action-btn {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.media-actions.on-dark .media-action-btn:hover {
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.media-canvas {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.media-pano-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  background: #111;
+}
+
+.media-image-layer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-image {
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 2px;
+  max-width: min(92vw, 1400px);
+  max-height: min(86vh, 900px);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.media-video-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.media-video {
+  max-width: min(92%, 1400px);
+  max-height: min(78%, 78vh);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 2px;
+  background: #000;
+}
+
+.media-index {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
 }
 
 @media (max-width: 768px) {
@@ -781,22 +1077,5 @@ watch(
     flex-direction: column;
     align-items: stretch;
   }
-}
-</style>
-
-<style>
-.share-viewer-dialog .el-dialog__header {
-  margin: 0;
-  padding: 8px 16px;
-  background: #0f172a;
-}
-
-.share-viewer-dialog .el-dialog__body {
-  padding: 0;
-  background: #0f172a;
-}
-
-.share-viewer-dialog .el-dialog__headerbtn .el-dialog__close {
-  color: #e2e8f0;
 }
 </style>
