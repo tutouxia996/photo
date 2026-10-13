@@ -71,6 +71,7 @@
               <el-icon :size="16"><MoreFilled /></el-icon>
             </button>
             <div v-if="menuAlbumId === item.albumId" class="album-more-menu">
+              <button type="button" class="album-more-item" @click="openShare(item)">分享此相册</button>
               <button type="button" class="album-more-item" @click="openEdit(item)">编辑</button>
               <div class="album-more-divider"></div>
               <button type="button" class="album-more-item danger" @click="handleDelete(item)">放入回收站</button>
@@ -189,6 +190,12 @@
         <el-button type="primary" :loading="editing" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <ShareAlbumDialog
+      v-model="shareOpen"
+      :album-id="shareAlbumId"
+      :album-name="shareAlbumName"
+    />
   </div>
 </template>
 
@@ -196,6 +203,7 @@
 import { ClickOutside as vClickOutside } from 'element-plus'
 import { isExternal } from '@/utils/validate'
 import { listAlbum, addAlbum, importAlbumFromDisk, updateAlbum, delAlbum } from '@/api/photos/album'
+import ShareAlbumDialog from '@/components/ShareAlbumDialog/index.vue'
 import useDiskScanStore from '@/store/modules/diskScan'
 
 const { proxy } = getCurrentInstance()
@@ -212,6 +220,9 @@ const albumNameManual = ref(false)
 const preferImport = ref(false)
 const menuAlbumId = ref(null)
 const editOpen = ref(false)
+const shareOpen = ref(false)
+const shareAlbumId = ref(undefined)
+const shareAlbumName = ref('')
 const editing = ref(false)
 const scanningAlbumIds = ref([])
 const createFormRef = ref()
@@ -377,6 +388,13 @@ function closeAlbumMenu() {
 function toggleAlbumMenu(item, event) {
   event?.stopPropagation?.()
   menuAlbumId.value = menuAlbumId.value === item.albumId ? null : item.albumId
+}
+
+function openShare(item) {
+  menuAlbumId.value = null
+  shareAlbumId.value = item?.albumId
+  shareAlbumName.value = item?.albumName || ''
+  shareOpen.value = true
 }
 
 function openEdit(item) {

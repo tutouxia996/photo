@@ -282,6 +282,73 @@
   .leaflet-overlay-pane path.pmc-flow-line {
     animation: none;
   }
+
+  .pmc-traveler.is-walk .pmc-traveler-badge,
+  .pmc-traveler.is-bike .pmc-traveler-badge {
+    animation: none;
+  }
+}
+
+.leaflet-div-icon.pmc-traveler-marker {
+  background: transparent !important;
+  border: 0 !important;
+  overflow: visible !important;
+}
+
+.pmc-traveler {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(var(--heading, 0deg));
+  transform-origin: 50% 50%;
+  will-change: transform;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+.pmc-traveler.is-flip {
+  transform: rotate(var(--heading, 0deg)) scaleX(-1);
+}
+
+.pmc-traveler-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--mode-color, #2563eb);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+}
+
+.pmc-traveler-badge svg {
+  display: block;
+  fill: #fff;
+}
+
+.pmc-traveler.is-walk .pmc-traveler-badge {
+  animation: pmc-walk-bob 0.42s ease-in-out infinite;
+}
+
+.pmc-traveler.is-bike .pmc-traveler-badge {
+  animation: pmc-walk-bob 0.32s ease-in-out infinite;
+}
+
+.pmc-traveler.is-stay .pmc-traveler-badge {
+  animation: pmc-stay-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pmc-walk-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes pmc-stay-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
 }
 
 .pmc-dir-arrow-wrap {

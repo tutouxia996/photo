@@ -14,6 +14,7 @@ import com.sq.bus.service.route.AmapPlaceSearchService;
 import com.sq.bus.service.route.TrackCustomSegmentService;
 import com.sq.bus.service.route.TrackRoutePlanResult;
 import com.sq.bus.service.route.TrackRouteResolveService;
+import com.sq.bus.service.route.TrackSegmentPhotoMergeService;
 import com.sq.bus.service.route.TrainRoutePlanService;
 import com.sq.bus.service.route.TrainSegmentService;
 import com.sq.bus.service.route.TrainStop;
@@ -70,6 +71,9 @@ public class BizTrackController extends BaseController {
     private TrackCustomSegmentService trackCustomSegmentService;
 
     @Autowired
+    private TrackSegmentPhotoMergeService trackSegmentPhotoMergeService;
+
+    @Autowired
     private TrainRoutePlanService trainRoutePlanService;
 
     @Autowired
@@ -112,6 +116,16 @@ public class BizTrackController extends BaseController {
     @PostMapping("/{trackId}/custom-segment")
     public AjaxResult addCustomSegment(@PathVariable Long trackId, @RequestBody Map<String, Object> body) {
         return success(trackCustomSegmentService.addCustomSegment(trackId, body));
+    }
+
+    /**
+     * 将照片/视频合并进已有增补路段：只改轨迹顺序并拆分折线，不修改媒体 GPS。
+     */
+    @PreAuthorize("@ss.hasPermi('album:track:edit')")
+    @Log(title = "轨迹合并照片到路段", businessType = BusinessType.UPDATE)
+    @PostMapping("/{trackId}/merge-photos-to-segment")
+    public AjaxResult mergePhotosToSegment(@PathVariable Long trackId, @RequestBody Map<String, Object> body) {
+        return success(trackSegmentPhotoMergeService.mergePhotosToSegment(trackId, body));
     }
 
     /** 火车时刻表 API 是否可用（无 Key 仍可手工经停） */

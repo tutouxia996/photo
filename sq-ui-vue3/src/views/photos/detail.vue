@@ -35,6 +35,10 @@
         </div>
       </div>
       <div class="header-right">
+        <el-button v-if="canEditAlbum" round plain @click="openShareDialog">
+          <el-icon class="mr4"><Share /></el-icon>
+          分享
+        </el-button>
         <el-button round plain @click="downloadAlbumZip">
           <el-icon class="mr4"><Download /></el-icon>
           下载相册
@@ -788,6 +792,12 @@
         </template>
       </el-dialog>
     </teleport>
+
+    <ShareAlbumDialog
+      v-model="shareOpen"
+      :album-id="album.albumId || albumId"
+      :album-name="album.albumName || ''"
+    />
   </div>
 </template>
 
@@ -800,6 +810,7 @@ import { videoPlaySrc } from '@/utils/videoProxy'
 import usePhotoScoreStore from '@/store/modules/photoScore'
 import useAlbumDownloadStore from '@/store/modules/albumDownload'
 import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
+import ShareAlbumDialog from '@/components/ShareAlbumDialog/index.vue'
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
@@ -811,6 +822,7 @@ const mediaDownloading = computed(() => {
   return !!(albumDownloadStore.transferring || p.running || Number(p.status) === 0)
 })
 
+const shareOpen = ref(false)
 const loading = ref(false)
 const loadingMore = ref(false)
 const album = ref({})
@@ -1374,6 +1386,10 @@ function openPhotoMap() {
     path: '/photos/map',
     query: { albumId: albumId.value }
   })
+}
+
+function openShareDialog() {
+  shareOpen.value = true
 }
 
 function handleFilterType(cmd) {

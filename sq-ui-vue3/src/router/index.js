@@ -48,6 +48,12 @@ export const constantRoutes = [
     hidden: true
   },
   {
+    path: '/share/:token',
+    component: () => import('@/views/share/album'),
+    hidden: true,
+    meta: { title: '分享相册' }
+  },
+  {
     path: "/:pathMatch(.*)*",
     component: () => import('@/views/error/404'),
     hidden: true

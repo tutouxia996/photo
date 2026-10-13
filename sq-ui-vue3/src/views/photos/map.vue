@@ -8,31 +8,6 @@
         <h1 class="page-title">照片地图</h1>
         <span class="page-sub">{{ headerSub }}</span>
       </div>
-      <div class="header-toggles">
-        <div class="track-toggle" :title="trackToggleTitle">
-          <span class="track-toggle-label">显示轨迹</span>
-          <el-switch
-            v-model="showTrackLine"
-            inline-prompt
-            active-text="开"
-            inactive-text="关"
-            :disabled="!canToggleTrack"
-            :loading="trackLoading"
-            @change="onTrackToggleChange"
-          />
-        </div>
-        <div class="track-toggle" title="开启后仅显示轨迹线，隐藏照片与视频">
-          <span class="track-toggle-label">只显示轨迹</span>
-          <el-switch
-            v-model="tracksOnly"
-            inline-prompt
-            active-text="开"
-            inactive-text="关"
-            :disabled="!canToggleTrack || correctMode || aiPickMode"
-            @change="onTracksOnlyChange"
-          />
-        </div>
-      </div>
     </header>
     <div v-if="estimatedCount > 0 || correctMode" class="est-banner">
       <span class="dot" />
@@ -129,6 +104,33 @@
         @location-drag-end="onLocationDragEnd"
         @location-select="onLocationSelect"
       >
+        <template #toolbar-right>
+          <div class="header-toggles">
+            <div class="track-toggle" :title="trackToggleTitle">
+              <span class="track-toggle-label">显示轨迹</span>
+              <el-switch
+                v-model="showTrackLine"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                :disabled="!canToggleTrack"
+                :loading="trackLoading"
+                @change="onTrackToggleChange"
+              />
+            </div>
+            <div class="track-toggle" title="开启后仅显示轨迹线，隐藏照片与视频">
+              <span class="track-toggle-label">只显示轨迹</span>
+              <el-switch
+                v-model="tracksOnly"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                :disabled="!canToggleTrack || correctMode || aiPickMode"
+                @change="onTracksOnlyChange"
+              />
+            </div>
+          </div>
+        </template>
         <template #meta>
           <div class="map-meta">
             <span class="name">{{ metaTitle }}</span>

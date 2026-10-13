@@ -66,6 +66,43 @@ export function travelModeColor(mode, fallback = '#3B82F6') {
   return getTravelMode(mode)?.color || fallback
 }
 
+const ICON_SVG = {
+  walk: '<path d="M14.2 4.6a1.7 1.7 0 1 1-3.4 0 1.7 1.7 0 0 1 3.4 0Zm-2.6 2.4 2.1 2.6 2.4.5v1.8l-3.1-.7-1.3 1.9 3.4 3.7-1.6 1.5-3-3.4-2.3 3.4-1.7-1.2 3-4.4-.8-2.3-2 .9-.9-1.6 3.8-2.7Z"/>',
+  bike: '<path d="M6.2 13.6a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6Zm11.6 0a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6ZM8.4 15.6h3.2l1.6-3.2 2.3 2.1h2.2l-3.3-3.1 1-2h2.3V7.6h-3.4l-1.5 3.1H9.6L8.2 8.2H5.8l2 4.2H6.8v1.8h3.3l-.7 1.4H8.4v1.8Z"/>',
+  drive: '<path d="M5.4 10.2 6.8 7.4A1.8 1.8 0 0 1 8.4 6.4h7.2c.6 0 1.2.4 1.5 1l1.5 2.8H20v6.4h-1.6a2.2 2.2 0 0 1-4.4 0H10a2.2 2.2 0 0 1-4.4 0H4v-6.4h1.4Zm2.4 6.8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8.4 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2ZM7.2 10.4h9.6l-.9-1.8H8.1l-.9 1.8Z"/>',
+  bus: '<path d="M6 5.4h12c1 0 1.8.8 1.8 1.8v9.2h-1.4a2 2 0 0 1-4 0H9.6a2 2 0 0 1-4 0H4.2V7.2C4.2 6.2 5 5.4 6 5.4Zm1.2 12.2a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6Zm9.6 0a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6ZM6.2 7.4v4.6h11.6V7.4H6.2Zm1.4 1.2h3.2v2.2H7.6V8.6Zm5.6 0h3.2v2.2h-3.2V8.6Z"/>',
+  metro: '<path d="M7.2 4.6h9.6c1.3 0 2.4 1.1 2.4 2.4v8.2c0 1.3-1 2.4-2.3 2.4l1.3 1.6v.8H15l-1.2-1.6H10.2L9 20v-.8l1.3-1.6c-1.3 0-2.3-1.1-2.3-2.4V7c0-1.3 1.1-2.4 2.4-2.4Zm0 2.4v4.4h9.6V7H7.2Zm1.8 6.6a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm6 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/>',
+  train: '<path d="M6.6 5h10.8c1.2 0 2.2 1 2.2 2.2v8.4c0 1.2-1 2.2-2.2 2.2l1.2 1.6v.8h-2.2L15 18H9l-1.4 1.8H5.4v-.8L6.6 17.8A2.2 2.2 0 0 1 4.4 15.6V7.2C4.4 6 5.4 5 6.6 5Zm.2 2.4v4.2h10.4V7.4H6.8Zm1.8 6.4a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm6.8 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/>',
+  hsr: '<path d="M5.2 10.2c.6-3 3.4-4.8 7.6-4.8 3.2 0 5.6 1 7.2 2.4l1.2 3.8H19v5.2h-1.6a2 2 0 0 1-4 0h-3.6a2 2 0 0 1-4 0H4.4v-3.2c0-1.4.3-2.6.8-3.4Zm2.4 7.2a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Zm8.4 0a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8ZM7 11.4h10.6l-.6-1.8c-1-.8-2.6-1.4-4.8-1.4-2.6 0-4.2.8-4.8 2.4L7 11.4Z"/>',
+  flight: '<path d="M12 3.6 13.6 9H21v1.8l-6.2 2.1L12 20.4h-1.6l-1.2-5.6L4.2 13.2v-1.8H11L12 3.6Z"/>',
+  stay: '<path d="M12 6.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6Zm-2.4 2.2h4.8c.7 0 1.2.5 1.2 1.2v4.4h-1.6V20H8.8v-6h-1.6V9.6c0-.7.5-1.2 1.2-1.2Z"/>',
+  other: '<path d="M12 4.2a7.8 7.8 0 1 1 0 15.6 7.8 7.8 0 0 1 0-15.6Zm0 2.2a5.6 5.6 0 1 0 0 11.2 5.6 5.6 0 0 0 0-11.2Zm.1 7.8c.6 0 1 .4 1 1v.2c0 .6-.4 1-1 1h-.2c-.6 0-1-.4-1-1v-.2c0-.6.4-1 1-1Zm0-6c.8 0 1.5.7 1.5 1.6 0 .6-.3 1-.8 1.5l-.6.5c-.2.2-.3.4-.3.7v.2h-1.6v-.4c0-.7.3-1.2.8-1.7l.6-.5c.2-.2.3-.4.3-.6 0-.3-.2-.5-.5-.5s-.6.2-.6.6H8.7c0-1.2 1-2.1 2.4-2.1Z"/>'
+}
+
+export function travelModeIconSvg(mode, size = 16) {
+  const key = String(mode || '').toLowerCase()
+  const path = ICON_SVG[key] || ICON_SVG.other
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="#fff">${path}</svg>`
+}
+
+/** 沿线人物/载具动画：是否随航向旋转、画面速度（米/秒，仅展示） */
+export function travelModeMotion(mode) {
+  const key = String(mode || '').toLowerCase()
+  const table = {
+    walk: { rotate: 'flip', mps: 22, headingOffset: 0 },
+    bike: { rotate: 'flip', mps: 40, headingOffset: 0 },
+    drive: { rotate: 'heading', mps: 65, headingOffset: -90 },
+    bus: { rotate: 'heading', mps: 48, headingOffset: -90 },
+    metro: { rotate: 'heading', mps: 55, headingOffset: -90 },
+    train: { rotate: 'heading', mps: 75, headingOffset: -90 },
+    hsr: { rotate: 'heading', mps: 100, headingOffset: -90 },
+    flight: { rotate: 'heading', mps: 160, headingOffset: 0 },
+    stay: { rotate: 'none', mps: 0, headingOffset: 0 },
+    other: { rotate: 'flip', mps: 50, headingOffset: 0 }
+  }
+  return table[key] || table.other
+}
+
 /** 火车/高铁/地铁：绘制前清洗折线几何 */
 export function isRailTravelMode(mode) {
   const m = String(mode || '').toLowerCase()

@@ -86,6 +86,17 @@ export function addCustomSegment(trackId, data) {
   })
 }
 
+/** 将照片/视频合并进增补路段（只改轨迹顺序/折线，不改媒体 GPS） */
+export function mergePhotosToSegment(trackId, data) {
+  return request({
+    url: '/album/track/' + trackId + '/merge-photos-to-segment',
+    method: 'post',
+    data,
+    timeout: 60000,
+    showActionLoading: false
+  })
+}
+
 /** 火车时刻表 API 状态（无 Key 仍可手工经停） */
 export function getTrainApiStatus() {
   return request({ url: '/album/track/train/status', method: 'get' })

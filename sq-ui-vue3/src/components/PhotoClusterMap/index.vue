@@ -3,20 +3,36 @@
     <div class="map-toolbar-left">
       <slot name="meta" />
     </div>
-    <div class="map-style-switch">
-      <button
-        v-for="item in mapStyles"
-        :key="item.key"
-        type="button"
-        class="style-btn"
-        :class="{ active: currentStyle === item.key }"
-        @click="switchMapStyle(item.key)"
-      >
-        {{ item.label }}
-      </button>
+    <div class="map-toolbar-right">
+      <slot name="toolbar-right" />
+      <div class="map-style-switch">
+        <button
+          v-for="item in mapStyles"
+          :key="item.key"
+          type="button"
+          class="style-btn"
+          :class="{ active: currentStyle === item.key }"
+          @click="switchMapStyle(item.key)"
+        >
+          {{ item.label }}
+        </button>
+      </div>
     </div>
     <div ref="mapEl" class="map-canvas" />
     <div v-if="!hasPoints" class="map-empty">{{ emptyText }}</div>
+    <div v-if="$slots.modeLegend || modeLegendItems.length" class="pmc-mode-legend">
+      <slot name="modeLegend">
+        <div class="pmc-mode-legend-title">出行方式</div>
+        <div
+          v-for="m in modeLegendItems"
+          :key="m.key"
+          class="pmc-mode-legend-item"
+        >
+          <span class="pmc-mode-legend-icon" :style="{ background: m.color }" v-html="travelModeIconSvg(m.key, 14)" />
+          <span>{{ m.label }}</span>
+        </div>
+      </slot>
+    </div>
   </div>
 </template>
 
@@ -37,8 +53,11 @@ import {
   isWaypointPoint,
   segmentLatLngs,
   toMapLatLng,
+  TRAVEL_MODES,
   travelModeColor,
-  travelModeLabel
+  travelModeIconSvg,
+  travelModeLabel,
+  travelModeMotion
 } from '@/utils/photoMapCluster'
 
 const props = defineProps({
@@ -101,7 +120,11 @@ const props = defineProps({
   /**
    * 是否显示照片/视频标记；关闭后仅保留轨迹线、GPX 与途经点
    */
-  showMediaMarkers: { type: Boolean, default: true }
+  showMediaMarkers: { type: Boolean, default: true },
+  /** 右下角出行方式图例（父级已有图例时可关） */
+  showModeLegend: { type: Boolean, default: true },
+  /** 按出行方式沿线播放人物/载具动画 */
+  showTravelers: { type: Boolean, default: true }
 })
 
 const emit = defineEmits([
@@ -150,6 +173,10 @@ let boxSelectRect = null
 let boxSelectStart = null
 let boxSelectDragging = false
 let boxSelectHandlersBound = false
+/** @type {{ marker: any, metrics: any, timed: any[], duration: number, mode: string } | null} */
+let travelerActor = null
+let travelerRaf = 0
+let travelerStartedAt = 0
 
 const selectedSegmentSet = computed(() => {
   const arr = Array.isArray(props.selectedSegmentIndexes) ? props.selectedSegmentIndexes : []
@@ -221,6 +248,38 @@ function isSegmentModeVisible(travelMode) {
   const key = String(travelMode || '').toLowerCase()
   return key ? set.has(key) : false
 }
+
+function collectUsedTravelModes() {
+  const keys = new Set()
+  if (props.showPolyline) {
+    const list = polylineSource.value
+    for (let i = 0; i < list.length - 1; i++) {
+      const mode = String(list[i]?.travelMode || '').toLowerCase()
+      if (mode) keys.add(mode)
+    }
+  }
+  overlayList.value.forEach((o) => {
+    if (!o || o.showPath === false) return
+    const hasPath = (Array.isArray(o.path) && o.path.length >= 2) || Number(o.pathPointCount) >= 2
+    if (!hasPath) return
+    const segs = Array.isArray(o.segments) ? o.segments : []
+    if (segs.length) {
+      segs.forEach((s) => {
+        const mode = String(s?.travelMode || '').toLowerCase()
+        if (mode) keys.add(mode)
+      })
+    } else if (o.travelMode) {
+      keys.add(String(o.travelMode).toLowerCase())
+    }
+  })
+  return TRAVEL_MODES.filter(m => keys.has(m.key))
+}
+
+const modeLegendItems = computed(() => {
+  if (!props.showModeLegend) return []
+  if (!props.showPolyline && !hasGpxPathOverlay.value) return []
+  return collectUsedTravelModes()
+})
 
 function isGpxItemVisible(item) {
   const set = modeFilterSet.value
@@ -321,6 +380,8 @@ function setMarkerPaneVisible(visible) {
   if (shadow) shadow.style.visibility = visible ? '' : 'hidden'
   const estimatedPane = map?.getPane?.('estimatedPane')
   if (estimatedPane) estimatedPane.style.visibility = visible ? '' : 'hidden'
+  const travelerPane = map?.getPane?.('travelerPane')
+  if (travelerPane) travelerPane.style.visibility = visible ? '' : 'hidden'
 }
 
 function onZoomStart() {
@@ -339,6 +400,7 @@ function clearPathEditMarkers() {
 }
 
 function clearOverlays() {
+  stopTravelers()
   clearPathEditMarkers()
   segmentRefs = []
   if (lineLayer) lineLayer.clearLayers()
@@ -545,6 +607,373 @@ function drawDirectionDecorations(fullPath, list) {
   } else if (fullPath && fullPath.length >= 2) {
     drawFlowOverlay(fullPath, props.polylineColor || '#3B82F6')
   }
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined'
+    && !!window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function shouldAnimateTravelers() {
+  if (!props.showTravelers) return false
+  if (!props.showPolyline && !hasGpxPathOverlay.value) return false
+  if (props.editable || props.boxSelectActive || props.pathEditIndex >= 0) return false
+  if (props.locationCorrectable) return false
+  if (prefersReducedMotion()) return false
+  return true
+}
+
+function pathMetrics(latlngs) {
+  if (!latlngs || latlngs.length < 2) return null
+  const pts = []
+  for (const p of latlngs) {
+    const lat = Number(Array.isArray(p) ? p[0] : p.lat)
+    const lng = Number(Array.isArray(p) ? p[1] : p.lng)
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue
+    pts.push(L.latLng(lat, lng))
+  }
+  if (pts.length < 2) return null
+  const segs = []
+  let total = 0
+  for (let i = 0; i < pts.length - 1; i++) {
+    const len = pts[i].distanceTo(pts[i + 1])
+    segs.push({ from: pts[i], to: pts[i + 1], start: total, len })
+    total += len
+  }
+  if (total <= 0) return null
+  return { segs, total }
+}
+
+function headingDeg(from, to) {
+  const φ1 = from.lat * Math.PI / 180
+  const φ2 = to.lat * Math.PI / 180
+  const Δλ = (to.lng - from.lng) * Math.PI / 180
+  const y = Math.sin(Δλ) * Math.cos(φ2)
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+  return Math.atan2(y, x) * 180 / Math.PI
+}
+
+function pointAlongPath(metrics, dist) {
+  const segs = metrics.segs
+  let d = dist
+  if (d <= 0) {
+    return { latlng: segs[0].from, heading: headingDeg(segs[0].from, segs[0].to) }
+  }
+  if (d >= metrics.total) {
+    const last = segs[segs.length - 1]
+    return { latlng: last.to, heading: headingDeg(last.from, last.to) }
+  }
+  for (const seg of segs) {
+    if (d <= seg.start + seg.len) {
+      const t = seg.len <= 0 ? 0 : (d - seg.start) / seg.len
+      return {
+        latlng: L.latLng(
+          seg.from.lat + (seg.to.lat - seg.from.lat) * t,
+          seg.from.lng + (seg.to.lng - seg.from.lng) * t
+        ),
+        heading: headingDeg(seg.from, seg.to)
+      }
+    }
+  }
+  const last = segs[segs.length - 1]
+  return { latlng: last.to, heading: headingDeg(last.from, last.to) }
+}
+
+function pushLeg(legs, mode, latlngs) {
+  const key = String(mode || 'other').toLowerCase() || 'other'
+  const last = legs.length ? legs[legs.length - 1] : null
+  if (last && last.mode === key) {
+    last.latlngs.push(...latlngs.slice(1))
+    return
+  }
+  legs.push({ mode: key, latlngs: latlngs.slice() })
+}
+
+function collectPhotoJourneyLegs(list, matchedIds) {
+  const legs = []
+  const matched = matchedIds instanceof Set ? matchedIds : null
+  for (let i = 0; i < list.length - 1; i++) {
+    const from = list[i]
+    const to = list[i + 1]
+    const fromMatched = matched && from?.photoId != null && matched.has(String(from.photoId))
+    const toMatched = matched && to?.photoId != null && matched.has(String(to.photoId))
+    if (fromMatched || toMatched) continue
+    if (!isSegmentModeVisible(from.travelMode)) continue
+    const latlngs = resolveSegmentLatLngs(from, to)
+    if (!latlngs || latlngs.length < 2) continue
+    pushLeg(legs, from.travelMode || 'other', latlngs)
+  }
+  return legs
+}
+
+function gpxItemJourneyLegs(item) {
+  const legs = []
+  if (!item || item.showPath === false || !isGpxItemVisible(item)) return legs
+  const segments = gpxDrawSegments(item)
+  segments.forEach((seg) => {
+    if (!isSegmentModeVisible(seg.travelMode)) return
+    let latlngs = normalizeOverlayLatLngs(seg.path)
+    if (latlngs.length < 2) return
+    if (isRailTravelMode(seg.travelMode)) {
+      latlngs = cleanRailDisplayPath(latlngs, { minMeters: 35 })
+    }
+    if (!latlngs || latlngs.length < 2) return
+    pushLeg(legs, seg.travelMode || item.travelMode || 'other', latlngs)
+  })
+  return legs
+}
+
+function journeyTipLatLng(legs) {
+  if (!legs.length) return null
+  const last = legs[legs.length - 1]
+  const path = last?.latlngs
+  if (!path || path.length < 1) return null
+  const p = path[path.length - 1]
+  return L.latLng(Number(p[0]), Number(p[1]))
+}
+
+function pathEndpoints(latlngs) {
+  if (!latlngs || latlngs.length < 2) return null
+  return {
+    start: L.latLng(Number(latlngs[0][0]), Number(latlngs[0][1])),
+    end: L.latLng(Number(latlngs[latlngs.length - 1][0]), Number(latlngs[latlngs.length - 1][1]))
+  }
+}
+
+function collectGpxJourneyLegs(afterLegs = []) {
+  const pending = []
+  overlayList.value.forEach((item) => {
+    const legs = gpxItemJourneyLegs(item)
+    if (!legs.length) return
+    const flat = []
+    legs.forEach((leg) => {
+      if (!flat.length) flat.push(...leg.latlngs)
+      else flat.push(...leg.latlngs.slice(1))
+    })
+    if (flat.length < 2) return
+    pending.push({ item, legs, flat })
+  })
+  if (!pending.length) return []
+
+  const out = []
+  let tip = journeyTipLatLng(afterLegs)
+  // 按与当前末端的距离贪心拼接，避免只走第一条 GPX 就折返
+  while (pending.length) {
+    let bestIdx = 0
+    let bestDist = Infinity
+    let bestReverse = false
+    for (let i = 0; i < pending.length; i++) {
+      const ends = pathEndpoints(pending[i].flat)
+      if (!ends) continue
+      if (!tip) {
+        bestIdx = i
+        bestDist = 0
+        bestReverse = false
+        break
+      }
+      const dStart = tip.distanceTo(ends.start)
+      const dEnd = tip.distanceTo(ends.end)
+      const d = Math.min(dStart, dEnd)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+        bestReverse = dEnd + 25 < dStart
+      }
+    }
+    const picked = pending.splice(bestIdx, 1)[0]
+    const legs = bestReverse
+      ? picked.legs.slice().reverse().map((leg) => ({
+          mode: leg.mode,
+          latlngs: leg.latlngs.slice().reverse()
+        }))
+      : picked.legs
+    // 桥接小缝隙（途经点「GPX起」与绿色「起」差几米）
+    if (tip && legs.length) {
+      const first = legs[0].latlngs[0]
+      const gap = tip.distanceTo(L.latLng(Number(first[0]), Number(first[1])))
+      if (gap > 2 && gap < 800) {
+        out.push({
+          mode: legs[0].mode || 'walk',
+          latlngs: [
+            [tip.lat, tip.lng],
+            [Number(first[0]), Number(first[1])]
+          ]
+        })
+      }
+    }
+    legs.forEach((leg) => {
+      pushLeg(out, leg.mode, leg.latlngs)
+    })
+    tip = journeyTipLatLng(out)
+  }
+  return out
+}
+
+function collectJourneyLegs(list, matchedIds) {
+  const legs = []
+  if (props.showPolyline && list && list.length > 1) {
+    legs.push(...collectPhotoJourneyLegs(list, matchedIds))
+  }
+  if (hasGpxPathOverlay.value) {
+    legs.push(...collectGpxJourneyLegs(legs))
+  }
+  return legs
+}
+
+function appendJourneyLatLngs(dest, src) {
+  if (!src || src.length < 2) return 0
+  if (!dest.length) {
+    dest.push(...src)
+    return pathMetrics(src)?.total || 0
+  }
+  const last = dest[dest.length - 1]
+  const first = src[0]
+  const same = last && first
+    && Math.abs(Number(last[0]) - Number(first[0])) < 1e-7
+    && Math.abs(Number(last[1]) - Number(first[1])) < 1e-7
+  // 未重合时插入桥接点，保证动画连续走过缝隙而不是瞬移后折返
+  if (!same) {
+    dest.push([Number(first[0]), Number(first[1])])
+  }
+  const added = src.slice(1)
+  const chunk = [last, ...src]
+  dest.push(...added)
+  return pathMetrics(chunk)?.total || 0
+}
+
+function buildJourney(legs) {
+  if (!legs.length) return null
+  const latlngs = []
+  const spans = []
+  let dist = 0
+  for (const leg of legs) {
+    const len = appendJourneyLatLngs(latlngs, leg.latlngs)
+    if (len <= 0 && !spans.length) continue
+    spans.push({ start: dist, end: dist + len, mode: leg.mode })
+    dist += len
+  }
+  const metrics = pathMetrics(latlngs)
+  if (!metrics || !spans.length || metrics.total < 40) return null
+  return { metrics, spans }
+}
+
+function planTimeline(spans) {
+  let t = 0
+  const timed = spans.map((s) => {
+    const len = Math.max(0, s.end - s.start)
+    const motion = travelModeMotion(s.mode)
+    let dt
+    if (s.mode === 'stay') {
+      dt = Math.max(1200, Math.min(2800, len > 0 ? (len / 8) * 1000 : 1800))
+    } else {
+      dt = (len / (motion.mps || 50)) * 1000
+    }
+    dt = Math.max(dt, 80)
+    const item = { ...s, t0: t, t1: t + dt }
+    t += dt
+    return item
+  })
+  const raw = t || 12000
+  // 照片轨 + GPX 接起来会很长，放宽上限避免被压得过快、看起来像折返
+  const duration = Math.min(120000, Math.max(12000, raw))
+  const scale = duration / raw
+  timed.forEach((s) => {
+    s.t0 *= scale
+    s.t1 *= scale
+  })
+  return { timed, duration }
+}
+
+function journeyStateAt(timed, duration, elapsed) {
+  const t = elapsed % duration
+  for (const s of timed) {
+    if (t <= s.t1) {
+      const span = s.t1 - s.t0
+      const u = span <= 0 ? 1 : Math.min(1, Math.max(0, (t - s.t0) / span))
+      return { dist: s.start + (s.end - s.start) * u, mode: s.mode }
+    }
+  }
+  const last = timed[timed.length - 1]
+  return { dist: last.end, mode: last.mode }
+}
+
+function travelerIcon(mode) {
+  const color = travelModeColor(mode)
+  return L.divIcon({
+    className: 'pmc-traveler-marker',
+    html: `<div class="pmc-traveler is-${mode}" style="--mode-color:${color}">`
+      + `<div class="pmc-traveler-badge">${travelModeIconSvg(mode, 16)}</div></div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14]
+  })
+}
+
+function applyTravelerHeading(el, motion, heading) {
+  if (!el) return
+  const rotate = motion?.rotate || 'none'
+  const offset = Number(motion?.headingOffset) || 0
+  if (rotate === 'heading') {
+    el.style.setProperty('--heading', `${heading + offset}deg`)
+    el.classList.remove('is-flip')
+    return
+  }
+  if (rotate === 'flip') {
+    el.style.setProperty('--heading', '0deg')
+    el.classList.toggle('is-flip', heading > 90 || heading < -90)
+    return
+  }
+  el.style.setProperty('--heading', '0deg')
+  el.classList.remove('is-flip')
+}
+
+function stopTravelers() {
+  if (travelerRaf) {
+    cancelAnimationFrame(travelerRaf)
+    travelerRaf = 0
+  }
+  if (travelerActor?.marker) {
+    try { travelerActor.marker.remove() } catch (e) { /* ignore */ }
+  }
+  travelerActor = null
+}
+
+function startTraveler(journey) {
+  stopTravelers()
+  if (!map || !journey) return
+  const { metrics, spans } = journey
+  const { timed, duration } = planTimeline(spans)
+  if (!timed.length) return
+  const firstMode = timed[0].mode
+  const start = pointAlongPath(metrics, 0)
+  const marker = L.marker(start.latlng, {
+    icon: travelerIcon(firstMode),
+    interactive: false,
+    keyboard: false,
+    pane: 'travelerPane',
+    zIndexOffset: 500
+  }).addTo(map)
+  travelerActor = { marker, metrics, timed, duration, mode: firstMode }
+  nextTick(() => applyTravelerHeading(marker.getElement(), travelModeMotion(firstMode), start.heading))
+  travelerStartedAt = performance.now()
+  const tick = (now) => {
+    if (!travelerActor) return
+    const state = journeyStateAt(travelerActor.timed, travelerActor.duration, now - travelerStartedAt)
+    const pos = pointAlongPath(travelerActor.metrics, state.dist)
+    travelerActor.marker.setLatLng(pos.latlng)
+    if (state.mode !== travelerActor.mode) {
+      travelerActor.mode = state.mode
+      travelerActor.marker.setIcon(travelerIcon(state.mode))
+    }
+    applyTravelerHeading(travelerActor.marker.getElement(), travelModeMotion(state.mode), pos.heading)
+    travelerRaf = requestAnimationFrame(tick)
+  }
+  travelerRaf = requestAnimationFrame(tick)
+}
+
+function drawTravelers(list, matchedIds) {
+  if (!shouldAnimateTravelers()) return
+  startTraveler(buildJourney(collectJourneyLegs(list, matchedIds)))
 }
 
 function shouldBindSegmentLabel(i, from, list) {
@@ -1154,6 +1583,7 @@ function renderPoints({ fit = props.autoFit } = {}) {
   if (preview) {
     drawPreviewPath()
   }
+  drawTravelers(lineList, matchedIds)
 
   if (list.length) {
     const photoMarkers = []
@@ -1283,6 +1713,12 @@ function initMap() {
     style: regionStyle,
     interactive: false
   }).addTo(map)
+  if (!map.getPane('travelerPane')) {
+    map.createPane('travelerPane')
+    const travelerPane = map.getPane('travelerPane')
+    travelerPane.style.zIndex = 580
+    travelerPane.style.pointerEvents = 'none'
+  }
   lineLayer = L.layerGroup().addTo(map)
   gpxOverlayLayer = L.layerGroup().addTo(map)
   clusterGroup = createClusterGroup().addTo(map)
@@ -1316,7 +1752,9 @@ function onBoxSelectMouseDown(e) {
   const t = e.originalEvent && e.originalEvent.target
   if (t && t.closest && (
     t.closest('.seg-panel')
+    || t.closest('.map-toolbar-right')
     || t.closest('.map-style-switch')
+    || t.closest('.pmc-mode-legend')
     || t.closest('.leaflet-control')
     || t.closest('.track-meta')
   )) {
@@ -1438,7 +1876,9 @@ watch(
     props.aiPickMode,
     props.selectedPhotoIds,
     props.selectedSegmentIndexes,
-    props.showMediaMarkers
+    props.showMediaMarkers,
+    props.showTravelers,
+    props.showModeLegend
   ],
   () => refresh({ fit: props.autoFit && !props.editable && !props.boxSelectActive }),
   { deep: true }
@@ -1477,6 +1917,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   syncBoxSelectMode(false)
+  stopTravelers()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -1526,8 +1967,8 @@ defineExpose({
   z-index: 500;
   top: 10px;
   left: 10px;
-  right: 200px;
-  max-width: min(560px, calc(100% - 210px));
+  right: 320px;
+  max-width: min(560px, calc(100% - 330px));
   pointer-events: none;
 }
 
@@ -1535,11 +1976,22 @@ defineExpose({
   pointer-events: auto;
 }
 
-.map-style-switch {
+.map-toolbar-right {
   position: absolute;
   z-index: 500;
   top: 10px;
   right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-toolbar-right > :deep(*) {
+  pointer-events: auto;
+}
+
+.map-style-switch {
   display: inline-flex;
   padding: 3px;
   border-radius: 8px;
@@ -1590,5 +2042,66 @@ defineExpose({
 
 :deep(.pmc-box-select) {
   cursor: crosshair !important;
+}
+
+.pmc-mode-legend {
+  position: absolute;
+  z-index: 500;
+  right: 12px;
+  bottom: 28px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  max-width: min(420px, calc(100% - 70px));
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+
+.pmc-mode-legend :deep(button),
+.pmc-mode-legend :deep(.legend-item),
+.pmc-mode-legend :deep(.legend-reset) {
+  pointer-events: auto;
+}
+
+.pmc-mode-legend-title {
+  width: 100%;
+  padding: 0 4px 2px;
+  color: #909399;
+  font-size: 11px;
+  line-height: 1;
+  text-align: right;
+}
+
+.pmc-mode-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #303133;
+  font-size: 12px;
+  line-height: 1;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.pmc-mode-legend-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.pmc-mode-legend-icon :deep(svg) {
+  display: block;
+  fill: #fff;
 }
 </style>

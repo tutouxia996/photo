@@ -6,10 +6,10 @@
       :show-polyline="trackLineVisible"
       :polyline-color="track?.trackColor || '#3B82F6'"
       :segment-by-travel-mode="true"
-      :show-direction="trackLineVisible && !editing && !customOpen && !boxSelectMode && !correcting"
-      :editable="editable && editing && !customOpen && !boxSelectMode && !correcting"
-      :active-segment-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
-      :path-edit-index="editing && !customOpen && !boxSelectMode ? activeIndex : -1"
+      :show-direction="trackLineVisible && !editing && !customOpen && !mergeOpen && !boxSelectMode && !correcting"
+      :editable="editable && editing && !customOpen && !mergeOpen && !boxSelectMode && !correcting"
+      :active-segment-index="editing && !customOpen && !mergeOpen && !boxSelectMode ? activeIndex : -1"
+      :path-edit-index="editing && !customOpen && !mergeOpen && !boxSelectMode ? activeIndex : -1"
       :segment-labels="editing || correcting ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
       :overlay-paths="localGpxOverlays"
@@ -20,6 +20,7 @@
       :box-select-active="editing && boxSelectMode"
       :selected-segment-indexes="selectedSegmentIndexes"
       :show-media-markers="!tracksOnly"
+      :show-mode-legend="false"
       :auto-fit="!editing && !correcting"
       empty-text="暂无轨迹点位"
       @segment-click="onSegmentClick"
@@ -32,6 +33,30 @@
       @location-select="onCorrectSelect"
       @location-drag-end="onCorrectDragEnd"
     >
+      <template #toolbar-right>
+        <div class="header-toggles">
+          <div class="track-toggle" title="关闭后隐藏轨迹线，仅保留照片/视频点">
+            <span class="track-toggle-label">显示轨迹</span>
+            <el-switch
+              v-model="showTrackLine"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+              :disabled="editing || correcting"
+            />
+          </div>
+          <div class="track-toggle" title="开启后仅显示轨迹线与途经点，隐藏照片/视频">
+            <span class="track-toggle-label">只显示轨迹</span>
+            <el-switch
+              v-model="tracksOnly"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+              :disabled="correcting"
+            />
+          </div>
+        </div>
+      </template>
       <template #meta>
         <div v-if="track && trackLineVisible" class="track-meta" :class="{ 'is-open': metaOpen }">
           <div class="meta-bar">
@@ -95,40 +120,29 @@
           </div>
         </div>
       </template>
+      <template v-if="legendItems.length && !editing" #modeLegend>
+        <div class="pmc-mode-legend-title">出行方式</div>
+        <button
+          v-for="m in legendItems"
+          :key="m.key"
+          type="button"
+          class="legend-item"
+          :class="{ active: isModeFilterActive(m.key), muted: modeFilter.length > 0 && !isModeFilterActive(m.key) }"
+          :title="modeFilterHint(m)"
+          @click="toggleModeFilter(m.key)"
+        >
+          <span class="legend-icon" :style="{ background: m.color }" v-html="travelModeIconSvg(m.key, 12)" />
+          {{ m.label }}
+        </button>
+        <button
+          v-if="modeFilter.length"
+          type="button"
+          class="legend-reset"
+          title="显示全部线路"
+          @click="clearModeFilter"
+        >全部</button>
+      </template>
     </PhotoClusterMap>
-
-    <div class="tracks-only-toggle" title="开启后仅显示轨迹线与途经点，隐藏照片/视频">
-      <span class="tracks-only-label">只显示轨迹</span>
-      <el-switch
-        v-model="tracksOnly"
-        inline-prompt
-        active-text="开"
-        inactive-text="关"
-        :disabled="correcting"
-      />
-    </div>
-
-    <div v-if="legendItems.length && !editing" class="mode-legend" :class="{ 'is-filtering': modeFilter.length > 0 }">
-      <button
-        v-for="m in legendItems"
-        :key="m.key"
-        type="button"
-        class="legend-item"
-        :class="{ active: isModeFilterActive(m.key), muted: modeFilter.length > 0 && !isModeFilterActive(m.key) }"
-        :title="modeFilterHint(m)"
-        @click="toggleModeFilter(m.key)"
-      >
-        <i class="legend-dot" :style="{ background: m.color }" />
-        {{ m.label }}
-      </button>
-      <button
-        v-if="modeFilter.length"
-        type="button"
-        class="legend-reset"
-        title="显示全部线路"
-        @click="clearModeFilter"
-      >全部</button>
-    </div>
 
     <aside v-if="gpxPanelOpen && activeGpx" class="seg-panel gpx-panel">
       <div class="seg-panel-hd">
@@ -350,7 +364,9 @@
         <div class="link-opts">
           <el-checkbox v-model="customLinkPrev">同时连接上一轨迹点 → 本段起点</el-checkbox>
           <el-checkbox v-model="customLinkNext">同时连接本段终点 → 下一轨迹点</el-checkbox>
+          <el-checkbox v-model="customMergeAfter">添加后合并沿途照片/视频到本路段</el-checkbox>
         </div>
+        <p class="path-tip">勾选「合并」适合地铁等未开 GPX 的情况：把照片纳入增补折线顺序（不改 GPS），避免按原坐标再单独连线。</p>
       </template>
 
       <template v-else>
@@ -513,7 +529,7 @@
       </div>
     </aside>
 
-    <aside v-if="editing && !customOpen && !boxSelectMode && waypointIndex >= 0" class="seg-panel">
+    <aside v-if="editing && !customOpen && !mergeOpen && !boxSelectMode && waypointIndex >= 0" class="seg-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">途经点 #{{ waypointPoint?.sequence ?? (waypointIndex + 1) }}</div>
         <button type="button" class="seg-close" @click="closeWaypointPanel">×</button>
@@ -574,7 +590,7 @@
       </div>
     </aside>
 
-    <aside v-if="editing && !customOpen && !boxSelectMode && waypointIndex < 0 && activeIndex >= 0" class="seg-panel">
+    <aside v-if="editing && !customOpen && !mergeOpen && !boxSelectMode && waypointIndex < 0 && activeIndex >= 0" class="seg-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">路段编辑 #{{ activeIndex + 1 }}</div>
         <button type="button" class="seg-close" @click="activeIndex = -1">×</button>
@@ -624,6 +640,14 @@
         @change="applyDescription"
       />
 
+      <div v-if="fromPoint?.routePath" class="seg-label" style="margin-top: 10px">合并照片到本路段</div>
+      <p v-if="fromPoint?.routePath" class="path-tip">
+        把途中照片纳入本路段折线（不改 GPS），避免再按原坐标单独连线。
+      </p>
+      <div v-if="fromPoint?.routePath" class="path-actions" style="margin-top: 6px">
+        <el-button type="warning" plain size="small" @click="openMergeFromActiveSegment">选择照片合并…</el-button>
+      </div>
+
       <p v-if="routeHint" class="route-hint">{{ routeHint }}</p>
       <div class="seg-panel-ft">
         <el-button type="primary" :loading="saving" @click="saveEdit">保存全部</el-button>
@@ -635,6 +659,51 @@
           :loading="waypointDeleting"
           @click="deleteActiveCustomSegment"
         >删除自定义路段</el-button>
+      </div>
+    </aside>
+
+    <aside v-if="mergeOpen" class="seg-panel merge-panel">
+      <div class="seg-panel-hd">
+        <div class="seg-panel-title">合并到增补路段</div>
+        <button type="button" class="seg-close" @click="closeMergePanel">×</button>
+      </div>
+      <p class="path-tip">
+        勾选要合并的照片/视频：按原 GPS 决定在路段上的先后顺序并拆分折线，<b>不会修改</b>照片/视频的 GPS。
+      </p>
+      <div class="merge-toolbar">
+        <el-button size="small" @click="selectAllMergeCandidates">全选</el-button>
+        <el-button size="small" @click="mergeSelectedIds = []">清空</el-button>
+        <span class="merge-count">已选 {{ mergeSelectedIds.length }}</span>
+      </div>
+      <div class="merge-list">
+        <label
+          v-for="p in mergeCandidates"
+          :key="p.photoId"
+          class="merge-item"
+          :class="{ selected: isMergeSelected(p.photoId) }"
+        >
+          <input
+            type="checkbox"
+            :checked="isMergeSelected(p.photoId)"
+            @change="toggleMergeSelect(p.photoId)"
+          />
+          <img class="merge-thumb" :src="mediaSrc(p, false)" alt="" loading="lazy" />
+          <span class="merge-meta">
+            <span class="merge-name" :title="p.fileName">{{ p.fileName || ('#' + p.photoId) }}</span>
+            <span class="merge-sub">#{{ p.sequence }} · {{ formatPointTime(p) }}</span>
+          </span>
+        </label>
+        <div v-if="!mergeCandidates.length" class="path-tip">当前轨迹没有可合并的照片/视频点</div>
+      </div>
+      <p v-if="mergeHint" class="route-hint">{{ mergeHint }}</p>
+      <div class="seg-panel-ft">
+        <el-button
+          type="primary"
+          :loading="mergeSaving"
+          :disabled="!mergeSelectedIds.length"
+          @click="submitMergePhotos"
+        >合并到路段</el-button>
+        <el-button :disabled="mergeSaving" @click="closeMergePanel">取消</el-button>
       </div>
     </aside>
   </div>
@@ -649,6 +718,7 @@ import {
   delTrackPoint,
   getTrainApiStatus,
   getTrainStops,
+  mergePhotosToSegment,
   planTrainRoute,
   previewTrackRoute,
   queryTrains,
@@ -657,7 +727,7 @@ import {
   updateTrackPoints
 } from '@/api/album/track'
 import { correctPhotoPosition } from '@/api/album/photo'
-import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, travelModeLabel, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
+import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, travelModeIconSvg, travelModeLabel, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const props = defineProps({
@@ -674,6 +744,8 @@ const emit = defineEmits(['saved', 'replan', 'location-corrected'])
 const { proxy } = getCurrentInstance()
 const clusterMapRef = ref(null)
 const metaOpen = ref(false)
+/** 与相册地图一致：本地开关控制是否绘制轨迹线 */
+const showTrackLine = ref(true)
 /** 只显示轨迹线/途经点，隐藏照片与视频标记 */
 const tracksOnly = ref(false)
 const editing = ref(false)
@@ -732,7 +804,18 @@ const customToTrackKey = ref('')
 const gpxPickSide = ref('auto')
 const customLinkPrev = ref(false)
 const customLinkNext = ref(false)
+/** 增补成功后打开「合并照片到路段」 */
+const customMergeAfter = ref(true)
 const customMode = ref('walk')
+const mergeOpen = ref(false)
+const mergeFromPointId = ref(null)
+const mergeToPointId = ref(null)
+const mergeSelectedIds = ref([])
+const mergeSaving = ref(false)
+const mergeHint = ref('')
+/** 增补后等待父级刷新点位再打开合并面板 */
+let pendingMerge = null
+let pendingMergeTimer = null
 const customInsertPos = ref('end')
 const customAfterPointId = ref(null)
 const customPreviewPath = ref(null)
@@ -773,10 +856,26 @@ const waypointHint = ref('')
 const waypointSaving = ref(false)
 const waypointDeleting = ref(false)
 
-/** 关闭启用时不画线路；自定义途经点一并隐藏，照片/视频点仍展示 */
-const trackLineVisible = computed(() => {
-  const t = props.track
-  return t == null || t.enabled == null || t.enabled === 1
+/** 地图上是否画轨迹线（本地「显示轨迹」开关；打开时默认跟随库内 enabled） */
+const trackLineVisible = computed(() => !!showTrackLine.value)
+
+watch(
+  () => props.track,
+  (t) => {
+    showTrackLine.value = t == null || t.enabled == null || t.enabled === 1
+    if (!(t == null || t.enabled == null || t.enabled === 1)) {
+      tracksOnly.value = false
+    }
+  },
+  { immediate: true }
+)
+
+watch(showTrackLine, (on) => {
+  if (!on) tracksOnly.value = false
+})
+
+watch(tracksOnly, (on) => {
+  if (on && !showTrackLine.value) showTrackLine.value = true
 })
 
 const displayPoints = computed(() => {
@@ -807,6 +906,28 @@ const canDeleteActiveCustomSegment = computed(() => {
   if (i < 0) return false
   const list = displayPoints.value
   return isWaypointPoint(list[i]) && isWaypointPoint(list[i + 1])
+})
+
+/** 可合并进当前路段的照片/视频点（不含起终点自身） */
+const mergeCandidates = computed(() => {
+  const fromId = mergeFromPointId.value
+  const toId = mergeToPointId.value
+  if (fromId == null || toId == null) return []
+  const list = Array.isArray(props.points) ? props.points : []
+  const from = list.find(p => String(p.pointId) === String(fromId))
+  const to = list.find(p => String(p.pointId) === String(toId))
+  const exclude = new Set()
+  if (from?.photoId != null) exclude.add(String(from.photoId))
+  if (to?.photoId != null) exclude.add(String(to.photoId))
+  return list
+    .filter(p => p?.photoId != null && !exclude.has(String(p.photoId)) && !isWaypointPoint(p))
+    .slice()
+    .sort((a, b) => {
+      const ta = a.pointTime || a.shootTime || ''
+      const tb = b.pointTime || b.shootTime || ''
+      if (ta && tb && ta !== tb) return ta < tb ? -1 : 1
+      return (Number(a.sequence) || 0) - (Number(b.sequence) || 0)
+    })
 })
 
 const usedModes = computed(() => {
@@ -1543,15 +1664,158 @@ async function submitCustomSegment() {
       body.append = false
       body.afterPointId = null
     }
-    await addCustomSegment(props.track.trackId, body)
-    proxy?.$modal?.msgSuccess?.('已增补路段')
+    const res = await addCustomSegment(props.track.trackId, body)
+    const data = res?.data || res
+    proxy?.$modal?.msgSuccess?.(customMergeAfter.value ? '已增补路段，请勾选要合并的照片' : '已增补路段')
     closeCustomPanel()
     editing.value = false
+    if (customMergeAfter.value && data?.fromPointId && data?.toPointId) {
+      scheduleOpenMerge(data.fromPointId, data.toPointId)
+    }
     emit('saved')
   } catch (e) {
     customHint.value = e?.message || '添加失败'
   } finally {
     customSaving.value = false
+  }
+}
+
+function clearPendingMerge() {
+  pendingMerge = null
+  if (pendingMergeTimer) {
+    clearTimeout(pendingMergeTimer)
+    pendingMergeTimer = null
+  }
+}
+
+function scheduleOpenMerge(fromPointId, toPointId) {
+  clearPendingMerge()
+  pendingMerge = { fromPointId, toPointId, tries: 0 }
+  const tryOpen = () => {
+    if (!pendingMerge) return
+    const list = Array.isArray(props.points) ? props.points : []
+    const ok = list.some(p => String(p.pointId) === String(pendingMerge.fromPointId))
+      && list.some(p => String(p.pointId) === String(pendingMerge.toPointId))
+    if (ok) {
+      const { fromPointId: f, toPointId: t } = pendingMerge
+      clearPendingMerge()
+      openMergePanel(f, t)
+      return
+    }
+    pendingMerge.tries += 1
+    if (pendingMerge.tries > 20) {
+      clearPendingMerge()
+      return
+    }
+    pendingMergeTimer = setTimeout(tryOpen, 200)
+  }
+  pendingMergeTimer = setTimeout(tryOpen, 200)
+}
+
+watch(() => props.points, () => {
+  if (!pendingMerge) return
+  const list = Array.isArray(props.points) ? props.points : []
+  const ok = list.some(p => String(p.pointId) === String(pendingMerge.fromPointId))
+    && list.some(p => String(p.pointId) === String(pendingMerge.toPointId))
+  if (!ok) return
+  const { fromPointId: f, toPointId: t } = pendingMerge
+  clearPendingMerge()
+  openMergePanel(f, t)
+})
+
+function formatPointTime(p) {
+  const t = p?.pointTime || p?.shootTime
+  if (!t) return '无时间'
+  const s = String(t)
+  return s.length > 16 ? s.slice(5, 16) : s
+}
+
+function isMergeSelected(photoId) {
+  return mergeSelectedIds.value.some(id => String(id) === String(photoId))
+}
+
+function toggleMergeSelect(photoId) {
+  const key = String(photoId)
+  if (isMergeSelected(key)) {
+    mergeSelectedIds.value = mergeSelectedIds.value.filter(id => String(id) !== key)
+  } else {
+    mergeSelectedIds.value = [...mergeSelectedIds.value, photoId]
+  }
+}
+
+function selectAllMergeCandidates() {
+  mergeSelectedIds.value = mergeCandidates.value.map(p => p.photoId)
+}
+
+function closeMergePanel() {
+  mergeOpen.value = false
+  mergeFromPointId.value = null
+  mergeToPointId.value = null
+  mergeSelectedIds.value = []
+  mergeHint.value = ''
+}
+
+function openMergePanel(fromPointId, toPointId) {
+  if (fromPointId == null || toPointId == null) return
+  closeCustomPanel()
+  mergeFromPointId.value = fromPointId
+  mergeToPointId.value = toPointId
+  const list = Array.isArray(props.points) ? props.points : []
+  const fi = list.findIndex(p => String(p.pointId) === String(fromPointId))
+  const ti = list.findIndex(p => String(p.pointId) === String(toPointId))
+  const between = []
+  if (fi >= 0 && ti > fi) {
+    for (let i = fi + 1; i < ti; i++) {
+      if (list[i]?.photoId != null) between.push(list[i].photoId)
+    }
+  }
+  mergeSelectedIds.value = between
+  mergeHint.value = between.length
+    ? `已预选路段中间的 ${between.length} 张；也可再勾选途中其他照片（不改 GPS）`
+    : '请勾选途中拍摄的照片/视频（合并只改轨迹顺序，不改 GPS）'
+  mergeOpen.value = true
+  activeIndex.value = -1
+  waypointIndex.value = -1
+}
+
+function openMergeFromActiveSegment() {
+  const from = fromPoint.value
+  const to = toPoint.value
+  if (!from?.pointId || !to?.pointId) {
+    routeHint.value = '请先选中有折线的路段'
+    return
+  }
+  if (!from.routePath) {
+    routeHint.value = '该路段还没有折线，请先贴合路网或增补'
+    return
+  }
+  // 编辑中未保存时先提示用当前库中点位合并（以 props.points 为准）
+  openMergePanel(from.pointId, to.pointId)
+}
+
+async function submitMergePhotos() {
+  if (!props.track?.trackId || !mergeFromPointId.value || !mergeToPointId.value) return
+  if (!mergeSelectedIds.value.length) {
+    mergeHint.value = '请至少勾选一张照片/视频'
+    return
+  }
+  mergeSaving.value = true
+  mergeHint.value = ''
+  try {
+    const res = await mergePhotosToSegment(props.track.trackId, {
+      fromPointId: mergeFromPointId.value,
+      toPointId: mergeToPointId.value,
+      photoIds: mergeSelectedIds.value.slice()
+    })
+    const n = res?.data?.mergedCount ?? mergeSelectedIds.value.length
+    proxy?.$modal?.msgSuccess?.(`已合并 ${n} 个媒体到路段`)
+    closeMergePanel()
+    editing.value = false
+    emit('saved')
+  } catch (e) {
+    mergeHint.value = e?.message || '合并失败'
+  } finally {
+    mergeSaving.value = false
   }
 }
 
@@ -1608,6 +1872,8 @@ function clonePoints(list) {
 
 function startEdit() {
   exitCorrectMode()
+  closeMergePanel()
+  clearPendingMerge()
   draftPoints.value = clonePoints(props.points)
   editing.value = true
   activeIndex.value = -1
@@ -1747,6 +2013,8 @@ function cancelEdit() {
   draftDesc.value = ''
   routeHint.value = ''
   closeCustomPanel()
+  closeMergePanel()
+  clearPendingMerge()
   closeWaypointPanel()
   exitBoxSelect(false)
 }
@@ -2325,45 +2593,29 @@ defineExpose({
   line-height: 1.4;
 }
 
-.tracks-only-toggle {
-  position: absolute;
-  z-index: 500;
-  left: 12px;
-  bottom: 28px;
+/* 与相册照片地图 header-toggles 一致 */
+.header-toggles {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  pointer-events: auto;
+  flex-shrink: 0;
 }
 
-.tracks-only-label {
-  font-size: 12px;
+.track-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(245, 247, 250, 0.96);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.track-toggle-label {
+  font-size: 13px;
   color: #606266;
   white-space: nowrap;
-  line-height: 1;
-}
-
-.mode-legend {
-  position: absolute;
-  z-index: 500;
-  right: 12px;
-  bottom: 28px;
-  left: auto;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 4px;
-  max-width: min(420px, calc(100% - 70px));
-  padding: 6px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  pointer-events: auto;
 }
 
 .legend-item {
@@ -2402,6 +2654,22 @@ defineExpose({
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+
+.legend-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.legend-icon :deep(svg) {
+  display: block;
+  fill: #fff;
 }
 
 .legend-reset {
@@ -2646,5 +2914,79 @@ defineExpose({
   flex-direction: column;
   gap: 6px;
   margin-top: 4px;
+}
+
+.merge-panel {
+  width: min(360px, calc(100% - 24px));
+}
+
+.merge-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.merge-count {
+  margin-left: auto;
+  color: #909399;
+  font-size: 12px;
+}
+
+.merge-list {
+  max-height: min(48vh, 360px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 8px;
+}
+
+.merge-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+}
+
+.merge-item.selected {
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.merge-item input {
+  flex-shrink: 0;
+}
+
+.merge-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #e5e7eb;
+  flex-shrink: 0;
+}
+
+.merge-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.merge-name {
+  color: #303133;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merge-sub {
+  color: #909399;
+  font-size: 11px;
 }
 </style>

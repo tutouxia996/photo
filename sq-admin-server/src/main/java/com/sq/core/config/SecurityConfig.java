@@ -118,6 +118,8 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .antMatchers(HttpMethod.GET, "/album/photo/media/**", "/album/photo/thumb/**", "/album/files/**").permitAll()
                 .antMatchers(HttpMethod.GET, "/album/photo/videoProxy/**").permitAll()
                 .antMatchers(HttpMethod.POST, "/album/photo/videoProxy/**/ensure").authenticated()
+                // 相册分享公开访问（凭不可猜测的分享令牌）
+                .antMatchers(HttpMethod.GET, "/share/**").permitAll()
                 .antMatchers("/swagger-ui.html", "/swagger-resources/**", "/webjars/**", "/*/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/doc.html", "/druid/**").permitAll()
                 // 除上面外的所有请求全部需要鉴权认证
                 .anyRequest().authenticated()
