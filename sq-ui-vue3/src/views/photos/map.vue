@@ -137,6 +137,8 @@
             <span class="stat">定位 {{ points.length }}</span>
             <span v-if="estimatedCount" class="stat est">估计 {{ estimatedCount }}</span>
             <span v-if="trackLineActive && trackName" class="stat track">轨迹 {{ trackName }}</span>
+            <span v-if="trackLineActive && trackDistanceText" class="stat">里程 {{ trackDistanceText }}</span>
+            <span v-if="trackLineActive && trackDurationText" class="stat">时长 {{ trackDurationText }}</span>
           </div>
         </template>
       </PhotoClusterMap>
@@ -308,6 +310,8 @@ const trackPoints = ref([])
 const trackGpxOverlays = ref([])
 const trackColor = ref('#3B82F6')
 const trackName = ref('')
+const trackTotalDistance = ref(null)
+const trackTotalDuration = ref(null)
 /** 当前已加载轨迹所属相册，防止切换相册时串到别的轨迹 */
 const loadedTrackAlbumId = ref(undefined)
 let trackLoadSeq = 0
@@ -384,6 +388,28 @@ const metaTitle = computed(() => {
   return albumName.value || '相册'
 })
 
+const trackDistanceText = computed(() => formatTrackDistance(trackTotalDistance.value))
+const trackDurationText = computed(() => formatTrackDuration(trackTotalDuration.value))
+
+function formatTrackDistance(km) {
+  if (km == null || km === '') return ''
+  const n = Number(km)
+  if (Number.isNaN(n)) return ''
+  return n < 1 ? `${(n * 1000).toFixed(0)} m` : `${n.toFixed(2)} km`
+}
+
+function formatTrackDuration(sec) {
+  if (sec == null || sec === '') return ''
+  const total = Math.max(0, Math.floor(Number(sec) || 0))
+  if (!total) return ''
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const r = total % 60
+  if (h > 0) return `${h}小时${m}分钟${r}秒`
+  if (m > 0) return `${m}分钟${r}秒`
+  return `${r}秒`
+}
+
 const headerSub = computed(() => {
   if (albumId.value == null || albumId.value === '') return '请从相册进入照片地图'
   if (!points.value.length) return '暂无带定位的照片'
@@ -456,6 +482,8 @@ function clearTrackData() {
   trackGpxOverlays.value = []
   trackColor.value = '#3B82F6'
   trackName.value = ''
+  trackTotalDistance.value = null
+  trackTotalDuration.value = null
   loadedTrackAlbumId.value = undefined
 }
 
@@ -513,6 +541,8 @@ async function loadTrackIfNeeded() {
     trackGpxOverlays.value = data.gpxOverlays || []
     trackColor.value = track.trackColor || '#3B82F6'
     trackName.value = track.trackName || ''
+    trackTotalDistance.value = track.totalDistance ?? row.totalDistance ?? null
+    trackTotalDuration.value = track.totalDuration ?? row.totalDuration ?? null
     loadedTrackAlbumId.value = expectedAlbumId
   } catch (e) {
     if (seq !== trackLoadSeq || !sameAlbumId(albumId.value, expectedAlbumId)) return

@@ -68,22 +68,34 @@ const useUserStore = defineStore(
           })
         })
       },
-      // 退出系统
+      // 退出系统（接口失败也清本地态，避免会话过期时卡死在加载中）
       logOut() {
-        return new Promise((resolve, reject) => {
-          logout(this.token).then(() => {
-            this.token = ''
-            this.roles = []
-            this.permissions = []
-            removeToken()
+        const clearLocal = () => {
+          this.token = ''
+          this.roles = []
+          this.permissions = []
+          this.id = ''
+          this.name = ''
+          this.nickName = ''
+          this.forceChangePwd = false
+          this.forceChangePwdReason = ''
+          removeToken()
+        }
+        return new Promise((resolve) => {
+          const finish = () => {
+            clearLocal()
             import('@/store/modules/aliyunSync').then(mod => {
               try {
                 mod.default().stopPolling()
               } catch (e) { /* ignore */ }
-            }).finally(() => resolve())
-          }).catch(error => {
-            reject(error)
-          })
+            }).catch(() => {}).finally(() => resolve())
+          }
+          // 无 token 时不必再打登出接口
+          if (!this.token && !getToken()) {
+            finish()
+            return
+          }
+          logout().then(finish).catch(finish)
         })
       }
     }

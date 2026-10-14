@@ -5,8 +5,34 @@
     </header>
 
     <div class="photos-toolbar">
-      <span class="photos-count">共 {{ albumList.length }} 项</span>
+      <div class="toolbar-left">
+        <button
+          v-if="shareSelectMode"
+          type="button"
+          class="select-btn"
+          :class="selectBtnClass"
+          :title="selectBtnTitle"
+          @click="onSelectHeaderClick"
+        >
+          <el-icon v-if="isAllShareSelected" :size="16"><Select /></el-icon>
+          <el-icon v-else-if="selectedAlbumIds.length" :size="16"><Minus /></el-icon>
+          <el-icon v-else :size="18"><CircleCheck /></el-icon>
+        </button>
+        <span v-if="shareSelectMode && selectedAlbumIds.length" class="photos-count">
+          已选 {{ selectedAlbumIds.length }} 项
+        </span>
+        <span v-else class="photos-count">共 {{ albumList.length }} 项</span>
+      </div>
       <div class="photos-tools">
+        <button
+          type="button"
+          class="tool-btn"
+          :class="{ active: shareSelectMode }"
+          @click="toggleShareSelectMode"
+        >
+          <el-icon><Share /></el-icon>
+          <span>{{ shareSelectMode ? '取消选择' : '分享相册' }}</span>
+        </button>
         <button type="button" class="tool-btn" @click="openPhotoMap">
           <el-icon><Location /></el-icon>
           <span>照片地图</span>
@@ -45,23 +71,30 @@
       </div>
     </div>
 
-    <div class="album-grid">
+    <div class="album-grid" :class="{ 'is-selecting': shareSelectMode }">
       <div
         v-for="item in displayList"
         :key="item.albumId"
         class="album-card"
-        :class="{ 'is-active': menuAlbumId === item.albumId }"
-        @click.stop="openAlbum(item)"
+        :class="{
+          'is-active': menuAlbumId === item.albumId,
+          selected: isAlbumSelected(item.albumId),
+          'not-selectable': shareSelectMode && !canEditAlbum(item)
+        }"
+        @click.stop="onAlbumCardClick(item, $event)"
       >
         <div class="album-cover">
           <img v-if="coverSrc(item)" :src="coverSrc(item)" :alt="item.albumName" loading="lazy" />
           <div v-else class="album-cover-placeholder">
             <el-icon :size="36"><PictureFilled /></el-icon>
           </div>
+          <div v-if="shareSelectMode" class="album-check" aria-hidden="true">
+            <el-icon :size="14"><Select /></el-icon>
+          </div>
           <span class="album-badge" :class="{ scanning: isAlbumScanning(item.albumId) }">
             {{ isAlbumScanning(item.albumId) ? '扫描中' : (item.photoCount ?? 0) }}
           </span>
-          <div v-if="canEditAlbum(item)" class="album-more" @click.stop>
+          <div v-if="canEditAlbum(item) && !shareSelectMode" class="album-more" @click.stop>
             <button
               type="button"
               class="album-more-btn"
@@ -84,7 +117,7 @@
         </div>
       </div>
 
-      <div class="album-card create-card" @click="openCreate">
+      <div v-if="!shareSelectMode" class="album-card create-card" @click="openCreate">
         <div class="create-box">
           <el-icon :size="28"><Plus /></el-icon>
         </div>
@@ -94,7 +127,20 @@
       </div>
     </div>
 
-    <div class="fab-wrap" v-click-outside="closeFab">
+    <teleport to="body">
+      <transition name="sel-bar">
+        <div v-if="shareSelectMode && selectedAlbumIds.length" class="selection-bar" @click.stop>
+          <button type="button" class="sel-btn" title="分享选中相册" @click="shareSelectedAlbums">
+            <el-icon :size="20"><Share /></el-icon>
+          </button>
+          <button type="button" class="sel-btn" title="取消多选" @click="exitShareSelectMode">
+            <el-icon :size="20"><CircleClose /></el-icon>
+          </button>
+        </div>
+      </transition>
+    </teleport>
+
+    <div v-if="!shareSelectMode" class="fab-wrap" v-click-outside="closeFab">
       <transition name="fab-menu">
         <div v-if="fabOpen" class="fab-menu">
           <button type="button" class="fab-menu-item" @click="onUploadPhotos">
@@ -195,6 +241,7 @@
       v-model="shareOpen"
       :album-id="shareAlbumId"
       :album-name="shareAlbumName"
+      :albums="shareAlbums"
     />
   </div>
 </template>
@@ -223,6 +270,10 @@ const editOpen = ref(false)
 const shareOpen = ref(false)
 const shareAlbumId = ref(undefined)
 const shareAlbumName = ref('')
+const shareAlbums = ref([])
+const shareSelectMode = ref(false)
+const selectedAlbumIds = ref([])
+const lastShareAnchorId = ref(null)
 const editing = ref(false)
 const scanningAlbumIds = ref([])
 const createFormRef = ref()
@@ -308,6 +359,17 @@ const displayList = computed(() => {
   return list
 })
 
+const shareableAlbums = computed(() => displayList.value.filter(item => canEditAlbum(item)))
+const shareableAlbumIds = computed(() => shareableAlbums.value.map(item => item.albumId))
+const isAllShareSelected = computed(
+  () => shareableAlbumIds.value.length > 0 && selectedAlbumIds.value.length >= shareableAlbumIds.value.length
+)
+const selectBtnClass = computed(() => ({
+  active: selectedAlbumIds.value.length > 0,
+  partial: selectedAlbumIds.value.length > 0 && !isAllShareSelected.value
+}))
+const selectBtnTitle = computed(() => (selectedAlbumIds.value.length ? '取消全选' : '全选可分享相册'))
+
 /** 相册拍摄时间：后端 refreshAlbumStats 写入的 startTime（min 拍摄时间） */
 function shootTimeTs(item) {
   const raw = item?.startTime
@@ -390,11 +452,114 @@ function toggleAlbumMenu(item, event) {
   menuAlbumId.value = menuAlbumId.value === item.albumId ? null : item.albumId
 }
 
+function isAlbumSelected(id) {
+  return selectedAlbumIds.value.some(x => String(x) === String(id))
+}
+
+function clearAlbumSelection() {
+  selectedAlbumIds.value = []
+  lastShareAnchorId.value = null
+}
+
+function selectAllShareableAlbums() {
+  selectedAlbumIds.value = shareableAlbumIds.value.slice()
+  lastShareAnchorId.value = selectedAlbumIds.value[0] ?? null
+}
+
+function onSelectHeaderClick() {
+  if (selectedAlbumIds.value.length) clearAlbumSelection()
+  else selectAllShareableAlbums()
+}
+
+function toggleShareSelectMode() {
+  if (shareSelectMode.value) {
+    exitShareSelectMode()
+    return
+  }
+  menuAlbumId.value = null
+  fabOpen.value = false
+  shareSelectMode.value = true
+  clearAlbumSelection()
+}
+
+function exitShareSelectMode() {
+  shareSelectMode.value = false
+  clearAlbumSelection()
+}
+
+function applyAlbumSelection(item, event = {}) {
+  if (!canEditAlbum(item)) {
+    proxy.$modal.msgWarning('仅可分享自己可编辑的相册')
+    return
+  }
+  const id = item.albumId
+  const ids = shareableAlbumIds.value
+  const ctrl = !!(event.ctrlKey || event.metaKey)
+  const shift = !!event.shiftKey
+
+  if (shift && lastShareAnchorId.value != null) {
+    const start = ids.findIndex(x => String(x) === String(lastShareAnchorId.value))
+    const end = ids.findIndex(x => String(x) === String(id))
+    if (start >= 0 && end >= 0) {
+      const [a, b] = start < end ? [start, end] : [end, start]
+      const range = ids.slice(a, b + 1)
+      if (ctrl) {
+        selectedAlbumIds.value = [...new Set(selectedAlbumIds.value.concat(range))]
+      } else {
+        selectedAlbumIds.value = range.slice()
+      }
+      return
+    }
+  }
+
+  if (ctrl || selectedAlbumIds.value.length) {
+    const i = selectedAlbumIds.value.findIndex(x => String(x) === String(id))
+    if (i >= 0) selectedAlbumIds.value.splice(i, 1)
+    else selectedAlbumIds.value.push(id)
+    lastShareAnchorId.value = id
+    return
+  }
+
+  selectedAlbumIds.value = [id]
+  lastShareAnchorId.value = id
+}
+
+function onAlbumCardClick(item, event) {
+  if (shareSelectMode.value) {
+    applyAlbumSelection(item, event)
+    return
+  }
+  openAlbum(item)
+}
+
 function openShare(item) {
   menuAlbumId.value = null
+  shareAlbums.value = []
   shareAlbumId.value = item?.albumId
   shareAlbumName.value = item?.albumName || ''
   shareOpen.value = true
+}
+
+function shareSelectedAlbums() {
+  const selected = shareableAlbums.value.filter(a => isAlbumSelected(a.albumId))
+  if (!selected.length) {
+    proxy.$modal.msgWarning('请先选择要分享的相册')
+    return
+  }
+  if (selected.length === 1) {
+    shareAlbums.value = []
+    shareAlbumId.value = selected[0].albumId
+    shareAlbumName.value = selected[0].albumName || ''
+  } else {
+    shareAlbumId.value = undefined
+    shareAlbumName.value = ''
+    shareAlbums.value = selected.map(a => ({
+      albumId: a.albumId,
+      albumName: a.albumName || ''
+    }))
+  }
+  shareOpen.value = true
+  exitShareSelectMode()
 }
 
 function openEdit(item) {
@@ -646,6 +811,13 @@ getList()
   min-height: 28px;
 }
 
+.toolbar-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+
 .photos-count {
   font-size: 13px;
   color: var(--photos-muted);
@@ -671,12 +843,52 @@ getList()
   &:hover {
     color: #111;
   }
+
+  &.active {
+    color: #5b7fff;
+  }
+}
+
+.select-btn {
+  width: 28px;
+  height: 28px;
+  border: 1.5px solid #c0c4cc;
+  border-radius: 50%;
+  background: transparent;
+  color: #909399;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    border-color: #5b7fff;
+    color: #5b7fff;
+  }
+
+  &.active {
+    border-color: #5b7fff;
+    background: #5b7fff;
+    color: #fff;
+  }
+
+  &.partial {
+    background: #fff;
+    color: #5b7fff;
+  }
 }
 
 .album-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 22px 18px;
+}
+
+.album-grid.is-selecting .album-card.not-selectable {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .album-card {
@@ -692,6 +904,10 @@ getList()
     background: #f3f3f3;
   }
 
+  &.selected {
+    background: #eef2ff;
+  }
+
   &:hover .album-more-btn,
   &.is-active .album-more-btn {
     opacity: 1;
@@ -701,6 +917,13 @@ getList()
   &:hover .album-name,
   &.is-active .album-name {
     color: #000;
+  }
+
+  &.selected .album-check {
+    opacity: 1;
+    background: #5b7fff;
+    color: #fff;
+    border-color: #5b7fff;
   }
 }
 
@@ -795,6 +1018,24 @@ getList()
   background: #eee;
 }
 
+.album-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  background: rgba(0, 0, 0, 0.28);
+  color: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.9;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+
 .album-badge {
   position: absolute;
   right: 8px;
@@ -807,6 +1048,51 @@ getList()
   font-size: 12px;
   line-height: 18px;
   text-align: center;
+}
+
+.selection-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 2500;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 28px;
+  background: rgba(45, 45, 45, 0.92);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.sel-btn {
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+}
+
+.sel-bar-enter-active,
+.sel-bar-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.sel-bar-enter-from,
+.sel-bar-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(12px);
 }
 
 .album-meta {

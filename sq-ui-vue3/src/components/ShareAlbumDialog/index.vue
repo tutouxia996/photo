@@ -9,7 +9,7 @@
     @update:model-value="onVisible"
   >
     <div v-loading="loading" class="share-body">
-      <div class="share-tabs">
+      <div v-if="!isMulti" class="share-tabs">
         <button type="button" class="share-tab" :class="{ active: tab === 'create' }" @click="tab = 'create'">新建分享</button>
         <button type="button" class="share-tab" :class="{ active: tab === 'manage' }" @click="openManage">
           管理分享
@@ -18,13 +18,22 @@
       </div>
 
       <!-- 新建 -->
-      <template v-if="tab === 'create' && !sharePath">
-        <div class="share-album-name">{{ albumName || '未命名相册' }}</div>
+      <template v-if="tab === 'create' && !hasResult">
+        <div class="share-album-name">
+          <template v-if="isMulti">已选 {{ albumTargets.length }} 个相册</template>
+          <template v-else>{{ primaryAlbumName || '未命名相册' }}</template>
+        </div>
+
+        <div v-if="isMulti" class="share-album-chips">
+          <span v-for="a in albumTargets" :key="a.albumId" class="share-album-chip" :title="a.albumName">
+            {{ a.albumName || '未命名相册' }}
+          </span>
+        </div>
 
         <div class="share-row">
           <span class="share-label">分享轨迹</span>
           <el-switch v-model="form.shareTrack" inline-prompt active-text="开" inactive-text="关" />
-          <span class="share-hint">开启后，访问者可查看本相册轨迹</span>
+          <span class="share-hint">{{ isMulti ? '开启后，每个相册的访问者可查看对应轨迹' : '开启后，访问者可查看本相册轨迹' }}</span>
         </div>
 
         <div class="share-row">
@@ -57,44 +66,48 @@
           <span v-else-if="expireHint" class="share-hint">{{ expireHint }}</span>
         </div>
 
-        <div class="share-select-bar">
-          <span class="share-label">选择文件</span>
-          <div class="share-select-actions">
-            <el-checkbox
-              :model-value="isAllChecked"
-              :indeterminate="isIndeterminate"
-              @change="toggleAll"
-            >全选当前列表</el-checkbox>
-            <span class="share-count">已选 {{ selectedIds.length }} / {{ filteredPhotos.length }}</span>
+        <template v-if="!isMulti">
+          <div class="share-select-bar">
+            <span class="share-label">选择文件</span>
+            <div class="share-select-actions">
+              <el-checkbox
+                :model-value="isAllChecked"
+                :indeterminate="isIndeterminate"
+                @change="toggleAll"
+              >全选当前列表</el-checkbox>
+              <span class="share-count">已选 {{ selectedIds.length }} / {{ filteredPhotos.length }}</span>
+            </div>
           </div>
-        </div>
 
-        <div v-if="!filteredPhotos.length" class="share-empty">
-          {{ photosLoading ? '加载中…' : '当前筛选下没有可分享的文件' }}
-        </div>
-        <div v-else class="share-grid" v-loading="photosLoading">
-          <button
-            v-for="item in filteredPhotos"
-            :key="item.photoId"
-            type="button"
-            class="share-item"
-            :class="{ selected: isSelected(item.photoId) }"
-            @click="toggleOne(item.photoId)"
-          >
-            <img :src="thumbSrc(item)" :alt="item.fileName || ''" loading="lazy" />
-            <span v-if="item.fileType === 2" class="share-video-badge">▶</span>
-            <span class="share-check">
-              <el-icon v-if="isSelected(item.photoId)"><Select /></el-icon>
-            </span>
-          </button>
-        </div>
+          <div v-if="!filteredPhotos.length" class="share-empty">
+            {{ photosLoading ? '加载中…' : '当前筛选下没有可分享的文件' }}
+          </div>
+          <div v-else class="share-grid" v-loading="photosLoading">
+            <button
+              v-for="item in filteredPhotos"
+              :key="item.photoId"
+              type="button"
+              class="share-item"
+              :class="{ selected: isSelected(item.photoId) }"
+              @click="toggleOne(item.photoId)"
+            >
+              <img :src="thumbSrc(item)" :alt="item.fileName || ''" loading="lazy" />
+              <span v-if="item.fileType === 2" class="share-video-badge">▶</span>
+              <span class="share-check">
+                <el-icon v-if="isSelected(item.photoId)"><Select /></el-icon>
+              </span>
+            </button>
+          </div>
+        </template>
+        <p v-else class="share-multi-hint">多选相册将生成<strong>一条</strong>分享链接与二维码，访客打开后可查看本次勾选的全部相册内容（按上述设置分享符合条件的文件）。</p>
       </template>
 
       <!-- 新建成功结果 -->
-      <template v-else-if="tab === 'create' && sharePath">
+      <template v-else-if="tab === 'create' && hasResult">
         <div class="share-result">
           <p class="result-tip">
-            分享已生成。可随时在「管理分享」中关闭或删除。
+            <template v-if="isMulti">已为选中的 {{ albumTargets.length }} 个相册生成一条分享链接。</template>
+            <template v-else>分享已生成。可随时在「管理分享」中关闭或删除。</template>
             <template v-if="resultExpireText">有效期至 {{ resultExpireText }}。</template>
             <template v-else>永久有效。</template>
           </p>
@@ -119,6 +132,9 @@
                 <el-tag size="small" :type="shareStatusType(item)">{{ shareStatusLabel(item) }}</el-tag>
                 <span class="manage-scope">{{ scopeLabel(item.mediaScope) }}</span>
                 <span v-if="item.shareTrack === 1" class="manage-scope">含轨迹</span>
+                <span v-if="(item.albumIdList || []).length > 1" class="manage-scope">
+                  {{ item.albumIdList.length }} 个相册
+                </span>
               </div>
               <div class="manage-meta">
                 <span>创建 {{ formatTime(item.createTime) }}</span>
@@ -157,15 +173,15 @@
     </div>
 
     <template #footer>
-      <template v-if="tab === 'create' && !sharePath">
+      <template v-if="tab === 'create' && !hasResult">
         <el-button @click="close">取消</el-button>
         <el-button type="primary" :loading="saving" :disabled="!canSubmit" @click="createShare">
           生成分享链接
         </el-button>
       </template>
-      <template v-else-if="tab === 'create' && sharePath">
-        <el-button @click="backToSettings">再建一个</el-button>
-        <el-button @click="openManage">管理分享</el-button>
+      <template v-else-if="tab === 'create' && hasResult">
+        <el-button v-if="!isMulti" @click="backToSettings">再建一个</el-button>
+        <el-button v-if="!isMulti" @click="openManage">管理分享</el-button>
         <el-button type="primary" @click="close">完成</el-button>
       </template>
       <template v-else>
@@ -191,7 +207,9 @@ import { buildShareUrl, normalizeSharePath } from '@/utils/shareLink'
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   albumId: { type: [Number, String], default: undefined },
-  albumName: { type: String, default: '' }
+  albumName: { type: String, default: '' },
+  /** 多选相册：[{ albumId, albumName }]，优先于 albumId */
+  albums: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -220,6 +238,25 @@ const form = ref({
   expireTime: ''
 })
 
+const albumTargets = computed(() => {
+  const list = Array.isArray(props.albums) ? props.albums.filter(a => a && a.albumId != null) : []
+  if (list.length) {
+    return list.map(a => ({
+      albumId: a.albumId,
+      albumName: a.albumName || ''
+    }))
+  }
+  if (props.albumId != null && props.albumId !== '') {
+    return [{ albumId: props.albumId, albumName: props.albumName || '' }]
+  }
+  return []
+})
+
+const isMulti = computed(() => albumTargets.value.length > 1)
+const primaryAlbumId = computed(() => albumTargets.value[0]?.albumId)
+const primaryAlbumName = computed(() => albumTargets.value[0]?.albumName || props.albumName || '')
+const hasResult = computed(() => !!sharePath.value && !!shareUrl.value)
+
 const filteredPhotos = computed(() => {
   const list = photos.value || []
   if (form.value.mediaScope === 'image') return list.filter(p => p.fileType !== 2)
@@ -239,7 +276,11 @@ const isIndeterminate = computed(() => {
   return n > 0 && n < list.length
 })
 
-const canSubmit = computed(() => !!props.albumId && selectedIds.value.length > 0)
+const canSubmit = computed(() => {
+  if (!albumTargets.value.length) return false
+  if (isMulti.value) return true
+  return selectedIds.value.length > 0
+})
 
 const expireHint = computed(() => {
   const t = resolveExpireTime()
@@ -355,7 +396,7 @@ function buildUrlForShare(item) {
 }
 
 async function loadPhotos() {
-  if (!props.albumId) return
+  if (isMulti.value || primaryAlbumId.value == null) return
   photosLoading.value = true
   try {
     const pageSize = 500
@@ -364,7 +405,7 @@ async function loadPhotos() {
     let total = 0
     do {
       const res = await listPhoto({
-        albumId: props.albumId,
+        albumId: primaryAlbumId.value,
         pageNum,
         pageSize,
         shootTimeOrder: 'desc'
@@ -386,12 +427,12 @@ async function loadPhotos() {
 }
 
 async function loadShareList() {
-  if (!props.albumId) {
+  if (isMulti.value || primaryAlbumId.value == null) {
     shareList.value = []
     return
   }
   try {
-    const res = await listAlbumShare(props.albumId)
+    const res = await listAlbumShare(primaryAlbumId.value)
     shareList.value = res.rows || []
   } catch (e) {
     shareList.value = []
@@ -415,7 +456,7 @@ async function renderQr(canvasRef, url) {
 
 async function createShare() {
   if (!canSubmit.value) {
-    proxy?.$modal?.msgWarning?.('请至少选择一个文件')
+    proxy?.$modal?.msgWarning?.(isMulti.value ? '请选择要分享的相册' : '请至少选择一个文件')
     return
   }
   if (form.value.expirePreset === 'custom' && !form.value.expireTime) {
@@ -424,16 +465,25 @@ async function createShare() {
   }
   saving.value = true
   try {
-    const allIds = filteredPhotos.value.map(p => p.photoId)
-    const selected = selectedIds.value.filter(id => allIds.includes(id))
-    const selectAll = selected.length === allIds.length && allIds.length > 0
     const expireTime = resolveExpireTime()
+    resultExpireText.value = expireTime || ''
+    const albumIdList = albumTargets.value.map(a => a.albumId)
+    let selectMode = 'all'
+    let photoIdList = []
+    if (!isMulti.value) {
+      const allIds = filteredPhotos.value.map(p => p.photoId)
+      const selected = selectedIds.value.filter(id => allIds.includes(id))
+      const selectAll = selected.length === allIds.length && allIds.length > 0
+      selectMode = selectAll ? 'all' : 'include'
+      photoIdList = selectAll ? [] : selected
+    }
     const res = await createAlbumShare({
-      albumId: props.albumId,
+      albumId: primaryAlbumId.value,
+      albumIdList,
       shareTrack: form.value.shareTrack ? 1 : 0,
       mediaScope: form.value.mediaScope,
-      selectMode: selectAll ? 'all' : 'include',
-      photoIdList: selectAll ? [] : selected,
+      selectMode,
+      photoIdList,
       expireTime,
       status: 1
     })
@@ -445,10 +495,9 @@ async function createShare() {
     }
     sharePath.value = normalizeSharePath(path)
     shareUrl.value = buildShareUrl(sharePath.value)
-    resultExpireText.value = expireTime || ''
     await renderQr(qrCanvasRef, shareUrl.value)
-    await loadShareList()
-    proxy?.$modal?.msgSuccess?.('分享链接已生成')
+    if (!isMulti.value) await loadShareList()
+    proxy?.$modal?.msgSuccess?.(isMulti.value ? '已生成一条分享链接' : '分享链接已生成')
   } catch (e) {
     /* 全局已提示 */
   } finally {
@@ -561,7 +610,11 @@ watch(
       loading.value = true
       resetForm()
       try {
-        await Promise.all([loadPhotos(), loadShareList()])
+        if (isMulti.value) {
+          // 多选：不加载单相册文件与管理列表
+        } else {
+          await Promise.all([loadPhotos(), loadShareList()])
+        }
       } finally {
         loading.value = false
       }
@@ -618,6 +671,37 @@ watch(
   font-size: 16px;
   font-weight: 600;
   color: #303133;
+}
+
+.share-album-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 16px;
+  max-height: 96px;
+  overflow: auto;
+}
+
+.share-album-chip {
+  max-width: 160px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-multi-hint {
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .share-row {

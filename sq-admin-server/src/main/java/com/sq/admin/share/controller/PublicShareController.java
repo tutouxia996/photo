@@ -21,8 +21,10 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 公开分享访问（无需登录，仅凭分享令牌）
@@ -58,30 +60,32 @@ public class PublicShareController extends BaseController {
         if (share == null) {
             return error("分享不存在或已失效");
         }
-        BizAlbum album = albumService.getById(share.getAlbumId());
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+        List<Long> albumIds = shareService.resolveAlbumIds(share);
+        List<BizAlbum> albums = loadNormalAlbums(albumIds);
+        if (albums.isEmpty()) {
             return error("分享的相册不存在");
         }
 
-        Map<String, Object> albumView = new HashMap<String, Object>();
-        albumView.put("albumId", album.getAlbumId());
-        albumView.put("albumName", album.getAlbumName());
-        albumView.put("albumDesc", album.getAlbumDesc());
-        albumView.put("coverUrl", album.getCoverUrl());
-        albumView.put("locationSummary", album.getLocationSummary());
-        albumView.put("startTime", album.getStartTime());
-        albumView.put("endTime", album.getEndTime());
-
         long photoCount = photoService.count(shareService.buildPhotoQuery(share));
-        albumView.put("photoCount", photoCount);
+        List<Map<String, Object>> albumViews = new ArrayList<Map<String, Object>>();
+        for (BizAlbum album : albums) {
+            albumViews.add(toAlbumView(album, null));
+        }
+        // 主相册兼容字段：photoCount 为整次分享合计
+        Map<String, Object> primary = toAlbumView(albums.get(0), photoCount);
+        if (albums.size() > 1) {
+            primary.put("albumName", buildMultiTitle(albums));
+        }
 
         Map<String, Object> shareView = new HashMap<String, Object>();
         shareView.put("shareTrack", share.getShareTrack() != null && share.getShareTrack() == 1);
         shareView.put("mediaScope", share.getMediaScope());
         shareView.put("expireTime", share.getExpireTime());
+        shareView.put("albumCount", albums.size());
 
         Map<String, Object> data = new HashMap<String, Object>();
-        data.put("album", albumView);
+        data.put("album", primary);
+        data.put("albums", albumViews);
         data.put("share", shareView);
         return success(data);
     }
@@ -95,8 +99,8 @@ public class PublicShareController extends BaseController {
         if (share == null) {
             return getDataTable(java.util.Collections.<BizPhoto>emptyList());
         }
-        BizAlbum album = albumService.getById(share.getAlbumId());
-        if (album == null || album.getDeleted() == null || album.getDeleted() != AlbumDeleted.NORMAL) {
+        List<BizAlbum> albums = loadNormalAlbums(shareService.resolveAlbumIds(share));
+        if (albums.isEmpty()) {
             return getDataTable(java.util.Collections.<BizPhoto>emptyList());
         }
         startPage();
@@ -132,15 +136,25 @@ public class PublicShareController extends BaseController {
         if (share.getShareTrack() == null || share.getShareTrack() != 1) {
             return success(java.util.Collections.emptyList());
         }
-        List<BizTrack> list = trackService.list(new LambdaQueryWrapper<BizTrack>()
-                .eq(BizTrack::getAlbumId, share.getAlbumId())
+        List<Long> albumIds = shareService.resolveAlbumIds(share);
+        if (albumIds.isEmpty()) {
+            return success(java.util.Collections.emptyList());
+        }
+        LambdaQueryWrapper<BizTrack> tw = new LambdaQueryWrapper<BizTrack>()
                 .eq(BizTrack::getEnabled, 1)
                 .eq(BizTrack::getDeleted, 0)
-                .orderByDesc(BizTrack::getTrackId));
+                .orderByDesc(BizTrack::getTrackId);
+        if (albumIds.size() == 1) {
+            tw.eq(BizTrack::getAlbumId, albumIds.get(0));
+        } else {
+            tw.in(BizTrack::getAlbumId, albumIds);
+        }
+        List<BizTrack> list = trackService.list(tw);
         List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
         for (BizTrack t : list) {
             Map<String, Object> m = new HashMap<String, Object>();
             m.put("trackId", t.getTrackId());
+            m.put("albumId", t.getAlbumId());
             m.put("trackName", t.getTrackName());
             m.put("trackColor", t.getTrackColor());
             m.put("totalDistance", t.getTotalDistance());
@@ -164,9 +178,10 @@ public class PublicShareController extends BaseController {
         if (share.getShareTrack() == null || share.getShareTrack() != 1) {
             return error("此分享未开放轨迹");
         }
+        Set<Long> albumIdSet = new HashSet<Long>(shareService.resolveAlbumIds(share));
         BizTrack track = trackService.getById(trackId);
         if (track == null || track.getAlbumId() == null
-                || !track.getAlbumId().equals(share.getAlbumId())
+                || !albumIdSet.contains(track.getAlbumId())
                 || (track.getEnabled() != null && track.getEnabled() == 0)
                 || (track.getDeleted() != null && track.getDeleted() == 1)) {
             return error("轨迹不存在");
@@ -176,6 +191,7 @@ public class PublicShareController extends BaseController {
                 .orderByAsc(BizTrackPoint::getSequence));
         Map<String, Object> trackView = new HashMap<String, Object>();
         trackView.put("trackId", track.getTrackId());
+        trackView.put("albumId", track.getAlbumId());
         trackView.put("trackName", track.getTrackName());
         trackView.put("trackColor", track.getTrackColor());
         trackView.put("totalDistance", track.getTotalDistance());
@@ -188,5 +204,61 @@ public class PublicShareController extends BaseController {
         data.put("points", points);
         data.put("gpxOverlays", trackGpxFileService.listOverlaysForTrack(track));
         return success(data);
+    }
+
+    private List<BizAlbum> loadNormalAlbums(List<Long> albumIds) {
+        List<BizAlbum> out = new ArrayList<BizAlbum>();
+        if (albumIds == null || albumIds.isEmpty()) {
+            return out;
+        }
+        List<BizAlbum> rows = albumService.listByIds(albumIds);
+        Map<Long, BizAlbum> map = new HashMap<Long, BizAlbum>();
+        if (rows != null) {
+            for (BizAlbum a : rows) {
+                if (a != null && a.getAlbumId() != null
+                        && a.getDeleted() != null && a.getDeleted() == AlbumDeleted.NORMAL) {
+                    map.put(a.getAlbumId(), a);
+                }
+            }
+        }
+        for (Long id : albumIds) {
+            BizAlbum a = map.get(id);
+            if (a != null) {
+                out.add(a);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> toAlbumView(BizAlbum album, Long photoCount) {
+        Map<String, Object> albumView = new HashMap<String, Object>();
+        albumView.put("albumId", album.getAlbumId());
+        albumView.put("albumName", album.getAlbumName());
+        albumView.put("albumDesc", album.getAlbumDesc());
+        albumView.put("coverUrl", album.getCoverUrl());
+        albumView.put("locationSummary", album.getLocationSummary());
+        albumView.put("startTime", album.getStartTime());
+        albumView.put("endTime", album.getEndTime());
+        if (photoCount != null) {
+            albumView.put("photoCount", photoCount);
+        } else {
+            albumView.put("photoCount", album.getPhotoCount());
+        }
+        return albumView;
+    }
+
+    private static String buildMultiTitle(List<BizAlbum> albums) {
+        if (albums == null || albums.isEmpty()) {
+            return "分享相册";
+        }
+        if (albums.size() == 1) {
+            String n = albums.get(0).getAlbumName();
+            return n != null ? n : "分享相册";
+        }
+        String first = albums.get(0).getAlbumName();
+        if (first == null || first.isEmpty()) {
+            first = "相册";
+        }
+        return first + " 等" + albums.size() + "个相册";
     }
 }

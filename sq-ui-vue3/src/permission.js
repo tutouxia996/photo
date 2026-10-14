@@ -73,9 +73,11 @@ router.beforeEach((to, from, next) => {
             next({ ...to, replace: true })
           })
         }).catch(err => {
-          useUserStore().logOut().then(() => {
-            ElMessage.error(err)
-            next({ path: '/' })
+          // 会话失效时务必跳转登录；logOut 已保证必 resolve
+          useUserStore().logOut().finally(() => {
+            ElMessage.error(typeof err === 'string' ? err : (err?.message || '登录状态已失效，请重新登录'))
+            next(`/login?redirect=${encodeURIComponent(to.fullPath)}`)
+            NProgress.done()
           })
         })
       } else {

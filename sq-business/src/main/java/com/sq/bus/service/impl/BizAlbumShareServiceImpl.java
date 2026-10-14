@@ -47,6 +47,7 @@ public class BizAlbumShareServiceImpl extends ServiceImpl<BizAlbumShareMapper, B
             return null;
         }
         fillPhotoIdList(share);
+        fillAlbumIdList(share);
         return share;
     }
 
@@ -85,6 +86,81 @@ public class BizAlbumShareServiceImpl extends ServiceImpl<BizAlbumShareMapper, B
     }
 
     @Override
+    public void fillAlbumIdList(BizAlbumShare share) {
+        if (share == null) {
+            return;
+        }
+        share.setAlbumIdList(resolveAlbumIds(share));
+    }
+
+    @Override
+    public void writeAlbumIds(BizAlbumShare share) {
+        if (share == null) {
+            return;
+        }
+        List<Long> ids = normalizeAlbumIdList(share.getAlbumIdList(), share.getAlbumId());
+        if (ids.isEmpty()) {
+            share.setAlbumIds(null);
+            return;
+        }
+        share.setAlbumId(ids.get(0));
+        share.setAlbumIdList(ids);
+        if (ids.size() == 1) {
+            share.setAlbumIds(null);
+            return;
+        }
+        try {
+            share.setAlbumIds(MAPPER.writeValueAsString(ids));
+        } catch (Exception e) {
+            share.setAlbumIds(null);
+        }
+    }
+
+    @Override
+    public List<Long> resolveAlbumIds(BizAlbumShare share) {
+        if (share == null) {
+            return Collections.emptyList();
+        }
+        List<Long> fromJson = Collections.emptyList();
+        if (StringUtils.isNotEmpty(share.getAlbumIds())) {
+            try {
+                List<Long> parsed = MAPPER.readValue(share.getAlbumIds(), new TypeReference<List<Long>>() {});
+                if (parsed != null) {
+                    fromJson = parsed;
+                }
+            } catch (Exception ignored) {
+                fromJson = Collections.emptyList();
+            }
+        }
+        return normalizeAlbumIdList(fromJson, share.getAlbumId());
+    }
+
+    private static List<Long> normalizeAlbumIdList(List<Long> raw, Long primary) {
+        List<Long> out = new ArrayList<Long>();
+        Set<Long> seen = new HashSet<Long>();
+        if (raw != null) {
+            for (Long id : raw) {
+                if (id == null || seen.contains(id)) {
+                    continue;
+                }
+                seen.add(id);
+                out.add(id);
+            }
+        }
+        if (primary != null && !seen.contains(primary)) {
+            out.add(0, primary);
+        } else if (primary != null && !out.isEmpty() && !primary.equals(out.get(0))) {
+            // 保证主相册在首位
+            out.remove(primary);
+            out.add(0, primary);
+        }
+        if (out.isEmpty() && primary != null) {
+            out.add(primary);
+        }
+        return out;
+    }
+
+    @Override
     public String generateToken() {
         char[] buf = new char[40];
         for (int i = 0; i < buf.length; i++) {
@@ -95,11 +171,18 @@ public class BizAlbumShareServiceImpl extends ServiceImpl<BizAlbumShareMapper, B
 
     @Override
     public LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share) {
+        List<Long> albumIds = resolveAlbumIds(share);
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
-                .eq(BizPhoto::getAlbumId, share.getAlbumId())
                 .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .orderByDesc(BizPhoto::getShootTime)
                 .orderByDesc(BizPhoto::getPhotoId);
+        if (albumIds.isEmpty()) {
+            wrapper.eq(BizPhoto::getAlbumId, -1L);
+        } else if (albumIds.size() == 1) {
+            wrapper.eq(BizPhoto::getAlbumId, albumIds.get(0));
+        } else {
+            wrapper.in(BizPhoto::getAlbumId, albumIds);
+        }
 
         String scope = normalizeScope(share.getMediaScope());
         if ("image".equals(scope)) {
@@ -130,7 +213,8 @@ public class BizAlbumShareServiceImpl extends ServiceImpl<BizAlbumShareMapper, B
         if (share == null || photo == null) {
             return false;
         }
-        if (photo.getAlbumId() == null || !photo.getAlbumId().equals(share.getAlbumId())) {
+        List<Long> albumIds = resolveAlbumIds(share);
+        if (photo.getAlbumId() == null || !albumIds.contains(photo.getAlbumId())) {
             return false;
         }
         if (photo.getDeleted() != null && photo.getDeleted() != AlbumDeleted.NORMAL) {

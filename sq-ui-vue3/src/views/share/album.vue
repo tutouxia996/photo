@@ -4,12 +4,18 @@
       <div class="share-header-main">
         <div class="share-brand">分享相册</div>
         <div class="share-title-wrap">
-          <h1 class="share-title">{{ album.albumName || '相册' }}</h1>
-          <p v-if="album.albumDesc" class="share-desc">{{ album.albumDesc }}</p>
+          <h1 class="share-title">{{ pageTitle }}</h1>
+          <p v-if="!isMultiAlbum && album.albumDesc" class="share-desc">{{ album.albumDesc }}</p>
+          <div v-if="isMultiAlbum" class="share-album-chips">
+            <span v-for="a in albums" :key="a.albumId" class="share-album-chip" :title="a.albumName">
+              {{ a.albumName || '未命名相册' }}
+            </span>
+          </div>
           <p class="share-meta">
             <span>共 {{ total || photos.length }} 项</span>
+            <span v-if="isMultiAlbum">· {{ albums.length }} 个相册</span>
             <span v-if="photos.length && total && photos.length < total">· 已加载 {{ photos.length }}</span>
-            <span v-if="album.locationSummary">· {{ album.locationSummary }}</span>
+            <span v-if="!isMultiAlbum && album.locationSummary">· {{ album.locationSummary }}</span>
             <span v-if="trackName && shareTrack">· 轨迹 {{ trackName }}</span>
           </p>
         </div>
@@ -102,8 +108,9 @@
           </template>
           <template #meta>
             <div class="map-meta">
-              <span class="name">{{ album.albumName || '分享相册' }}</span>
+              <span class="name">{{ pageTitle }}</span>
               <span class="stat">定位 {{ mapPoints.length }}</span>
+              <span v-if="isMultiAlbum" class="stat">{{ albums.length }} 个相册</span>
               <span v-if="trackLineActive && trackName" class="stat track">轨迹 {{ trackName }}</span>
             </div>
           </template>
@@ -247,6 +254,7 @@ const loading = ref(true)
 const loadingMore = ref(false)
 const errorMsg = ref('')
 const album = ref({})
+const albums = ref([])
 const shareTrack = ref(false)
 const photos = ref([])
 const total = ref(0)
@@ -270,6 +278,14 @@ const viewerIndex = ref(0)
 const token = computed(() => String(route.params.token || '').trim())
 const currentMedia = computed(() => photos.value[viewerIndex.value] || null)
 const isPanoViewing = computed(() => isPanoPhoto(currentMedia.value))
+const isMultiAlbum = computed(() => albums.value.length > 1)
+const pageTitle = computed(() => {
+  if (isMultiAlbum.value) {
+    const first = albums.value[0]?.albumName || '相册'
+    return `${first} 等${albums.value.length}个相册`
+  }
+  return album.value.albumName || '相册'
+})
 
 /** 与相册详情一致：库字段优先，文件名 PHOTOSPHERE / .PANO. 兜底 */
 function isPanoPhoto(item) {
@@ -430,8 +446,10 @@ async function loadMeta() {
   const res = await resolveShare(token.value)
   const data = res.data || {}
   album.value = data.album || {}
+  const list = Array.isArray(data.albums) ? data.albums : []
+  albums.value = list.length ? list : (data.album ? [data.album] : [])
   shareTrack.value = !!(data.share && data.share.shareTrack)
-  document.title = (album.value.albumName || '分享相册') + ' - 分享'
+  document.title = pageTitle.value + ' - 分享'
 }
 
 async function loadPhotos(reset = false) {
@@ -504,24 +522,47 @@ async function loadMapData() {
   trackGpxOverlays.value = []
   trackName.value = ''
   if (tracks.length) {
-    const first = tracks[0]
-    trackColor.value = first.trackColor || '#3B82F6'
-    trackName.value = first.trackName || ''
-    const detail = await getShareTrackPoints(token.value, first.trackId)
-    const data = detail.data || {}
-    const track = data.track || first
-    trackName.value = track.trackName || trackName.value
-    trackColor.value = track.trackColor || trackColor.value
-    const pts = Array.isArray(data.points) ? data.points : []
-    trackPoints.value = pts
-      .filter(p => p.latitude != null && p.longitude != null)
-      .map(p => ({
-        ...p,
-        latitude: p.latitude,
-        longitude: p.longitude,
-        travelMode: p.travelMode
-      }))
-    trackGpxOverlays.value = Array.isArray(data.gpxOverlays) ? data.gpxOverlays : []
+    const details = await Promise.all(
+      tracks.map(t => getShareTrackPoints(token.value, t.trackId).catch(() => null))
+    )
+    const overlays = []
+    details.forEach((detail, idx) => {
+      if (!detail) return
+      const data = detail.data || {}
+      const track = data.track || tracks[idx] || {}
+      const pts = (Array.isArray(data.points) ? data.points : [])
+        .filter(p => p.latitude != null && p.longitude != null)
+        .map(p => ({
+          ...p,
+          latitude: p.latitude,
+          longitude: p.longitude,
+          travelMode: p.travelMode
+        }))
+      const gpx = Array.isArray(data.gpxOverlays) ? data.gpxOverlays : []
+      overlays.push(...gpx)
+      if (idx === 0) {
+        trackPoints.value = pts
+        trackName.value = track.trackName || tracks[idx]?.trackName || ''
+        trackColor.value = track.trackColor || tracks[idx]?.trackColor || '#3B82F6'
+      } else if (pts.length >= 2) {
+        // 其余相册轨迹作为叠加线路
+        overlays.push({
+          fileName: track.trackName || `轨迹${idx + 1}`,
+          color: track.trackColor || '#3B82F6',
+          showPath: true,
+          path: pts.map(p => [Number(p.latitude), Number(p.longitude)]),
+          pathPointCount: pts.length,
+          travelMode: pts[0]?.travelMode || null,
+          segments: []
+        })
+      }
+    })
+    if (tracks.length > 1) {
+      trackName.value = trackName.value
+        ? `${trackName.value} 等${tracks.length}条`
+        : `${tracks.length} 条轨迹`
+    }
+    trackGpxOverlays.value = overlays
   }
   showTrackLine.value = shareTrack.value && (
     trackPoints.value.length > 1 || trackGpxOverlays.value.length > 0
@@ -665,6 +706,27 @@ watch(
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.share-album-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 72px;
+  overflow: auto;
+}
+
+.share-album-chip {
+  max-width: 180px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .share-meta {

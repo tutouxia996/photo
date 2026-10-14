@@ -5,7 +5,8 @@ USE `photo`;
 
 CREATE TABLE IF NOT EXISTS `biz_album_share` (
   `share_id`      bigint(20)   NOT NULL AUTO_INCREMENT COMMENT '分享ID',
-  `album_id`      bigint(20)   NOT NULL COMMENT '相册ID',
+  `album_id`      bigint(20)   NOT NULL COMMENT '主相册ID（列表归属/兼容单相册）',
+  `album_ids`     varchar(1000) DEFAULT NULL COMMENT '分享包含的全部相册ID JSON数组；空表示仅 album_id',
   `share_token`   varchar(64)  NOT NULL COMMENT '分享令牌（URL用，不可猜测）',
   `share_track`   tinyint(4)   NOT NULL DEFAULT 0 COMMENT '是否分享轨迹：0否 1是',
   `media_scope`   varchar(16)  NOT NULL DEFAULT 'all' COMMENT '媒体范围：all全部 image仅图片 video仅视频',

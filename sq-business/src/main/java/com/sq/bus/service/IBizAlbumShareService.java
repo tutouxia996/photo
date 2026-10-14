@@ -25,12 +25,27 @@ public interface IBizAlbumShareService extends IService<BizAlbumShare> {
     void writePhotoIds(BizAlbumShare share);
 
     /**
+     * 解析 albumIds JSON + albumId → albumIdList（去重保序）
+     */
+    void fillAlbumIdList(BizAlbumShare share);
+
+    /**
+     * 序列化 albumIdList 到 albumIds；并同步主 albumId 为列表首项
+     */
+    void writeAlbumIds(BizAlbumShare share);
+
+    /**
+     * 本次分享覆盖的全部相册 ID（至少含 albumId）
+     */
+    List<Long> resolveAlbumIds(BizAlbumShare share);
+
+    /**
      * 生成不可猜测的分享令牌
      */
     String generateToken();
 
     /**
-     * 按分享规则构造照片查询条件（已含 albumId / deleted）
+     * 按分享规则构造照片查询条件（已含 albumId(s) / deleted）
      */
     LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share);
 
