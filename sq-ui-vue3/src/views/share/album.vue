@@ -2,21 +2,30 @@
   <div class="share-page" :class="{ 'is-map': viewMode === 'map' }" v-loading="loading">
     <header class="share-header">
       <div class="share-header-main">
+        <button
+          v-if="showBackToAlbums"
+          type="button"
+          class="share-back-btn"
+          title="返回相册列表"
+          @click="backToAlbumList"
+        >
+          <el-icon :size="18"><ArrowLeft /></el-icon>
+        </button>
         <div class="share-brand">分享相册</div>
         <div class="share-title-wrap">
           <h1 class="share-title">{{ pageTitle }}</h1>
-          <p v-if="!isMultiAlbum && album.albumDesc" class="share-desc">{{ album.albumDesc }}</p>
-          <div v-if="isMultiAlbum" class="share-album-chips">
-            <span v-for="a in albums" :key="a.albumId" class="share-album-chip" :title="a.albumName">
-              {{ a.albumName || '未命名相册' }}
-            </span>
-          </div>
+          <p v-if="activeAlbumDesc" class="share-desc">{{ activeAlbumDesc }}</p>
           <p class="share-meta">
-            <span>共 {{ total || photos.length }} 项</span>
-            <span v-if="isMultiAlbum">· {{ albums.length }} 个相册</span>
-            <span v-if="photos.length && total && photos.length < total">· 已加载 {{ photos.length }}</span>
-            <span v-if="!isMultiAlbum && album.locationSummary">· {{ album.locationSummary }}</span>
-            <span v-if="trackName && shareTrack">· 轨迹 {{ trackName }}</span>
+            <template v-if="showingAlbumList">
+              <span>共 {{ albums.length }} 个相册</span>
+              <span>· {{ shareTotalCount }} 项</span>
+            </template>
+            <template v-else>
+              <span>共 {{ total || photos.length }} 项</span>
+              <span v-if="photos.length && total && photos.length < total">· 已加载 {{ photos.length }}</span>
+              <span v-if="activeAlbumLocation">· {{ activeAlbumLocation }}</span>
+              <span v-if="trackName && shareTrack && viewMode === 'map'">· 轨迹 {{ trackName }}</span>
+            </template>
           </p>
         </div>
       </div>
@@ -27,7 +36,7 @@
           :type="viewMode === 'map' ? 'primary' : 'default'"
           @click="toggleMap"
         >
-          {{ viewMode === 'map' ? '返回相册' : '照片地图' }}
+          {{ viewMode === 'map' ? (showingAlbumList ? '返回列表' : '返回相册') : '照片地图' }}
         </el-button>
       </div>
     </header>
@@ -37,7 +46,36 @@
     </div>
 
     <template v-else>
-      <div v-show="viewMode === 'grid'" class="share-grid-wrap">
+      <!-- 多相册：相册集列表 -->
+      <div v-show="viewMode === 'grid' && showingAlbumList" class="share-album-wrap">
+        <div class="share-album-grid">
+          <button
+            v-for="item in albums"
+            :key="item.albumId"
+            type="button"
+            class="share-album-card"
+            @click="openAlbum(item)"
+          >
+            <div class="share-album-cover">
+              <img v-if="albumCoverSrc(item)" :src="albumCoverSrc(item)" :alt="item.albumName || ''" loading="lazy" />
+              <div v-else class="share-album-cover-placeholder">
+                <el-icon :size="36"><PictureFilled /></el-icon>
+              </div>
+              <span class="share-album-badge">{{ item.photoCount ?? 0 }}</span>
+            </div>
+            <div class="share-album-meta">
+              <div class="share-album-name" :title="item.albumName">{{ item.albumName || '未命名相册' }}</div>
+              <div v-if="albumSubtitle(item)" class="share-album-sub">{{ albumSubtitle(item) }}</div>
+            </div>
+          </button>
+        </div>
+        <div v-if="!albums.length && !loading" class="share-empty">
+          <el-empty description="此分享暂无相册" />
+        </div>
+      </div>
+
+      <!-- 单相册 / 进入某一相册后的文件网格 -->
+      <div v-show="viewMode === 'grid' && !showingAlbumList" class="share-grid-wrap">
         <div class="share-grid">
           <button
             v-for="(item, index) in photos"
@@ -110,7 +148,7 @@
             <div class="map-meta">
               <span class="name">{{ pageTitle }}</span>
               <span class="stat">定位 {{ mapPoints.length }}</span>
-              <span v-if="isMultiAlbum" class="stat">{{ albums.length }} 个相册</span>
+              <span v-if="showingAlbumList && isMultiAlbum" class="stat">{{ albums.length }} 个相册</span>
               <span v-if="trackLineActive && trackName" class="stat track">轨迹 {{ trackName }}</span>
             </div>
           </template>
@@ -255,6 +293,8 @@ const loadingMore = ref(false)
 const errorMsg = ref('')
 const album = ref({})
 const albums = ref([])
+/** 当前进入查看的相册；多相册列表页为 null */
+const currentAlbum = ref(null)
 const shareTrack = ref(false)
 const photos = ref([])
 const total = ref(0)
@@ -263,6 +303,8 @@ const pageSize = 200
 const hasMore = ref(true)
 const viewMode = ref('grid')
 const mapReady = ref(false)
+/** 地图加载时对应的 albumId（null=全部） */
+const mapAlbumKey = ref(undefined)
 const mapPoints = ref([])
 const trackPoints = ref([])
 const trackGpxOverlays = ref([])
@@ -279,13 +321,29 @@ const token = computed(() => String(route.params.token || '').trim())
 const currentMedia = computed(() => photos.value[viewerIndex.value] || null)
 const isPanoViewing = computed(() => isPanoPhoto(currentMedia.value))
 const isMultiAlbum = computed(() => albums.value.length > 1)
+/** 多相册且未点进某一相册：显示相册集列表 */
+const showingAlbumList = computed(() => isMultiAlbum.value && !currentAlbum.value)
+const showBackToAlbums = computed(() => isMultiAlbum.value && !!currentAlbum.value && viewMode.value === 'grid')
+const shareTotalCount = computed(() =>
+  albums.value.reduce((sum, a) => sum + (Number(a.photoCount) || 0), 0)
+)
+const activeAlbumDesc = computed(() => {
+  if (showingAlbumList.value) return ''
+  return (currentAlbum.value || album.value)?.albumDesc || ''
+})
+const activeAlbumLocation = computed(() => {
+  if (showingAlbumList.value) return ''
+  return (currentAlbum.value || album.value)?.locationSummary || ''
+})
 const pageTitle = computed(() => {
-  if (isMultiAlbum.value) {
+  if (showingAlbumList.value) {
     const first = albums.value[0]?.albumName || '相册'
     return `${first} 等${albums.value.length}个相册`
   }
+  if (currentAlbum.value) return currentAlbum.value.albumName || '相册'
   return album.value.albumName || '相册'
 })
+const activeAlbumId = computed(() => currentAlbum.value?.albumId ?? null)
 
 /** 与相册详情一致：库字段优先，文件名 PHOTOSPHERE / .PANO. 兜底 */
 function isPanoPhoto(item) {
@@ -397,6 +455,23 @@ function thumbSrc(item) {
   return ''
 }
 
+function albumCoverSrc(item) {
+  if (!item?.coverUrl) return ''
+  return resolveUrl(item.coverUrl)
+}
+
+function formatCnDate(time) {
+  if (!time) return ''
+  const d = new Date(typeof time === 'string' ? time.replace(/-/g, '/') : time)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
+function albumSubtitle(item) {
+  if (item?.locationSummary) return item.locationSummary
+  return formatCnDate(item?.startTime)
+}
+
 /** 列表缩略图用；预览必须走原图/原视频 */
 function originalSrc(item) {
   if (!item?.photoId) return ''
@@ -449,6 +524,12 @@ async function loadMeta() {
   const list = Array.isArray(data.albums) ? data.albums : []
   albums.value = list.length ? list : (data.album ? [data.album] : [])
   shareTrack.value = !!(data.share && data.share.shareTrack)
+  // 单相册直接进文件；多相册停在相册集列表
+  if (albums.value.length === 1) {
+    currentAlbum.value = albums.value[0]
+  } else {
+    currentAlbum.value = null
+  }
   document.title = pageTitle.value + ' - 分享'
 }
 
@@ -457,15 +538,18 @@ async function loadPhotos(reset = false) {
     pageNum.value = 1
     photos.value = []
     hasMore.value = true
+    allLoadPromise = null
   }
   if (!hasMore.value || loadingMore.value) return
   const isFirst = pageNum.value === 1 && photos.value.length === 0
   loadingMore.value = true
   try {
-    const res = await listSharePhotos(token.value, {
+    const query = {
       pageNum: pageNum.value,
       pageSize
-    })
+    }
+    if (activeAlbumId.value != null) query.albumId = activeAlbumId.value
+    const res = await listSharePhotos(token.value, query)
     const rows = res.rows || []
     total.value = Number(res.total) || 0
     photos.value = isFirst ? rows : photos.value.concat(rows)
@@ -475,6 +559,36 @@ async function loadPhotos(reset = false) {
   } finally {
     loadingMore.value = false
   }
+}
+
+async function openAlbum(item) {
+  if (!item?.albumId) return
+  currentAlbum.value = item
+  viewMode.value = 'grid'
+  mapReady.value = false
+  mapAlbumKey.value = undefined
+  document.title = pageTitle.value + ' - 分享'
+  loading.value = true
+  try {
+    await loadAllPhotos()
+  } catch (e) {
+    errorMsg.value = e?.message || '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+function backToAlbumList() {
+  currentAlbum.value = null
+  photos.value = []
+  total.value = 0
+  pageNum.value = 1
+  hasMore.value = true
+  viewerOpen.value = false
+  viewMode.value = 'grid'
+  mapReady.value = false
+  mapAlbumKey.value = undefined
+  document.title = pageTitle.value + ' - 分享'
 }
 
 /** 自动把剩余页全部拉完，避免只看到第一页 */
@@ -501,20 +615,25 @@ async function loadAllPhotos() {
 }
 
 function loadMore() {
+  if (showingAlbumList.value) return
   if (loading.value || loadingMore.value || !hasMore.value || viewMode.value !== 'grid') return
   loadPhotos(false)
 }
 
 function onWindowScroll() {
+  if (showingAlbumList.value) return
   if (viewMode.value !== 'grid' || !hasMore.value || loading.value || loadingMore.value) return
   const remain = document.documentElement.scrollHeight - window.scrollY - window.innerHeight
   if (remain < 480) loadMore()
 }
 
 async function loadMapData() {
+  const albumId = activeAlbumId.value
+  const mapQuery = albumId != null ? { albumId } : {}
+  const trackQuery = albumId != null ? { albumId } : {}
   const [pointsRes, tracksRes] = await Promise.all([
-    listShareMapPoints(token.value),
-    shareTrack.value ? listShareTracks(token.value) : Promise.resolve({ data: [] })
+    listShareMapPoints(token.value, mapQuery),
+    shareTrack.value ? listShareTracks(token.value, trackQuery) : Promise.resolve({ data: [] })
   ])
   mapPoints.value = Array.isArray(pointsRes.data) ? pointsRes.data : []
   const tracks = Array.isArray(tracksRes.data) ? tracksRes.data : []
@@ -545,7 +664,6 @@ async function loadMapData() {
         trackName.value = track.trackName || tracks[idx]?.trackName || ''
         trackColor.value = track.trackColor || tracks[idx]?.trackColor || '#3B82F6'
       } else if (pts.length >= 2) {
-        // 其余相册轨迹作为叠加线路
         overlays.push({
           fileName: track.trackName || `轨迹${idx + 1}`,
           color: track.trackColor || '#3B82F6',
@@ -567,6 +685,7 @@ async function loadMapData() {
   showTrackLine.value = shareTrack.value && (
     trackPoints.value.length > 1 || trackGpxOverlays.value.length > 0
   )
+  mapAlbumKey.value = albumId
   mapReady.value = true
 }
 
@@ -576,13 +695,32 @@ async function toggleMap() {
     return
   }
   viewMode.value = 'map'
-  if (!mapReady.value) {
+  const needReload = !mapReady.value || mapAlbumKey.value !== activeAlbumId.value
+  if (needReload) {
     loading.value = true
     try {
       await loadMapData()
     } finally {
       loading.value = false
     }
+  }
+}
+
+async function bootstrapShare() {
+  errorMsg.value = ''
+  viewMode.value = 'grid'
+  mapReady.value = false
+  mapAlbumKey.value = undefined
+  trackPoints.value = []
+  trackGpxOverlays.value = []
+  modeFilter.value = []
+  tracksOnly.value = false
+  photos.value = []
+  total.value = 0
+  await loadMeta()
+  // 多相册列表页不预拉全部文件；单相册 / 已进入相册才加载
+  if (!showingAlbumList.value) {
+    await loadAllPhotos()
   }
 }
 
@@ -596,8 +734,7 @@ onMounted(async () => {
   }
   loading.value = true
   try {
-    await loadMeta()
-    await loadAllPhotos()
+    await bootstrapShare()
   } catch (e) {
     errorMsg.value = e?.message || '分享不存在或已失效'
   } finally {
@@ -614,17 +751,9 @@ watch(
   () => route.params.token,
   async () => {
     if (!token.value) return
-    errorMsg.value = ''
-    viewMode.value = 'grid'
-    mapReady.value = false
-    trackPoints.value = []
-    trackGpxOverlays.value = []
-    modeFilter.value = []
-    tracksOnly.value = false
     loading.value = true
     try {
-      await loadMeta()
-      await loadAllPhotos()
+      await bootstrapShare()
     } catch (e) {
       errorMsg.value = e?.message || '分享不存在或已失效'
     } finally {
@@ -708,25 +837,23 @@ watch(
   overflow: hidden;
 }
 
-.share-album-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-  max-height: 72px;
-  overflow: auto;
+.share-back-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
-.share-album-chip {
-  max-width: 180px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.share-back-btn:hover {
+  background: #e2e8f0;
 }
 
 .share-meta {
@@ -737,6 +864,97 @@ watch(
 
 .share-actions {
   flex-shrink: 0;
+}
+
+.share-album-wrap {
+  flex: 1;
+  width: 100%;
+  padding: 20px 20px 36px;
+  box-sizing: border-box;
+}
+
+.share-album-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 22px 18px;
+}
+
+.share-album-card {
+  margin: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition: background 0.15s ease;
+}
+
+.share-album-card:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.share-album-cover {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 6px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.share-album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.share-album-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  background: linear-gradient(145deg, #f1f5f9, #e2e8f0);
+}
+
+.share-album-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  min-width: 28px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.share-album-meta {
+  margin-top: 10px;
+  padding: 0 2px;
+}
+
+.share-album-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-album-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .share-grid-wrap {
@@ -1124,6 +1342,15 @@ watch(
   .share-title {
     font-size: 18px;
     white-space: normal;
+  }
+
+  .share-album-wrap {
+    padding: 14px 14px 28px;
+  }
+
+  .share-album-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 14px 12px;
   }
 
   .share-grid {

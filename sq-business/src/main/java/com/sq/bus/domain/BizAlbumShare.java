@@ -49,6 +49,9 @@ public class BizAlbumShare implements Serializable {
     /** 状态：1启用 0停用 */
     private Integer status;
 
+    /** 访问次数（访客打开分享页累计） */
+    private Long viewCount;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date expireTime;
 

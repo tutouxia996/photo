@@ -147,6 +147,7 @@ public class BizAlbumShareController extends BaseController {
             return error("请至少选择一张要分享的图片或视频");
         }
         share.setStatus(body.getStatus() == null ? 1 : body.getStatus());
+        share.setViewCount(0L);
         share.setExpireTime(body.getExpireTime());
         share.setRemark(body.getRemark());
         share.setCreateBy(albumAccessHelper.currentUsername());

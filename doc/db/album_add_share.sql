@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS `biz_album_share` (
   `select_mode`   varchar(16)  NOT NULL DEFAULT 'all' COMMENT '选择模式：all全部 include仅所选 exclude排除所选',
   `photo_ids`     mediumtext   DEFAULT NULL COMMENT '所选/排除的照片ID JSON数组',
   `status`        tinyint(4)   NOT NULL DEFAULT 1 COMMENT '状态：1启用 0停用',
+  `view_count`    bigint(20)   NOT NULL DEFAULT 0 COMMENT '访问次数（访客打开分享页累计）',
   `expire_time`   datetime     DEFAULT NULL COMMENT '过期时间，空表示不过期',
   `create_by`     varchar(64)  DEFAULT '' COMMENT '创建者',
   `create_time`   datetime     DEFAULT NULL COMMENT '创建时间',

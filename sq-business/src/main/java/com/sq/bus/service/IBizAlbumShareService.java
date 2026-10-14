@@ -45,9 +45,19 @@ public interface IBizAlbumShareService extends IService<BizAlbumShare> {
     String generateToken();
 
     /**
+     * 访问次数 +1（原子更新）
+     */
+    void increaseViewCount(Long shareId);
+
+    /**
      * 按分享规则构造照片查询条件（已含 albumId(s) / deleted）
      */
     LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share);
+
+    /**
+     * 按分享规则构造照片查询；albumIdFilter 非空且属于本次分享时仅查该相册
+     */
+    LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share, Long albumIdFilter);
 
     /**
      * 判断照片是否在本次分享范围内

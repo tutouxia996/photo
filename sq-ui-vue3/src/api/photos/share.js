@@ -54,20 +54,22 @@ export function listSharePhotos(token, query = {}) {
   })
 }
 
-/** 访客：地图点位 */
-export function listShareMapPoints(token) {
+/** 访客：地图点位（可选 albumId） */
+export function listShareMapPoints(token, query = {}) {
   return request({
     url: '/share/' + encodeURIComponent(token) + '/mapPoints',
     method: 'get',
+    params: query,
     headers: { isToken: false }
   })
 }
 
-/** 访客：轨迹列表 */
-export function listShareTracks(token) {
+/** 访客：轨迹列表（可选 albumId） */
+export function listShareTracks(token, query = {}) {
   return request({
     url: '/share/' + encodeURIComponent(token) + '/tracks',
     method: 'get',
+    params: query,
     headers: { isToken: false }
   })
 }

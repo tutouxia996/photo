@@ -139,6 +139,7 @@
               <div class="manage-meta">
                 <span>创建 {{ formatTime(item.createTime) }}</span>
                 <span>· {{ expireLabel(item) }}</span>
+                <span>· 访问 {{ Number(item.viewCount) || 0 }} 次</span>
               </div>
               <div class="manage-url">{{ buildUrlForShare(item) }}</div>
             </div>

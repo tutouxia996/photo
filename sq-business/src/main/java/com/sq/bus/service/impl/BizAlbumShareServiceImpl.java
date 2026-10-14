@@ -1,6 +1,7 @@
 package com.sq.bus.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -170,8 +171,30 @@ public class BizAlbumShareServiceImpl extends ServiceImpl<BizAlbumShareMapper, B
     }
 
     @Override
+    public void increaseViewCount(Long shareId) {
+        if (shareId == null) {
+            return;
+        }
+        update(new LambdaUpdateWrapper<BizAlbumShare>()
+                .eq(BizAlbumShare::getShareId, shareId)
+                .setSql("view_count = IFNULL(view_count, 0) + 1"));
+    }
+
+    @Override
     public LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share) {
+        return buildPhotoQuery(share, null);
+    }
+
+    @Override
+    public LambdaQueryWrapper<BizPhoto> buildPhotoQuery(BizAlbumShare share, Long albumIdFilter) {
         List<Long> albumIds = resolveAlbumIds(share);
+        if (albumIdFilter != null) {
+            if (albumIds.contains(albumIdFilter)) {
+                albumIds = java.util.Collections.singletonList(albumIdFilter);
+            } else {
+                albumIds = java.util.Collections.emptyList();
+            }
+        }
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .orderByDesc(BizPhoto::getShootTime)

@@ -60,16 +60,24 @@ public class PublicShareController extends BaseController {
         if (share == null) {
             return error("分享不存在或已失效");
         }
+        // 有效打开分享页计一次访问（异步失败不影响展示）
+        try {
+            shareService.increaseViewCount(share.getShareId());
+        } catch (Exception ignored) {
+            /* ignore */
+        }
         List<Long> albumIds = shareService.resolveAlbumIds(share);
         List<BizAlbum> albums = loadNormalAlbums(albumIds);
         if (albums.isEmpty()) {
             return error("分享的相册不存在");
         }
 
-        long photoCount = photoService.count(shareService.buildPhotoQuery(share));
+        long photoCount = 0L;
         List<Map<String, Object>> albumViews = new ArrayList<Map<String, Object>>();
         for (BizAlbum album : albums) {
-            albumViews.add(toAlbumView(album, null));
+            long cnt = photoService.count(shareService.buildPhotoQuery(share, album.getAlbumId()));
+            photoCount += cnt;
+            albumViews.add(toAlbumView(album, cnt));
         }
         // 主相册兼容字段：photoCount 为整次分享合计
         Map<String, Object> primary = toAlbumView(albums.get(0), photoCount);
@@ -91,10 +99,11 @@ public class PublicShareController extends BaseController {
     }
 
     /**
-     * 分享内的媒体列表
+     * 分享内的媒体列表（可选 albumId 仅看某一相册）
      */
     @GetMapping("/{token}/photos")
-    public TableDataInfo photos(@PathVariable("token") String token) {
+    public TableDataInfo photos(@PathVariable("token") String token,
+                                @RequestParam(value = "albumId", required = false) Long albumId) {
         BizAlbumShare share = shareService.getValidByToken(token);
         if (share == null) {
             return getDataTable(java.util.Collections.<BizPhoto>emptyList());
@@ -103,21 +112,24 @@ public class PublicShareController extends BaseController {
         if (albums.isEmpty()) {
             return getDataTable(java.util.Collections.<BizPhoto>emptyList());
         }
+        Long filter = resolveAlbumFilter(share, albumId);
         startPage();
-        List<BizPhoto> list = photoService.list(shareService.buildPhotoQuery(share));
+        List<BizPhoto> list = photoService.list(shareService.buildPhotoQuery(share, filter));
         return getDataTable(shareService.sanitizePhotos(list));
     }
 
     /**
-     * 分享内地图点位（仅分享范围内且有坐标的媒体）
+     * 分享内地图点位（仅分享范围内且有坐标的媒体；可选 albumId）
      */
     @GetMapping("/{token}/mapPoints")
-    public AjaxResult mapPoints(@PathVariable("token") String token) {
+    public AjaxResult mapPoints(@PathVariable("token") String token,
+                                @RequestParam(value = "albumId", required = false) Long albumId) {
         BizAlbumShare share = shareService.getValidByToken(token);
         if (share == null) {
             return error("分享不存在或已失效");
         }
-        LambdaQueryWrapper<BizPhoto> wrapper = shareService.buildPhotoQuery(share);
+        Long filter = resolveAlbumFilter(share, albumId);
+        LambdaQueryWrapper<BizPhoto> wrapper = shareService.buildPhotoQuery(share, filter);
         wrapper.isNotNull(BizPhoto::getLatitude).isNotNull(BizPhoto::getLongitude)
                 .orderByAsc(BizPhoto::getShootTime);
         List<BizPhoto> list = photoService.list(wrapper);
@@ -125,10 +137,11 @@ public class PublicShareController extends BaseController {
     }
 
     /**
-     * 分享轨迹列表（需开启分享轨迹）
+     * 分享轨迹列表（需开启分享轨迹；可选 albumId）
      */
     @GetMapping("/{token}/tracks")
-    public AjaxResult tracks(@PathVariable("token") String token) {
+    public AjaxResult tracks(@PathVariable("token") String token,
+                             @RequestParam(value = "albumId", required = false) Long albumId) {
         BizAlbumShare share = shareService.getValidByToken(token);
         if (share == null) {
             return error("分享不存在或已失效");
@@ -137,6 +150,10 @@ public class PublicShareController extends BaseController {
             return success(java.util.Collections.emptyList());
         }
         List<Long> albumIds = shareService.resolveAlbumIds(share);
+        Long filter = resolveAlbumFilter(share, albumId);
+        if (filter != null) {
+            albumIds = java.util.Collections.singletonList(filter);
+        }
         if (albumIds.isEmpty()) {
             return success(java.util.Collections.emptyList());
         }
@@ -204,6 +221,15 @@ public class PublicShareController extends BaseController {
         data.put("points", points);
         data.put("gpxOverlays", trackGpxFileService.listOverlaysForTrack(track));
         return success(data);
+    }
+
+    /** 校验 albumId 属于本次分享；非法则返回 null（查全部） */
+    private Long resolveAlbumFilter(BizAlbumShare share, Long albumId) {
+        if (albumId == null) {
+            return null;
+        }
+        List<Long> ids = shareService.resolveAlbumIds(share);
+        return ids.contains(albumId) ? albumId : null;
     }
 
     private List<BizAlbum> loadNormalAlbums(List<Long> albumIds) {
