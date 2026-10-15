@@ -35,6 +35,10 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Files;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,6 +66,9 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
     private static final Logger log = LoggerFactory.getLogger(BizTrackGpxFileServiceImpl.class);
 
     private static final String GPX_OVERLAY_COLOR = "#10B981";
+
+    /** 与照片 shoot_time（库内本地墙钟）对齐时使用的时区 */
+    private static final ZoneId ALBUM_WALL_CLOCK_ZONE = ZoneId.of("Asia/Shanghai");
 
     private static final Set<String> VALID_TRAVEL_MODES = new HashSet<String>(Arrays.asList(
             "hsr", "train", "bus", "metro", "walk", "drive", "bike", "flight", "stay", "other"
@@ -153,8 +160,9 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             row.setPointCount(samples.size());
             row.setDistanceKm(BigDecimal.valueOf(distKm).setScale(3, RoundingMode.HALF_UP));
             row.setTravelMode(travelMode);
-            row.setStartTime(GpxParseUtils.toDate(samples.get(0).timeMs));
-            row.setEndTime(GpxParseUtils.toDate(samples.get(samples.size() - 1).timeMs));
+            // 首/末坐标点时间 → 相册墙钟；勿直接 toDate(含 offset 的 epoch)，否则 JDBC +8 会再偏一次
+            row.setStartTime(gpxSampleToWallClockDate(samples.get(0).timeMs, offsetMs));
+            row.setEndTime(gpxSampleToWallClockDate(samples.get(samples.size() - 1).timeMs, offsetMs));
             row.setEnabled(1);
             row.setCreateBy(username == null ? "" : username);
             row.setCreateTime(new Date());
@@ -440,13 +448,17 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             }
         }
         Set<Long> albumsWithAuthGps = loadAlbumsWithAuthoritativeGps(albumIds);
+        Map<Long, Date[]> mediaTimeBounds = loadAlbumMediaTimeBounds(albumIds);
         for (BizTrack track : tracks) {
             List<BizTrackGpxFile> files = byAlbum.get(track.getAlbumId());
             boolean hasGpx = files != null && !files.isEmpty();
             track.setHasGpx(hasGpx ? 1 : 0);
             track.setHasAuthoritativeGps(
                     track.getAlbumId() != null && albumsWithAuthGps.contains(track.getAlbumId()) ? 1 : 0);
-            applyDisplayStats(track, hasGpx ? files : null);
+            Date[] mediaBounds = track.getAlbumId() == null ? null : mediaTimeBounds.get(track.getAlbumId());
+            Date mediaStart = mediaBounds == null ? null : mediaBounds[0];
+            Date mediaEnd = mediaBounds == null ? null : mediaBounds[1];
+            applyDisplayStats(track, hasGpx ? files : null, mediaStart, mediaEnd);
         }
     }
 
@@ -480,12 +492,54 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
     }
 
     /**
+     * 相册内照片/视频拍摄时间最早、最晚（不落库，仅展示统计）。
+     * 返回 map：albumId → [earliest, latest]
+     */
+    private Map<Long, Date[]> loadAlbumMediaTimeBounds(Set<Long> albumIds) {
+        Map<Long, Date[]> result = new HashMap<Long, Date[]>();
+        if (albumIds == null || albumIds.isEmpty()) {
+            return result;
+        }
+        List<BizPhoto> photos = photoService.list(new LambdaQueryWrapper<BizPhoto>()
+                .in(BizPhoto::getAlbumId, albumIds)
+                .eq(BizPhoto::getDeleted, com.sq.bus.constants.AlbumDeleted.NORMAL)
+                .isNotNull(BizPhoto::getShootTime)
+                .select(BizPhoto::getAlbumId, BizPhoto::getShootTime));
+        if (photos == null) {
+            return result;
+        }
+        for (BizPhoto photo : photos) {
+            if (photo.getAlbumId() == null || photo.getShootTime() == null) {
+                continue;
+            }
+            Date[] bounds = result.get(photo.getAlbumId());
+            if (bounds == null) {
+                result.put(photo.getAlbumId(), new Date[]{photo.getShootTime(), photo.getShootTime()});
+                continue;
+            }
+            if (photo.getShootTime().before(bounds[0])) {
+                bounds[0] = photo.getShootTime();
+            }
+            if (photo.getShootTime().after(bounds[1])) {
+                bounds[1] = photo.getShootTime();
+            }
+        }
+        return result;
+    }
+
+    /**
      * 列表/详情展示用统计（不落库）：
-     * - 关闭「启用轨迹」时列表里程/时长不计照片轨（表示前台不画折线），但保留 photoPointCount
+     * - 关闭「启用轨迹」时不计照片轨里程，但保留 photoPointCount；时长仍可与 GPX 取并集
      * - 区域粗定位草稿虽默认关闭启用，仍把照片点计入展示，便于继续确认
-     * - 开启「启用GPX」时再叠加 GPX 数据
+     * - 时长：照片/视频最早～最晚 与 各启用 GPX 首末坐标点 取全局最早/最晚
+     * - 里程：有启用 GPX 时优先 GPX 路径长，不再与照片轨直线距离相加
      */
     private void applyDisplayStats(BizTrack track, List<BizTrackGpxFile> files) {
+        applyDisplayStats(track, files, null, null);
+    }
+
+    private void applyDisplayStats(BizTrack track, List<BizTrackGpxFile> files,
+                                   Date mediaStart, Date mediaEnd) {
         boolean regionDraft = track.getRemark() != null
                 && track.getRemark().contains("区域粗定位草稿");
         boolean trackOn = regionDraft
@@ -499,16 +553,21 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
 
         int photoPoints = 0;
         double photoDist = 0D;
-        long photoDuration = 0L;
+        Date rangeStart = null;
+        Date rangeEnd = null;
         if (trackOn) {
             photoPoints = realPhotoPoints;
             photoDist = track.getTotalDistance() == null ? 0D : track.getTotalDistance().doubleValue();
-            photoDuration = track.getTotalDuration() == null ? 0L : track.getTotalDuration();
+            // 优先相册媒体拍摄时间；无则回退照片轨起止
+            Date pStart = mediaStart != null ? mediaStart : track.getStartTime();
+            Date pEnd = mediaEnd != null ? mediaEnd : track.getEndTime();
+            rangeStart = earlier(rangeStart, pStart);
+            rangeEnd = later(rangeEnd, pEnd);
         }
 
         int gpxPoints = 0;
         double gpxDist = 0D;
-        long gpxDuration = 0L;
+        long offsetMs = resolveGpxTimeOffsetMs();
         if (gpxOn) {
             List<BizTrackGpxFile> unique = dedupeByFileName(files);
             for (BizTrackGpxFile f : unique) {
@@ -521,15 +580,27 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                 } else {
                     gpxDist += computeStoredDistance(f);
                 }
-                if (f.getStartTime() != null && f.getEndTime() != null) {
-                    gpxDuration += Math.max(0L, (f.getEndTime().getTime() - f.getStartTime().getTime()) / 1000L);
+                // 以文件内首/末坐标点为准（必要时从采样回填库内起止）
+                Date[] gpxBounds = resolveGpxPointTimeBounds(f, offsetMs);
+                if (gpxBounds != null) {
+                    rangeStart = earlier(rangeStart, gpxBounds[0]);
+                    rangeEnd = later(rangeEnd, gpxBounds[1]);
                 }
             }
         }
 
+        // 里程：启用 GPX 且有有效路径时用 GPX；否则用照片轨
+        double displayDist = (gpxOn && gpxDist > 0D) ? gpxDist : (trackOn ? photoDist : 0D);
+        long durationSec = 0L;
+        if (rangeStart != null && rangeEnd != null) {
+            durationSec = Math.max(0L, (rangeEnd.getTime() - rangeStart.getTime()) / 1000L);
+            track.setStartTime(rangeStart);
+            track.setEndTime(rangeEnd);
+        }
+
         track.setPointCount(photoPoints + gpxPoints);
-        track.setTotalDistance(BigDecimal.valueOf(photoDist + gpxDist).setScale(2, RoundingMode.HALF_UP));
-        track.setTotalDuration(photoDuration + gpxDuration);
+        track.setTotalDistance(BigDecimal.valueOf(displayDist).setScale(2, RoundingMode.HALF_UP));
+        track.setTotalDuration(durationSec);
         if (photoPoints > 0 && gpxPoints > 0) {
             track.setSourceType("mixed");
         } else if (gpxPoints > 0) {
@@ -542,6 +613,115 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         } else {
             track.setSourceType(track.getSourceType() == null ? "photo" : track.getSourceType());
         }
+    }
+
+    /**
+     * GPX 展示用起止：文件内第一个、最后一个带时间的坐标点（墙钟）。
+     * 库内已有起止则直接用（导入时已按首末点写入）；缺失时再解析文件并回写。
+     * 若疑似历史「offset + JDBC」双重 +8h，则按文件重算并校正。
+     */
+    private Date[] resolveGpxPointTimeBounds(BizTrackGpxFile f, long offsetMs) {
+        if (f == null) {
+            return null;
+        }
+        if (f.getStartTime() != null && f.getEndTime() != null && !looksLikeDoubleShiftedGpxBounds(f)) {
+            return new Date[]{f.getStartTime(), f.getEndTime()};
+        }
+        return refreshGpxPointTimeBoundsFromFile(f, offsetMs);
+    }
+
+    /**
+     * 历史 bug：UTC 点 +配置 offset 后再经 JDBC GMT+8 入库，起止会再偏约 +8h
+     * （例如真实 08:26 存成 16:26，结束跨到次日）。
+     */
+    private static boolean looksLikeDoubleShiftedGpxBounds(BizTrackGpxFile f) {
+        if (f.getStartTime() == null || f.getEndTime() == null) {
+            return false;
+        }
+        LocalDateTime start = Instant.ofEpochMilli(f.getStartTime().getTime())
+                .atZone(ALBUM_WALL_CLOCK_ZONE)
+                .toLocalDateTime();
+        LocalDateTime end = Instant.ofEpochMilli(f.getEndTime().getTime())
+                .atZone(ALBUM_WALL_CLOCK_ZONE)
+                .toLocalDateTime();
+        // 结束落到次日、且开始在下午（常见于早上出发的轨迹被整体 +8h）
+        return end.toLocalDate().isAfter(start.toLocalDate()) && start.getHour() >= 14;
+    }
+
+    private Date[] refreshGpxPointTimeBoundsFromFile(BizTrackGpxFile f, long offsetMs) {
+        List<GpxSample> samples = loadSamples(f, offsetMs);
+        if (samples == null || samples.isEmpty()) {
+            if (f.getStartTime() != null && f.getEndTime() != null) {
+                return new Date[]{f.getStartTime(), f.getEndTime()};
+            }
+            return null;
+        }
+        GpxSample first = null;
+        GpxSample last = null;
+        for (GpxSample s : samples) {
+            if (s == null || !s.hasRealTime) {
+                continue;
+            }
+            if (first == null) {
+                first = s;
+            }
+            last = s;
+        }
+        if (first == null || last == null) {
+            if (f.getStartTime() != null && f.getEndTime() != null) {
+                return new Date[]{f.getStartTime(), f.getEndTime()};
+            }
+            return null;
+        }
+        Date start = gpxSampleToWallClockDate(first.timeMs, offsetMs);
+        Date end = gpxSampleToWallClockDate(last.timeMs, offsetMs);
+        boolean changed = f.getStartTime() == null || f.getEndTime() == null
+                || Math.abs(f.getStartTime().getTime() - start.getTime()) > 1000L
+                || Math.abs(f.getEndTime().getTime() - end.getTime()) > 1000L;
+        f.setStartTime(start);
+        f.setEndTime(end);
+        if (changed && f.getGpxId() != null) {
+            try {
+                updateById(f);
+                log.info("已按 GPX 首末坐标点校正起止 gpxId={} start={} end={}",
+                        f.getGpxId(), start, end);
+            } catch (Exception e) {
+                log.warn("回写 GPX 首末点时间失败 gpxId={}", f.getGpxId(), e);
+            }
+        }
+        return new Date[]{start, end};
+    }
+
+    /**
+     * 将 GPX 采样时间转为相册墙钟 Date（写入 MySQL datetime / 与 shoot_time 比较）。
+     * sampleTimeMs 已含配置 offset 时先还原 UTC，再转到 Asia/Shanghai，避免 JDBC 时区二次偏移。
+     */
+    private static Date gpxSampleToWallClockDate(long sampleTimeMs, long offsetMs) {
+        long rawUtcMs = sampleTimeMs - offsetMs;
+        LocalDateTime local = Instant.ofEpochMilli(rawUtcMs)
+                .atZone(ALBUM_WALL_CLOCK_ZONE)
+                .toLocalDateTime();
+        return Timestamp.valueOf(local);
+    }
+
+    private static Date earlier(Date a, Date b) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+        return b.before(a) ? b : a;
+    }
+
+    private static Date later(Date a, Date b) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+        return b.after(a) ? b : a;
     }
 
     /**

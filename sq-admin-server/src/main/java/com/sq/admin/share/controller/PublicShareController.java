@@ -167,6 +167,7 @@ public class PublicShareController extends BaseController {
             tw.in(BizTrack::getAlbumId, albumIds);
         }
         List<BizTrack> list = trackService.list(tw);
+        trackGpxFileService.enrichTracks(list);
         List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
         for (BizTrack t : list) {
             Map<String, Object> m = new HashMap<String, Object>();
@@ -206,6 +207,7 @@ public class PublicShareController extends BaseController {
         List<BizTrackPoint> points = trackPointService.list(new LambdaQueryWrapper<BizTrackPoint>()
                 .eq(BizTrackPoint::getTrackId, trackId)
                 .orderByAsc(BizTrackPoint::getSequence));
+        trackGpxFileService.enrichTracks(java.util.Collections.singletonList(track));
         Map<String, Object> trackView = new HashMap<String, Object>();
         trackView.put("trackId", track.getTrackId());
         trackView.put("albumId", track.getAlbumId());

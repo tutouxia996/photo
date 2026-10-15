@@ -57,7 +57,8 @@ public interface IBizTrackGpxFileService extends IService<BizTrackGpxFile> {
     List<Map<String, Object>> listOverlaysForTrack(BizTrack track);
 
     /**
-     * 列表/详情回填：hasGpx；按「启用轨迹 / 启用GPX」合并展示点位/里程/时长（关闭轨迹不计照片轨）。
+     * 列表/详情回填：hasGpx；按「启用轨迹 / 启用GPX」合并展示点位/里程/时长。
+     * 时长取照片与 GPX 首末点的全局最早～最晚；里程有 GPX 时优先 GPX（不与照片轨相加）。
      */
     void enrichTracks(List<BizTrack> tracks);
 }
