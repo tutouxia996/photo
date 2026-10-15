@@ -153,7 +153,6 @@
             </div>
           </template>
           <template v-if="legendItems.length && trackLineActive" #modeLegend>
-            <div class="pmc-mode-legend-title">出行方式</div>
             <button
               v-for="m in legendItems"
               :key="m.key"
@@ -1092,6 +1091,7 @@ watch(
   color: #2563eb;
 }
 
+/* 与轨迹管理「轨迹查看」图例一致 */
 .legend-item {
   display: inline-flex;
   align-items: center;
@@ -1104,6 +1104,7 @@ watch(
   color: #606266;
   font-size: 12px;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
 }
@@ -1149,6 +1150,11 @@ watch(
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
+}
+
+.legend-reset:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #303133;
 }
 
 /* —— 预览层：对齐相册详情 media-viewer —— */

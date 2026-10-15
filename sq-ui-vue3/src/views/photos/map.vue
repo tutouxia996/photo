@@ -94,7 +94,9 @@
         :segment-by-travel-mode="trackLineActive"
         :show-direction="trackLineActive"
         :overlay-paths="trackLineActive ? trackGpxOverlays : []"
+        :visible-travel-modes="visibleTravelModes"
         :show-media-markers="!tracksOnly"
+        :show-mode-legend="false"
         :estimated-draggable="canEditEstimated && !aiPickMode && !correctMode"
         :location-correctable="canEditEstimated && correctMode && !aiPickMode"
         :ai-pick-mode="aiPickMode"
@@ -140,6 +142,27 @@
             <span v-if="trackLineActive && trackDistanceText" class="stat">里程 {{ trackDistanceText }}</span>
             <span v-if="trackLineActive && trackDurationText" class="stat">时长 {{ trackDurationText }}</span>
           </div>
+        </template>
+        <template v-if="legendItems.length && trackLineActive" #modeLegend>
+          <button
+            v-for="m in legendItems"
+            :key="m.key"
+            type="button"
+            class="legend-item"
+            :class="{ active: isModeFilterActive(m.key), muted: modeFilter.length > 0 && !isModeFilterActive(m.key) }"
+            :title="modeFilterHint(m)"
+            @click="toggleModeFilter(m.key)"
+          >
+            <span class="legend-icon" :style="{ background: m.color }" v-html="travelModeIconSvg(m.key, 12)" />
+            {{ m.label }}
+          </button>
+          <button
+            v-if="modeFilter.length"
+            type="button"
+            class="legend-reset"
+            title="显示全部线路"
+            @click="clearModeFilter"
+          >全部</button>
         </template>
       </PhotoClusterMap>
 
@@ -271,7 +294,9 @@ import {
   isEstimatedLocation,
   isPendingEstimated,
   mediaSrc,
-  estimatedSourceTitle
+  estimatedSourceTitle,
+  TRAVEL_MODES,
+  travelModeIconSvg
 } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
@@ -314,6 +339,8 @@ const trackTotalDistance = ref(null)
 const trackTotalDuration = ref(null)
 /** 当前已加载轨迹所属相册，防止切换相册时串到别的轨迹 */
 const loadedTrackAlbumId = ref(undefined)
+/** 选中的出行方式；空数组表示显示全部（与轨迹查看一致） */
+const modeFilter = ref([])
 let trackLoadSeq = 0
 
 function sameAlbumId(a, b) {
@@ -390,6 +417,65 @@ const metaTitle = computed(() => {
 
 const trackDistanceText = computed(() => formatTrackDistance(trackTotalDistance.value))
 const trackDurationText = computed(() => formatTrackDuration(trackTotalDuration.value))
+
+const visibleTravelModes = computed(() => (
+  modeFilter.value.length ? modeFilter.value.slice() : null
+))
+
+const legendItems = computed(() => {
+  if (!trackLineActive.value) return []
+  const keys = new Set()
+  trackPoints.value.forEach((p, idx) => {
+    if (idx >= trackPoints.value.length - 1) return
+    if (p?.travelMode) keys.add(String(p.travelMode).toLowerCase())
+  })
+  trackGpxOverlays.value.forEach(o => {
+    if (!o || o.showPath === false) return
+    const hasPath = (Array.isArray(o.path) && o.path.length >= 2) || Number(o.pathPointCount) >= 2
+    if (!hasPath) return
+    const segs = Array.isArray(o.segments) ? o.segments : []
+    if (segs.length) {
+      segs.forEach(s => {
+        if (s?.travelMode) keys.add(String(s.travelMode).toLowerCase())
+      })
+    } else if (o.travelMode) {
+      keys.add(String(o.travelMode).toLowerCase())
+    }
+  })
+  return TRAVEL_MODES.filter(m => keys.has(m.key))
+})
+
+function isModeFilterActive(key) {
+  return modeFilter.value.includes(key)
+}
+
+function modeFilterHint(m) {
+  if (!modeFilter.value.length) return `点击仅显示「${m.label}」线路`
+  if (isModeFilterActive(m.key)) return `再次点击取消「${m.label}」筛选`
+  return `叠加显示「${m.label}」线路`
+}
+
+function toggleModeFilter(key) {
+  const cur = modeFilter.value
+  if (cur.includes(key)) {
+    modeFilter.value = cur.filter(k => k !== key)
+  } else {
+    modeFilter.value = [...cur, key]
+  }
+}
+
+function clearModeFilter() {
+  modeFilter.value = []
+}
+
+watch(showTrackLine, (on) => {
+  if (!on) modeFilter.value = []
+})
+
+watch(legendItems, (items) => {
+  const keys = new Set(items.map(m => m.key))
+  modeFilter.value = modeFilter.value.filter(k => keys.has(k))
+})
 
 function formatTrackDistance(km) {
   if (km == null || km === '') return ''
@@ -485,6 +571,7 @@ function clearTrackData() {
   trackTotalDistance.value = null
   trackTotalDuration.value = null
   loadedTrackAlbumId.value = undefined
+  modeFilter.value = []
 }
 
 function pickAlbumTrack(rows, expectedAlbumId) {
@@ -1231,6 +1318,72 @@ watch(() => route.query.albumId, (val) => {
 
 .map-meta .stat.track {
   color: #3b82f6;
+}
+
+/* 与轨迹管理「轨迹查看」图例一致 */
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
+}
+
+.legend-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #303133;
+}
+
+.legend-item.active {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.legend-item.muted {
+  opacity: 0.38;
+}
+
+.legend-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.legend-icon :deep(svg) {
+  display: block;
+  fill: #fff;
+}
+
+.legend-reset {
+  margin: 0 0 0 2px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  color: #606266;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.legend-reset:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #303133;
 }
 
 .est-edit-panel {

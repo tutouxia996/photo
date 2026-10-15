@@ -121,7 +121,6 @@
         </div>
       </template>
       <template v-if="legendItems.length && !editing" #modeLegend>
-        <div class="pmc-mode-legend-title">出行方式</div>
         <button
           v-for="m in legendItems"
           :key="m.key"
@@ -2630,6 +2629,7 @@ defineExpose({
   color: #606266;
   font-size: 12px;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
 }

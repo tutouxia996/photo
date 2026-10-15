@@ -22,14 +22,13 @@
     <div v-if="!hasPoints" class="map-empty">{{ emptyText }}</div>
     <div v-if="$slots.modeLegend || modeLegendItems.length" class="pmc-mode-legend">
       <slot name="modeLegend">
-        <div class="pmc-mode-legend-title">出行方式</div>
         <div
           v-for="m in modeLegendItems"
           :key="m.key"
           class="pmc-mode-legend-item"
         >
-          <span class="pmc-mode-legend-icon" :style="{ background: m.color }" v-html="travelModeIconSvg(m.key, 14)" />
-          <span>{{ m.label }}</span>
+          <span class="pmc-mode-legend-icon" :style="{ background: m.color }" v-html="travelModeIconSvg(m.key, 12)" />
+          {{ m.label }}
         </div>
       </slot>
     </div>
@@ -2048,18 +2047,19 @@ defineExpose({
   position: absolute;
   z-index: 500;
   right: 12px;
-  bottom: 28px;
-  display: flex;
+  bottom: 12px;
+  display: inline-flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: center;
   gap: 4px;
-  max-width: min(420px, calc(100% - 70px));
-  padding: 6px 8px;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  padding: 5px 6px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   pointer-events: none;
+  box-sizing: border-box;
 }
 
 .pmc-mode-legend :deep(button),
@@ -2068,33 +2068,25 @@ defineExpose({
   pointer-events: auto;
 }
 
-.pmc-mode-legend-title {
-  width: 100%;
-  padding: 0 4px 2px;
-  color: #909399;
-  font-size: 11px;
-  line-height: 1;
-  text-align: right;
-}
-
 .pmc-mode-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 7px;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: 999px;
-  color: #303133;
+  color: #606266;
   font-size: 12px;
   line-height: 1;
-  background: rgba(0, 0, 0, 0.03);
+  background: transparent;
+  white-space: nowrap;
 }
 
 .pmc-mode-legend-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   color: #fff;
   flex-shrink: 0;
