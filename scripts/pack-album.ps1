@@ -252,18 +252,28 @@ try {
         $serverResources = Join-Path $serverDir "src\main\resources"
         if (Test-Path $templateResources) {
             New-Item -ItemType Directory -Force -Path $deployResources | Out-Null
-            # 每次打包同步部署用 yml（不覆盖本机 application-local.yml）
+            # 每次打包同步部署用 yml
+            # application-local.yml：优先用模板（已填高德 Key），便于整包拷到部署机即可开 3D
             $syncYml = @(
                 "application.yml",
                 "application-mysql-deploy.yml",
-                "application-local.yml.example"
+                "application-local.yml.example",
+                "application-local.yml"
             )
             foreach ($name in $syncYml) {
-                $src = Join-Path $serverResources $name
-                if (-not (Test-Path $src)) {
-                    $src = Join-Path $templateResources $name
+                $src = $null
+                if ($name -eq "application-local.yml") {
+                    $fromTemplate = Join-Path $templateResources $name
+                    $fromServer = Join-Path $serverResources $name
+                    if (Test-Path $fromTemplate) { $src = $fromTemplate }
+                    elseif (Test-Path $fromServer) { $src = $fromServer }
+                } else {
+                    $src = Join-Path $serverResources $name
+                    if (-not (Test-Path $src)) {
+                        $src = Join-Path $templateResources $name
+                    }
                 }
-                if (Test-Path $src) {
+                if ($src -and (Test-Path $src)) {
                     Copy-Item -LiteralPath $src -Destination (Join-Path $deployResources $name) -Force
                     Write-Host "    Synced resources\$name"
                 }

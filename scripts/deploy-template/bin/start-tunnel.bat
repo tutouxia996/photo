@@ -126,11 +126,15 @@ exit /b 0
 
 :start
 echo 使用: %CLOUDFLARED%
-echo 启动 Cloudflare 隧道 (http2, album-home)
+echo 启动 Cloudflare 隧道 (quic 优先, album-home)
 echo 本机: http://127.0.0.1:18080
 echo 外网: https://album.pengorbit.top/#/login
+echo 说明: 优先 UDP 7844 (quic)；失败时 cloudflared 会回退 http2
 echo 停止: Ctrl+C
 echo.
 
-"%CLOUDFLARED%" tunnel --protocol http2 run album-home
+rem 不强制 --protocol，读取 config.yml；无 protocol 时默认协商 quic
+rem 若需强制 quic:  "%CLOUDFLARED%" tunnel --protocol quic run album-home
+rem 若 UDP 被拦:    "%CLOUDFLARED%" tunnel --protocol http2 run album-home
+"%CLOUDFLARED%" tunnel run album-home
 pause

@@ -15,7 +15,12 @@ album:
   localRoot: D:/uploadPath/album
   map:
     type: amap
+    # Web 服务 Key：地点搜索、逆地理等后端调用
     webKey: 请填写高德Web服务Key
+    # JS API Key：浏览器端 3D 地形图（缺省会提示「未配置 AMAP_JS_KEY」）
+    jsKey: 请填写高德JS-API-Key
+    # 可选：控制台「安全密钥」；新版 JS Key 加载 3D 地形时常需要
+    securityJsCode:
   aiLandmark:
     enabled: true
     apiKey: 请填写通义DashScope-API-Key
