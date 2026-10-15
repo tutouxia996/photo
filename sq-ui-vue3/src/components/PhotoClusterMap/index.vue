@@ -34,7 +34,7 @@
             class="style-btn style-btn--view style-btn--terrain"
             :class="{ active: terrainMode }"
             :disabled="terrainLoading"
-            title="只读 3D 地形：左键平移；中键/Shift+左键拖动绕点击点俯仰旋转（同谷歌地球）"
+            title="3D 地形：左键平移；中键/Shift+左键绕点俯仰旋转；滚轮绕光标缩放"
             @click="toggleViewMenu('3d')"
           >
             {{ terrainLoading ? '…' : '3D' }}<span class="view-caret">▾</span>
@@ -93,7 +93,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import L from '@/utils/leaflet'
+import L from '@/utils/leafletRotate'
 import { loadAmap } from '@/utils/amapLoader'
 import {
   MAP_STYLES,
@@ -291,6 +291,13 @@ let terrainViewHandlers = null
 /** 自定义滚轮缩放（比高德默认更灵敏） */
 let terrainWheelBound = false
 let terrainWheelHandler = null
+/** 二维 Leaflet：与 3D 对齐的视角/滚轮手势 */
+let leafletViewControlsBound = false
+let leafletViewDrag = null
+/** @type {Record<string, Function> | null} */
+let leafletViewHandlers = null
+let leafletWheelBound = false
+let leafletWheelHandler = null
 
 const selectedSegmentSet = computed(() => {
   const arr = Array.isArray(props.selectedSegmentIndexes) ? props.selectedSegmentIndexes : []
@@ -1002,6 +1009,273 @@ function unbindTerrainWheelZoom() {
   }
   terrainWheelHandler = null
   terrainWheelBound = false
+}
+
+/**
+ * 二维操作与 3D 对齐：
+ * - 左键拖动：平移
+ * - 中键 / Shift+左键：绕按下点旋转（二维无俯仰）
+ * - 滚轮：细腻绕光标缩放
+ */
+function bindLeafletViewControls() {
+  const el = mapEl.value
+  if (!el || !map || leafletViewControlsBound) return
+
+  const ROTATE_SENS = 0.45
+  let rafId = 0
+  let pendingBearing = null
+  let crosshairEl = null
+  const host = el.parentElement || el
+
+  const isOrbitGesture = (e) => {
+    return e.button === 1 || (e.button === 0 && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey)
+  }
+
+  const clientToContainer = (clientX, clientY) => {
+    const rect = el.getBoundingClientRect()
+    return [clientX - rect.left, clientY - rect.top]
+  }
+
+  const showCrosshair = (x, y) => {
+    if (!crosshairEl) {
+      crosshairEl = document.createElement('div')
+      crosshairEl.className = 'ge-orbit-crosshair'
+      crosshairEl.innerHTML = '<i class="ge-orbit-crosshair__h"></i><i class="ge-orbit-crosshair__v"></i><i class="ge-orbit-crosshair__dot"></i>'
+      host.appendChild(crosshairEl)
+    }
+    crosshairEl.style.left = `${x}px`
+    crosshairEl.style.top = `${y}px`
+    crosshairEl.classList.add('is-on')
+  }
+
+  const hideCrosshair = () => {
+    if (crosshairEl) crosshairEl.classList.remove('is-on')
+  }
+
+  /** setBearing 绕地图中心；补偿平移使按下点钉在准星上 */
+  const lockPivotToCrosshair = () => {
+    if (!map || !leafletViewDrag?.pivotLatLng) return
+    try {
+      const px = map.latLngToContainerPoint(leafletViewDrag.pivotLatLng)
+      if (!px) return
+      const dx = px.x - leafletViewDrag.anchorX
+      const dy = px.y - leafletViewDrag.anchorY
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+      map.panBy([dx, dy], { animate: false })
+    } catch (err) { /* ignore */ }
+  }
+
+  const applyView = () => {
+    rafId = 0
+    if (!map || pendingBearing == null || !leafletViewDrag) return
+    try {
+      map.setBearing(pendingBearing)
+      lockPivotToCrosshair()
+      mapHeading.value = ((pendingBearing % 360) + 360) % 360
+    } catch (err) { /* ignore */ }
+    pendingBearing = null
+  }
+
+  const endViewDrag = () => {
+    if (!leafletViewDrag) return
+    leafletViewDrag = null
+    if (rafId) {
+      cancelAnimationFrame(rafId)
+      rafId = 0
+    }
+    pendingBearing = null
+    hideCrosshair()
+    try {
+      // 框选激活时保持禁用平移
+      if (!props.boxSelectActive) map?.dragging?.enable()
+    } catch (err) { /* ignore */ }
+    if (el) el.style.cursor = ''
+  }
+
+  const onDown = (e) => {
+    if (!map || terrainMode.value || !isOrbitGesture(e)) return
+    // 框选模式下：Shift+左键仍可旋转；普通左键留给框选
+    if (props.boxSelectActive && e.button === 0 && !e.shiftKey) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation()
+
+    try {
+      map.dragging?.disable()
+    } catch (err) { /* ignore */ }
+
+    const [anchorX, anchorY] = clientToContainer(e.clientX, e.clientY)
+    let pivotLatLng = null
+    try {
+      pivotLatLng = map.containerPointToLatLng([anchorX, anchorY])
+    } catch (err) { /* ignore */ }
+
+    leafletViewDrag = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startBearing: Number(map.getBearing?.() || 0),
+      pivotLatLng,
+      anchorX,
+      anchorY,
+      button: e.button
+    }
+    showCrosshair(anchorX, anchorY)
+    el.style.cursor = 'crosshair'
+    try {
+      el.setPointerCapture?.(e.pointerId)
+    } catch (err) { /* ignore */ }
+  }
+
+  const onMove = (e) => {
+    if (!leafletViewDrag || !map || terrainMode.value) return
+    e.preventDefault()
+    const dx = e.clientX - leafletViewDrag.startX
+    // 二维无俯仰，仅左右旋转（与 3D 水平分量一致）
+    let bearing = leafletViewDrag.startBearing - dx * ROTATE_SENS
+    bearing = ((bearing % 360) + 360) % 360
+    pendingBearing = bearing
+    if (!rafId) rafId = requestAnimationFrame(applyView)
+  }
+
+  const onUp = (e) => {
+    if (!leafletViewDrag) return
+    if (e && e.button != null && e.button !== leafletViewDrag.button) return
+    endViewDrag()
+  }
+
+  const onLoseCapture = () => endViewDrag()
+
+  const onAux = (e) => {
+    if (e.button === 1) e.preventDefault()
+  }
+
+  const onContext = (e) => {
+    e.preventDefault()
+  }
+
+  const onKeyUp = (e) => {
+    if (leafletViewDrag && leafletViewDrag.button === 0 && e.key === 'Shift') {
+      endViewDrag()
+    }
+  }
+
+  el.addEventListener('pointerdown', onDown, true)
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', onUp, true)
+  window.addEventListener('pointercancel', onUp, true)
+  window.addEventListener('keyup', onKeyUp, true)
+  el.addEventListener('lostpointercapture', onLoseCapture)
+  el.addEventListener('auxclick', onAux)
+  el.addEventListener('contextmenu', onContext)
+  el.addEventListener('mousedown', onAux, true)
+
+  leafletViewHandlers = {
+    onDown, onMove, onUp, onAux, onContext, onLoseCapture, onKeyUp, endViewDrag,
+    disposeCrosshair: () => {
+      if (crosshairEl?.parentNode) crosshairEl.parentNode.removeChild(crosshairEl)
+      crosshairEl = null
+    }
+  }
+  leafletViewControlsBound = true
+}
+
+function unbindLeafletViewControls() {
+  const el = mapEl.value
+  if (leafletViewHandlers?.endViewDrag) {
+    try { leafletViewHandlers.endViewDrag() } catch (e) { /* ignore */ }
+  } else {
+    leafletViewDrag = null
+  }
+  if (!leafletViewControlsBound || !leafletViewHandlers) {
+    leafletViewControlsBound = false
+    leafletViewHandlers = null
+    return
+  }
+  const { onDown, onMove, onUp, onAux, onContext, onLoseCapture, onKeyUp, disposeCrosshair } = leafletViewHandlers
+  if (el) {
+    el.removeEventListener('pointerdown', onDown, true)
+    el.removeEventListener('lostpointercapture', onLoseCapture)
+    el.removeEventListener('auxclick', onAux)
+    el.removeEventListener('mousedown', onAux, true)
+    el.removeEventListener('contextmenu', onContext)
+    el.style.cursor = ''
+  }
+  window.removeEventListener('pointermove', onMove, true)
+  window.removeEventListener('pointerup', onUp, true)
+  window.removeEventListener('pointercancel', onUp, true)
+  window.removeEventListener('keyup', onKeyUp, true)
+  try { disposeCrosshair?.() } catch (e) { /* ignore */ }
+  leafletViewHandlers = null
+  leafletViewControlsBound = false
+}
+
+/** 二维细腻滚轮缩放（参数与 3D 一致），绕光标 */
+function bindLeafletWheelZoom() {
+  const el = mapEl.value
+  if (!el || !map || leafletWheelBound) return
+
+  const ZOOM_PER_NOTCH = 0.35
+  const ZOOM_PER_PIXEL = 0.0045
+  const MAX_STEP = 0.6
+  const ZOOM_MIN = 3
+  const ZOOM_MAX = 22
+
+  const onWheel = (e) => {
+    if (!map || terrainMode.value || leafletViewDrag) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation()
+
+    let dy = e.deltaY
+    if (e.deltaMode === 1) dy *= 16
+    else if (e.deltaMode === 2) dy *= 400
+    if (!dy) return
+
+    let step
+    const abs = Math.abs(dy)
+    if (abs >= 80 && abs <= 140) {
+      step = dy > 0 ? -ZOOM_PER_NOTCH : ZOOM_PER_NOTCH
+    } else {
+      step = Math.max(-MAX_STEP, Math.min(MAX_STEP, -dy * ZOOM_PER_PIXEL))
+    }
+    if (!step) return
+
+    const z0 = map.getZoom()
+    const z1 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z0 + step))
+    if (Math.abs(z1 - z0) < 0.001) return
+
+    const rect = el.getBoundingClientRect()
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    try {
+      // 先取光标下经纬度，缩放后再平移锁回光标（兼容 leaflet-rotate）
+      const pivot = map.containerPointToLatLng([mx, my])
+      map.setZoom(z1, { animate: false })
+      // 若被 zoomSnap 吸回原级，绝不做平移，避免「只平移不缩放」
+      if (Math.abs(map.getZoom() - z0) < 0.001) return
+      const after = map.latLngToContainerPoint(pivot)
+      const ox = after.x - mx
+      const oy = after.y - my
+      if (Math.abs(ox) > 0.5 || Math.abs(oy) > 0.5) {
+        map.panBy([ox, oy], { animate: false })
+      }
+    } catch (err) {
+      try { map.setZoom(z1, { animate: false }) } catch (e2) { /* ignore */ }
+    }
+  }
+
+  el.addEventListener('wheel', onWheel, { passive: false, capture: true })
+  leafletWheelHandler = onWheel
+  leafletWheelBound = true
+}
+
+function unbindLeafletWheelZoom() {
+  const el = mapEl.value
+  if (leafletWheelBound && leafletWheelHandler && el) {
+    el.removeEventListener('wheel', leafletWheelHandler, true)
+  }
+  leafletWheelHandler = null
+  leafletWheelBound = false
 }
 
 function destroyAmap() {
@@ -1728,6 +2002,11 @@ function syncMapHeading() {
     mapHeading.value = ((r % 360) + 360) % 360
     return
   }
+  if (map && typeof map.getBearing === 'function') {
+    const r = Number(map.getBearing() || 0)
+    mapHeading.value = ((r % 360) + 360) % 360
+    return
+  }
   mapHeading.value = 0
 }
 
@@ -1743,7 +2022,11 @@ function resetMapOrientation() {
     mapHeading.value = 0
     return
   }
-  // 二维 Leaflet 本就正北朝上
+  if (map && typeof map.setBearing === 'function') {
+    try {
+      map.setBearing(0)
+    } catch (e) { /* ignore */ }
+  }
   mapHeading.value = 0
 }
 
@@ -3086,9 +3369,26 @@ function initMap() {
     maxZoom: 22,
     minZoom: 3,
     fadeAnimation: false,
-    markerZoomAnimation: false
+    markerZoomAnimation: false,
+    // 与 3D 手势对齐：启用旋转；关闭 Shift 框选/滚轮改向（改由自定义中键/Shift+左键）
+    rotate: true,
+    bearing: 0,
+    touchRotate: false,
+    shiftKeyRotate: false,
+    boxZoom: false,
+    // 关闭默认滚轮，改用与 3D 相同的细腻绕光标缩放
+    scrollWheelZoom: false,
+    // 必须允许浮点缩放，否则自定义 0.35 级会被 snap 掉，只剩平移
+    zoomSnap: 0,
+    zoomDelta: 0.35
   }).setView([35.0, 105.0], 4)
   L.control.zoom({ position: 'bottomleft' }).addTo(map)
+  try {
+    map.on('rotate', syncMapHeading)
+  } catch (e) { /* ignore */ }
+  bindLeafletViewControls()
+  bindLeafletWheelZoom()
+  syncMapHeading()
   canvasRenderer = L.canvas({ padding: 0.5 })
   svgRenderer = L.svg({ padding: 0.5 })
   applyBaseLayers(currentStyle.value)
@@ -3145,6 +3445,8 @@ function onBoxSelectMouseDown(e) {
   if (!props.boxSelectActive || !map || !e.latlng) return
   // 仅左键
   if (e.originalEvent && e.originalEvent.button !== 0) return
+  // Shift+左键留给「绕点旋转」（与 3D 一致），不启动框选
+  if (e.originalEvent && e.originalEvent.shiftKey) return
   // 点在地图控件/侧栏上时不开始框选
   const t = e.originalEvent && e.originalEvent.target
   if (t && t.closest && (
@@ -3353,7 +3655,10 @@ onBeforeUnmount(() => {
     resizeObserver.disconnect()
     resizeObserver = null
   }
+  unbindLeafletWheelZoom()
+  unbindLeafletViewControls()
   if (map) {
+    try { map.off('rotate', syncMapHeading) } catch (e) { /* ignore */ }
     map.off('zoomstart', onZoomStart)
     map.off('zoomend', onZoomEnd)
     map.remove()
@@ -3369,6 +3674,7 @@ onBeforeUnmount(() => {
     svgRenderer = null
     canvasRenderer = null
   }
+  mapHeading.value = 0
 })
 
 defineExpose({

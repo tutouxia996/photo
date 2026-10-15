@@ -1,12 +1,5 @@
 <template>
   <div class="home-footprint-page" v-loading="loading">
-    <header class="map-page-header">
-      <div class="header-main">
-        <h1 class="page-title">足迹地图</h1>
-        <span class="page-sub">{{ headerSub }}</span>
-      </div>
-    </header>
-
     <div class="map-page-body">
       <PhotoClusterMap
         ref="mapRef"
@@ -56,14 +49,6 @@ const regionStatText = computed(() => {
   if (c) parts.push(`${c} 市`)
   if (d) parts.push(`${d} 区县`)
   return parts.join(' · ')
-})
-
-const headerSub = computed(() => {
-  if (!points.value.length) return '暂无带定位的照片/视频'
-  const parts = [`共 ${points.value.length} 个定位点`]
-  if (videoCount.value) parts.push(`含 ${videoCount.value} 个视频`)
-  if (regionStatText.value) parts.push(`途经 ${regionStatText.value}`)
-  return parts.join('，')
 })
 
 const emptyText = computed(() => '暂无带定位的照片或视频')
@@ -119,40 +104,6 @@ onMounted(() => {
   background: #f0f3f8;
 }
 
-.map-page-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 16px;
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.header-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a3a6c;
-  line-height: 1.3;
-}
-
-.page-sub {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  color: #909399;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .map-page-body {
   flex: 1;
   min-height: 0;
@@ -192,10 +143,6 @@ onMounted(() => {
 @media (max-width: 768px) {
   .home-footprint-page {
     height: calc(100vh - 100px);
-  }
-
-  .page-sub {
-    white-space: normal;
   }
 }
 </style>
