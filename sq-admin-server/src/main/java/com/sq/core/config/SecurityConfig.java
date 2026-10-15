@@ -120,6 +120,8 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .antMatchers(HttpMethod.POST, "/album/photo/videoProxy/**/ensure").authenticated()
                 // 相册分享公开访问（凭不可猜测的分享令牌）
                 .antMatchers(HttpMethod.GET, "/share/**").permitAll()
+                // 地图 JS Key（分享页/足迹 3D 地形只读视图，Key 需在高德控制台配域名白名单）
+                .antMatchers(HttpMethod.GET, "/portal/map/js-config").permitAll()
                 .antMatchers("/swagger-ui.html", "/swagger-resources/**", "/webjars/**", "/*/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/doc.html", "/druid/**").permitAll()
                 // 除上面外的所有请求全部需要鉴权认证
                 .anyRequest().authenticated()

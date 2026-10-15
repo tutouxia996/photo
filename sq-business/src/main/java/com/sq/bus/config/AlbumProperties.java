@@ -140,6 +140,11 @@ public class AlbumProperties {
         private String type = "amap";
         private String webKey = "";
         private String jsKey = "";
+        /**
+         * 高德 JS API 安全密钥（控制台「安全密钥」securityJsCode）。
+         * 新版 Key 在浏览器端加载 JSAPI 时常需要；未配置则仅用 jsKey。
+         */
+        private String securityJsCode = "";
         /** 火车/高铁是否优先用 OSM 铁路网贴轨 */
         private boolean osmRailwayEnabled = true;
         /** Overpass API 地址（主） */

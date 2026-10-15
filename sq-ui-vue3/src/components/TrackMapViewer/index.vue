@@ -32,6 +32,7 @@
       @box-select="onBoxSelect"
       @location-select="onCorrectSelect"
       @location-drag-end="onCorrectDragEnd"
+      @terrain-mode-change="onTerrainModeChange"
     >
       <template #toolbar-right>
         <div class="header-toggles">
@@ -1903,6 +1904,14 @@ function toggleCorrectMode() {
   correctEdit.value = null
   metaOpen.value = true
   proxy?.$modal?.msgSuccess?.('已进入纠正：拖动缩略图到正确位置后点「保存纠正」')
+}
+
+/** 进入 3D 地形只读视图时退出编辑 / 纠正 */
+function onTerrainModeChange(on) {
+  if (!on) return
+  if (editing.value) cancelEdit()
+  if (correcting.value) exitCorrectMode()
+  closeGpxPanel()
 }
 
 function exitCorrectMode() {

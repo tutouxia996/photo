@@ -8,6 +8,36 @@
   overflow: visible !important;
 }
 
+/* 高德 3D 地形只读 Marker（非 Leaflet DivIcon） */
+.pmc-amap-marker-hit {
+  width: 52px;
+  height: 52px;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.pmc-amap-marker-hit img {
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.amap-marker .pmc-marker,
+.pmc-marker {
+  width: 52px;
+  height: 52px;
+  overflow: visible;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.amap-marker .pmc-marker--estimated .pmc-pin,
+.pmc-marker--estimated .pmc-pin {
+  border: 2px dashed #e6a23c;
+  box-shadow: 0 0 0 2px rgba(230, 162, 60, 0.35), 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
 .pmc-wrap {
   position: relative;
   width: 52px;

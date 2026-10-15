@@ -105,6 +105,7 @@
         @estimated-select="onEstimatedSelect"
         @location-drag-end="onLocationDragEnd"
         @location-select="onLocationSelect"
+        @terrain-mode-change="onTerrainModeChange"
       >
         <template #toolbar-right>
           <div class="header-toggles">
@@ -134,13 +135,27 @@
           </div>
         </template>
         <template #meta>
-          <div class="map-meta">
-            <span class="name">{{ metaTitle }}</span>
-            <span class="stat">定位 {{ points.length }}</span>
-            <span v-if="estimatedCount" class="stat est">估计 {{ estimatedCount }}</span>
-            <span v-if="trackLineActive && trackName" class="stat track">轨迹 {{ trackName }}</span>
-            <span v-if="trackLineActive && trackDistanceText" class="stat">里程 {{ trackDistanceText }}</span>
-            <span v-if="trackLineActive && trackDurationText" class="stat">时长 {{ trackDurationText }}</span>
+          <div class="map-meta" :class="{ 'is-open': metaOpen }">
+            <div class="meta-bar">
+              <button
+                type="button"
+                class="meta-toggle"
+                :title="metaOpen ? '收起详情' : '展开详情'"
+                @click="metaOpen = !metaOpen"
+              >
+                <span class="name">{{ metaTitle }}</span>
+                <span class="meta-chevron">{{ metaOpen ? '▴' : '▾' }}</span>
+              </button>
+            </div>
+            <div v-if="metaOpen" class="meta-detail">
+              <div class="meta-stats">
+                <span class="stat">定位 {{ points.length }}</span>
+                <span v-if="estimatedCount" class="stat est">估计 {{ estimatedCount }}</span>
+                <span v-if="trackLineActive && trackName" class="stat track" :title="trackName">轨迹 {{ trackName }}</span>
+                <span v-if="trackLineActive && trackDistanceText" class="stat">里程 {{ trackDistanceText }}</span>
+                <span v-if="trackLineActive && trackDurationText" class="stat">时长 {{ trackDurationText }}</span>
+              </div>
+            </div>
           </div>
         </template>
         <template v-if="legendItems.length && trackLineActive" #modeLegend>
@@ -341,6 +356,8 @@ const trackTotalDuration = ref(null)
 const loadedTrackAlbumId = ref(undefined)
 /** 选中的出行方式；空数组表示显示全部（与轨迹查看一致） */
 const modeFilter = ref([])
+/** 左上角信息条，默认展开 */
+const metaOpen = ref(true)
 let trackLoadSeq = 0
 
 function sameAlbumId(a, b) {
@@ -888,6 +905,13 @@ function exitAiPickMode() {
   aiSelectedIds.value = []
 }
 
+/** 进入 3D 地形只读视图时退出纠正 / AI 点选 */
+function onTerrainModeChange(on) {
+  if (!on) return
+  correctMode.value = false
+  exitAiPickMode()
+}
+
 function clearAiSelection() {
   aiSelectedIds.value = []
 }
@@ -1292,23 +1316,69 @@ watch(() => route.query.albumId, (val) => {
 }
 
 .map-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
+  max-width: 100%;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+  color: #606266;
   font-size: 13px;
 }
 
+.map-meta .meta-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+}
+
+.map-meta .meta-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
 .map-meta .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
   font-weight: 600;
   color: #303133;
 }
 
+.map-meta .meta-chevron {
+  flex-shrink: 0;
+  color: #909399;
+  font-size: 12px;
+}
+
+.map-meta .meta-detail {
+  padding: 0 12px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.map-meta .meta-stats {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
 .map-meta .stat {
+  flex-shrink: 0;
   color: #606266;
+  white-space: nowrap;
 }
 
 .map-meta .stat.est {
@@ -1317,6 +1387,9 @@ watch(() => route.query.albumId, (val) => {
 }
 
 .map-meta .stat.track {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #3b82f6;
 }
 

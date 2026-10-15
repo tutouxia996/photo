@@ -98,6 +98,6 @@ knife4j:
         footer-custom-content: Copyright ©2025 sq
 
 # 高德 Key 勿写入本文件（会进 Git）。任选其一：
-# 1) 环境变量 AMAP_WEB_KEY / AMAP_JS_KEY
+# 1) 环境变量 AMAP_WEB_KEY / AMAP_JS_KEY / AMAP_SECURITY_JS_CODE
 # 2) 复制 application-local.yml.example -> application-local.yml（已 gitignore）
 # 3) 启动参数：开发 mysql-dev,local；部署 mysql-deploy,local

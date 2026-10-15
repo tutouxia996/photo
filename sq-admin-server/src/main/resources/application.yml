@@ -173,6 +173,8 @@ album:
     # 高德 Key：优先环境变量；本地也可写在 application-local.yml（已 gitignore）
     webKey: ${AMAP_WEB_KEY:}
     jsKey: ${AMAP_JS_KEY:}
+    # 高德 JSAPI 安全密钥（可选；新版 Key 加载 3D 地形时常需要）
+    securityJsCode: ${AMAP_SECURITY_JS_CODE:}
     # 火车/高铁优先 OSM 铁路贴轨（Overpass）；失败再回退高德公交/驾车
     osmRailwayEnabled: true
     overpassUrl: ${OSM_OVERPASS_URL:https://overpass-api.de/api/interpreter}

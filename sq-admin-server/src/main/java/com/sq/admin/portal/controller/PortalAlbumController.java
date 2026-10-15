@@ -186,6 +186,18 @@ public class PortalAlbumController extends BaseController {
     }
 
     /**
+     * 高德 JS API 配置（浏览器端加载 3D 地形图；分享页匿名可访问）
+     */
+    @GetMapping("/map/js-config")
+    public AjaxResult mapJsConfig() {
+        AlbumProperties.MapConfig map = albumProperties.getMap();
+        Map<String, Object> data = new HashMap<String, Object>();
+        data.put("jsKey", map != null && map.getJsKey() != null ? map.getJsKey() : "");
+        data.put("securityJsCode", map != null && map.getSecurityJsCode() != null ? map.getSecurityJsCode() : "");
+        return success(data);
+    }
+
+    /**
      * 轨迹点详情
      */
     @GetMapping("/track/{id}/points")

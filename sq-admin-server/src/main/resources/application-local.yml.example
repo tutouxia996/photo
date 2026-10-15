@@ -10,7 +10,9 @@ album:
   map:
     type: amap
     webKey: 请填写你的高德Web服务Key
-    jsKey:
+    jsKey: 请填写你的高德JS-API-Key
+    # 可选：控制台「安全密钥」，新版 Key 加载 3D 地形时常需要
+    securityJsCode:
   aiLandmark:
     enabled: true
     # 通义千问：https://dashscope.console.aliyun.com/apiKey
