@@ -1,4 +1,4 @@
-import { createApp } from 'vue'
+import { createApp, defineAsyncComponent } from 'vue'
 
 import Cookies from 'js-cookie'
 
@@ -28,20 +28,14 @@ import './permission' // permission control
 import { useDict } from '@/utils/dict'
 import { parseTime, resetForm, addDateRange, handleTree, selectDictLabel, selectDictLabels } from '@/utils/common.js'
 
-// 分页组件
-import Pagination from '@/components/Pagination'
-// 自定义表格工具组件
-import RightToolbar from '@/components/RightToolbar'
-// 富文本组件
-import Editor from "@/components/Editor"
-// 文件上传组件
-import FileUpload from "@/components/FileUpload"
-// 图片上传组件
-import ImageUpload from "@/components/ImageUpload"
-// 图片预览组件
-import ImagePreview from "@/components/ImagePreview"
-// 字典标签组件
-import DictTag from '@/components/DictTag'
+// 登录首屏不需要的重组件改为异步，避免隧道场景一次拉齐 Quill/上传等
+const Pagination = defineAsyncComponent(() => import('@/components/Pagination'))
+const RightToolbar = defineAsyncComponent(() => import('@/components/RightToolbar'))
+const Editor = defineAsyncComponent(() => import('@/components/Editor'))
+const FileUpload = defineAsyncComponent(() => import('@/components/FileUpload'))
+const ImageUpload = defineAsyncComponent(() => import('@/components/ImageUpload'))
+const ImagePreview = defineAsyncComponent(() => import('@/components/ImagePreview'))
+const DictTag = defineAsyncComponent(() => import('@/components/DictTag'))
 
 const app = createApp(App)
 

@@ -110,7 +110,7 @@
           :segment-by-travel-mode="trackLineActive"
           :show-direction="trackLineActive"
           :show-travelers="trackLineActive"
-          :overlay-paths="trackLineActive ? trackGpxOverlays : []"
+          :overlay-paths="mapGpxOverlays"
           :visible-travel-modes="visibleTravelModes"
           :show-media-markers="!tracksOnly"
           :show-mode-legend="false"
@@ -288,6 +288,7 @@ import { isExternal } from '@/utils/validate'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
 import {
+  overlaysForMapDisplay,
   TRAVEL_MODES,
   travelModeIconSvg
 } from '@/utils/photoMapCluster'
@@ -377,6 +378,13 @@ const hasTrackData = computed(() =>
 
 const trackLineActive = computed(() =>
   !!shareTrack.value && !!showTrackLine.value && hasTrackData.value
+)
+/** 关轨迹线时仍保留 GPX 匹配坐标 */
+const mapGpxOverlays = computed(() =>
+  overlaysForMapDisplay(
+    trackGpxOverlays.value,
+    !!shareTrack.value && !!showTrackLine.value
+  )
 )
 
 const mapDisplayPoints = computed(() => {

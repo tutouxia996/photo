@@ -357,6 +357,29 @@ export function segmentLatLngs(fromPoint, toPoint) {
   return [toMapLatLng(fromPoint), toMapLatLng(toPoint)]
 }
 
+/**
+ * 地图 GPX 叠层展示：显示轨迹时原样返回；关闭轨迹线时只保留 matchedPhotos，
+ * 让时间匹配到的照片/视频继续停在 GPX 坐标，避免估点/漂移 GPS 回到错误位置。
+ */
+export function overlaysForMapDisplay(overlays, showPath) {
+  const list = Array.isArray(overlays) ? overlays : []
+  if (!list.length) return []
+  if (showPath) return list
+  return list
+    .map((o) => {
+      if (!o) return null
+      const matched = Array.isArray(o.matchedPhotos) ? o.matchedPhotos : []
+      if (!matched.length) return null
+      return {
+        gpxId: o.gpxId,
+        fileName: o.fileName,
+        showPath: false,
+        matchedPhotos: matched
+      }
+    })
+    .filter(Boolean)
+}
+
 /** 轨迹是否还有未规划真实路线的路段（触及自定义途经点的空隙不算缺失） */
 export function hasMissingRoutePaths(points) {
   const list = filterValidPoints(points)

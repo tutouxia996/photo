@@ -52,6 +52,23 @@ export default defineConfig(({ mode, command }) => {
           }
         ]
       }
+    },
+    // 家用隧道：只拆「登录用不到」的大库，避免首屏一次拉齐；勿拆 vue/element-plus（二者互引用会循环）
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return
+            const pkg = id.match(/node_modules\/\.pnpm\/[^/]+\/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1]
+              || id.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1]
+            if (!pkg) return
+            if (pkg === 'echarts') return 'echarts'
+            if (pkg === 'leaflet' || pkg.startsWith('leaflet.') || pkg === 'leaflet-rotate') return 'leaflet'
+            if (pkg.startsWith('@photo-sphere-viewer/')) return 'photo-sphere'
+            if (pkg === '@vueup/vue-quill' || pkg === 'quill') return 'quill'
+          }
+        }
+      }
     }
   }
 })

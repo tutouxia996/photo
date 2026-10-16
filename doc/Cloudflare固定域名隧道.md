@@ -50,18 +50,21 @@ ingress:
   - service: http_status:404
 ```
 
-## 免费加速（不买套餐）
+## 免费加速（不买套餐）— 首屏进不去必做
 
-Tunnel 再优化也绕不开「家宽上行」。优先做这些 **$0** 项：
+Tunnel 再优化也绕不开「家宽上行」。**登录页/首屏慢到进不去**，几乎都是 JS/CSS 每次从家里上行；下面第 1 条是关键。
 
-1. **本机已开 gzip / 预压缩 `.gz`**：重启部署包 `start.bat`，让首屏 JS 压缩后再上行。  
-2. **Cloudflare 控制台缓存静态资源**（域名已橙云代理时有效）  
-   - Caching → Cache Rules → Create rule  
-   - 条件：Hostname = `album.pengorbit.top` 且 URI Path 以 `/assets/` 开头  
-   - 动作：Eligible for cache + Edge TTL 建议 1 个月  
-   - 效果：第二次及以后访问 JS/CSS 走 Cloudflare 边缘，不再从家里传一遍  
-3. **Speed → Optimization**：打开 **Brotli**；关掉 **Rocket Loader**（易搞坏 Vue）。  
-4. **协议**：能通 UDP 7844 时把 `protocol` 改成 `quic`（或删掉该行自动协商），通常比 http2 更稳更快；不通再改回 `http2`。  
+1. **【必做】Cloudflare 缓存 `/assets/`**（域名须橙云代理 Proxied）  
+   - Dashboard → 站点 `pengorbit.top` → Caching → Cache Rules → Create rule  
+   - Rule name: `cache-album-assets`  
+   - 条件：Hostname equals `album.pengorbit.top` **AND** URI Path starts with `/assets/`  
+   - Then：Cache eligibility = Eligible for cache；Edge TTL = Ignore cache-control header and use this TTL → 1 month  
+   - Deploy  
+   - 验证：外网打开登录页，F12 → Network → 任选 `/assets/*.js`，响应头应有 `cf-cache-status: HIT`（第一次可能是 `MISS`，**强刷后再开一次**应变 HIT）  
+   - 可选第二条规则：Path starts with `/album/files/thumb/`，Edge TTL 7 days（缩略图）  
+2. **Speed → Optimization**：打开 **Brotli**；关掉 **Rocket Loader**（易搞坏 Vue）。  
+3. **重新打包部署**：前端需含预压缩 `.gz` / `.br`（`VITE_BUILD_COMPRESS=gzip,brotli`），部署后重启 `start.bat`。  
+4. **协议**：`config.yml` 用 `protocol: quic`（需 UDP 7844）；不通再改回 `http2`。  
 5. **使用习惯**：外网只看缩略图/480p；电脑别休眠；尽量网线；外网访问时少占上行（网盘同步等）。
 
 ## 首次搭建回顾（新机器可照做）

@@ -20,7 +20,7 @@ copy /Y "%SETUP%\f99d35ee-71e1-4f3c-9b01-4b5851de0cc7.json" "%USERPROFILE%\.clou
 > "%USERPROFILE%\.cloudflared\config.yml" (
 echo tunnel: f99d35ee-71e1-4f3c-9b01-4b5851de0cc7
 echo credentials-file: %USERPROFILE%\.cloudflared\f99d35ee-71e1-4f3c-9b01-4b5851de0cc7.json
-echo protocol: http2
+echo protocol: quic
 echo.
 echo ingress:
 echo   - hostname: album.pengorbit.top

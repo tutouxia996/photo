@@ -93,7 +93,7 @@
         :polyline-color="trackColor"
         :segment-by-travel-mode="trackLineActive"
         :show-direction="trackLineActive"
-        :overlay-paths="trackLineActive ? trackGpxOverlays : []"
+        :overlay-paths="mapGpxOverlays"
         :visible-travel-modes="visibleTravelModes"
         :show-media-markers="!tracksOnly"
         :show-mode-legend="false"
@@ -310,6 +310,7 @@ import {
   isPendingEstimated,
   mediaSrc,
   estimatedSourceTitle,
+  overlaysForMapDisplay,
   TRAVEL_MODES,
   travelModeIconSvg
 } from '@/utils/photoMapCluster'
@@ -366,17 +367,27 @@ function sameAlbumId(a, b) {
 }
 
 const canToggleTrack = computed(() => albumId.value != null && albumId.value !== '')
+const trackDataReady = computed(() =>
+  canToggleTrack.value && sameAlbumId(loadedTrackAlbumId.value, albumId.value)
+)
 const trackLineActive = computed(() =>
   !!showTrackLine.value
-  && canToggleTrack.value
-  && sameAlbumId(loadedTrackAlbumId.value, albumId.value)
+  && trackDataReady.value
   && trackPoints.value.length > 1
+)
+/** 关轨迹线时仍保留 GPX 匹配坐标，估点/漂移点不回到错误位置 */
+const mapGpxOverlays = computed(() =>
+  overlaysForMapDisplay(trackGpxOverlays.value, !!showTrackLine.value && trackDataReady.value)
 )
 const trackToggleTitle = computed(() => {
   if (!canToggleTrack.value) return '需从相册进入后才能显示轨迹'
   if (trackLoading.value) return '正在加载轨迹…'
-  if (showTrackLine.value && trackPoints.value.length <= 1) return '该相册暂无可用轨迹点'
-  return showTrackLine.value ? '关闭后仅显示照片定位点' : '开启后叠加本相册轨迹线与 GPX'
+  if (showTrackLine.value && trackPoints.value.length <= 1 && !mapGpxOverlays.value.length) {
+    return '该相册暂无可用轨迹点'
+  }
+  return showTrackLine.value
+    ? '关闭后隐藏轨迹线；已匹配 GPX 的照片仍停在轨迹位置'
+    : '开启后叠加本相册轨迹线与 GPX'
 })
 
 const canPreviewPlace = computed(() => {
@@ -610,7 +621,8 @@ function pickAlbumTrack(rows, expectedAlbumId) {
 async function loadTrackIfNeeded() {
   const seq = ++trackLoadSeq
   const expectedAlbumId = albumId.value
-  if (!showTrackLine.value || expectedAlbumId == null || expectedAlbumId === '') {
+  // 无论是否「显示轨迹」都加载：关线后仍要用 GPX matchedPhotos 吸附照片
+  if (expectedAlbumId == null || expectedAlbumId === '') {
     clearTrackData()
     if (seq === trackLoadSeq) trackLoading.value = false
     return
@@ -660,7 +672,10 @@ function onTrackToggleChange() {
   if (!showTrackLine.value) {
     tracksOnly.value = false
   }
-  loadTrackIfNeeded()
+  // 仅切换折线显隐；GPX 匹配点坐标始终保留，无需重新拉取
+  if (!sameAlbumId(loadedTrackAlbumId.value, albumId.value)) {
+    loadTrackIfNeeded()
+  }
 }
 
 function onTracksOnlyChange(val) {
@@ -668,7 +683,6 @@ function onTracksOnlyChange(val) {
   // 只显示轨迹时需要先叠上轨迹线
   if (!showTrackLine.value && canToggleTrack.value) {
     showTrackLine.value = true
-    loadTrackIfNeeded()
   }
 }
 

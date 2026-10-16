@@ -12,7 +12,8 @@
       :path-edit-index="editing && !customOpen && !mergeOpen && !boxSelectMode ? activeIndex : -1"
       :segment-labels="editing || correcting ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
-      :overlay-paths="localGpxOverlays"
+      :overlay-paths="mapGpxOverlays"
+      :show-travelers="trackLineVisible"
       :visible-travel-modes="visibleTravelModes"
       :gpx-endpoint-pickable="editing && customOpen && customTab === 'place'"
       :point-pickable="editing && customOpen && customTab === 'place'"
@@ -727,7 +728,7 @@ import {
   updateTrackPoints
 } from '@/api/album/track'
 import { correctPhotoPosition } from '@/api/album/photo'
-import { isWaypointPoint, TRAVEL_MODES, toMapLatLng, travelModeColor, travelModeIconSvg, travelModeLabel, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
+import { isWaypointPoint, overlaysForMapDisplay, TRAVEL_MODES, toMapLatLng, travelModeColor, travelModeIconSvg, travelModeLabel, wgs84ToGcj02, mediaSrc } from '@/utils/photoMapCluster'
 import { checkPermi } from '@/utils/permission'
 
 const props = defineProps({
@@ -858,6 +859,10 @@ const waypointDeleting = ref(false)
 
 /** 地图上是否画轨迹线（本地「显示轨迹」开关；打开时默认跟随库内 enabled） */
 const trackLineVisible = computed(() => !!showTrackLine.value)
+/** 关轨迹线时仍保留 GPX 匹配坐标，不回到错误估点/漂移 GPS */
+const mapGpxOverlays = computed(() =>
+  overlaysForMapDisplay(localGpxOverlays.value, trackLineVisible.value)
+)
 
 watch(
   () => props.track,
@@ -871,7 +876,10 @@ watch(
 )
 
 watch(showTrackLine, (on) => {
-  if (!on) tracksOnly.value = false
+  if (!on) {
+    tracksOnly.value = false
+    modeFilter.value = []
+  }
 })
 
 watch(tracksOnly, (on) => {
@@ -1012,9 +1020,8 @@ function pathPointToAnchor(p, gpxId, kind, name) {
 /** 照片轨 + GPX 的出行方式，统一圆点图例（颜色一致） */
 const legendItems = computed(() => {
   const keys = new Set()
-  if (trackLineVisible.value) {
-    usedModes.value.forEach(m => keys.add(m.key))
-  }
+  if (!trackLineVisible.value) return []
+  usedModes.value.forEach(m => keys.add(m.key))
   localGpxOverlays.value.forEach(o => {
     if (!o || o.showPath === false) return
     const hasPath = (Array.isArray(o.path) && o.path.length >= 2) || Number(o.pathPointCount) >= 2
