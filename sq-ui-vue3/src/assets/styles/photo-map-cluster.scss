@@ -223,6 +223,129 @@
   border-radius: 4px;
 }
 
+.pmc-video-box {
+  position: relative;
+  background: #111;
+  border-radius: 4px;
+}
+
+.pmc-video-box:fullscreen {
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.pmc-video-box:fullscreen .pmc-media {
+  flex: 1;
+  max-height: none;
+  height: 100%;
+}
+
+.pmc-video-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 4px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
+}
+
+.pmc-video-bar button {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.pmc-video-bar button svg {
+  width: 18px;
+  height: 18px;
+  margin: 0 auto;
+  fill: currentColor;
+}
+
+.pmc-video-play .icon-pause,
+.pmc-video-box.is-playing .pmc-video-play .icon-play,
+.pmc-video-mute .icon-mute,
+.pmc-video-box.is-muted .pmc-video-mute .icon-vol {
+  display: none;
+}
+
+.pmc-video-box.is-playing .pmc-video-play .icon-pause,
+.pmc-video-box.is-muted .pmc-video-mute .icon-mute {
+  display: block;
+}
+
+.pmc-video-progress {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  margin: 0 4px;
+  accent-color: #fff;
+  cursor: pointer;
+}
+
+.pmc-video-more {
+  font-size: 18px;
+  line-height: 26px;
+  letter-spacing: 0;
+}
+
+.pmc-video-menu {
+  display: none;
+  position: absolute;
+  right: 4px;
+  bottom: 36px;
+  z-index: 4;
+  min-width: 148px;
+  padding: 6px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.pmc-video-menu.is-open {
+  display: block;
+}
+
+.pmc-video-menu-title {
+  padding: 4px 8px 2px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.pmc-quality-item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #303133;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pmc-quality-item:hover {
+  background: #f5f7fa;
+}
+
+.pmc-quality-item.is-active {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
 .pmc-popup .pmc-mode {
   margin-top: 6px;
   color: #1d4ed8;

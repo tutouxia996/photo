@@ -47,8 +47,13 @@ public class BizAlbumShareController extends BaseController {
             return getDataTable(java.util.Collections.<BizAlbumShare>emptyList());
         }
         startPage();
+        // 多相册分享的 album_id 只存列表第一项，其余写在 album_ids JSON 里，两边都要命中
         List<BizAlbumShare> list = shareService.list(new LambdaQueryWrapper<BizAlbumShare>()
-                .eq(BizAlbumShare::getAlbumId, albumId)
+                .and(w -> w.eq(BizAlbumShare::getAlbumId, albumId)
+                        .or().apply("album_ids = CONCAT('[', {0}, ']')", albumId)
+                        .or().apply("album_ids LIKE CONCAT('[', {0}, ',%')", albumId)
+                        .or().apply("album_ids LIKE CONCAT('%,', {0}, ',%')", albumId)
+                        .or().apply("album_ids LIKE CONCAT('%,', {0}, ']')", albumId))
                 .orderByDesc(BizAlbumShare::getShareId));
         for (BizAlbumShare s : list) {
             shareService.fillPhotoIdList(s);
@@ -57,6 +62,7 @@ public class BizAlbumShareController extends BaseController {
                 s.setAlbumName(album.getAlbumName());
             }
         }
+        fillAlbumBriefs(list);
         return getDataTable(list);
     }
 
@@ -77,6 +83,7 @@ public class BizAlbumShareController extends BaseController {
         if (album != null) {
             share.setAlbumName(album.getAlbumName());
         }
+        fillAlbumBriefs(java.util.Collections.singletonList(share));
         return success(share);
     }
 
@@ -201,21 +208,42 @@ public class BizAlbumShareController extends BaseController {
             return deny;
         }
 
+        boolean clearAlbumIdsJson = false;
+        if (body.getAlbumIdList() != null) {
+            AjaxResult albumErr = replaceShareAlbums(existing, body.getAlbumIdList());
+            if (albumErr != null) {
+                return albumErr;
+            }
+            clearAlbumIdsJson = StringUtils.isEmpty(existing.getAlbumIds());
+            album = albumService.getById(existing.getAlbumId());
+        } else {
+            shareService.fillAlbumIdList(existing);
+        }
+
         existing.setShareTrack(body.getShareTrack() != null && body.getShareTrack() == 1 ? 1 : 0);
         if (StringUtils.isNotEmpty(body.getMediaScope())) {
             existing.setMediaScope(normalizeScope(body.getMediaScope()));
         }
-        if (StringUtils.isNotEmpty(body.getSelectMode())) {
-            existing.setSelectMode(normalizeSelectMode(body.getSelectMode()));
-        }
-        if (body.getPhotoIdList() != null) {
-            existing.setPhotoIdList(body.getPhotoIdList());
+        boolean multi = existing.getAlbumIdList() != null && existing.getAlbumIdList().size() > 1;
+        boolean clearPhotoIdsJson = false;
+        if (multi) {
+            existing.setSelectMode("all");
+            existing.setPhotoIdList(java.util.Collections.<Long>emptyList());
             shareService.writePhotoIds(existing);
-        }
-        if ("include".equals(normalizeSelectMode(existing.getSelectMode()))) {
-            shareService.fillPhotoIdList(existing);
-            if (existing.getPhotoIdList() == null || existing.getPhotoIdList().isEmpty()) {
-                return error("请至少选择一张要分享的图片或视频");
+            clearPhotoIdsJson = true;
+        } else {
+            if (StringUtils.isNotEmpty(body.getSelectMode())) {
+                existing.setSelectMode(normalizeSelectMode(body.getSelectMode()));
+            }
+            if (body.getPhotoIdList() != null) {
+                existing.setPhotoIdList(body.getPhotoIdList());
+                shareService.writePhotoIds(existing);
+            }
+            if ("include".equals(normalizeSelectMode(existing.getSelectMode()))) {
+                shareService.fillPhotoIdList(existing);
+                if (existing.getPhotoIdList() == null || existing.getPhotoIdList().isEmpty()) {
+                    return error("请至少选择一张要分享的图片或视频");
+                }
             }
         }
         if (body.getStatus() != null) {
@@ -228,7 +256,22 @@ public class BizAlbumShareController extends BaseController {
         existing.setUpdateBy(albumAccessHelper.currentUsername());
         existing.setUpdateTime(new Date());
         shareService.updateById(existing);
+        if (clearAlbumIdsJson || clearPhotoIdsJson) {
+            com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<BizAlbumShare> clear =
+                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<BizAlbumShare>()
+                            .eq(BizAlbumShare::getShareId, existing.getShareId());
+            if (clearAlbumIdsJson && clearPhotoIdsJson) {
+                clear.setSql("album_ids = null, photo_ids = null");
+            } else if (clearAlbumIdsJson) {
+                clear.setSql("album_ids = null");
+            } else {
+                clear.setSql("photo_ids = null");
+            }
+            shareService.update(clear);
+        }
         shareService.fillPhotoIdList(existing);
+        shareService.fillAlbumIdList(existing);
+        fillAlbumBriefs(java.util.Collections.singletonList(existing));
         if (album != null) {
             existing.setAlbumName(album.getAlbumName());
         }
@@ -258,6 +301,79 @@ public class BizAlbumShareController extends BaseController {
             shareService.removeById(id);
         }
         return success();
+    }
+
+    /** 用新的相册列表覆盖分享范围，链接令牌不变。空列表拒绝。 */
+    private AjaxResult replaceShareAlbums(BizAlbumShare share, List<Long> rawIds) {
+        java.util.LinkedHashSet<Long> idSet = new java.util.LinkedHashSet<Long>();
+        for (Long id : rawIds) {
+            if (id != null) {
+                idSet.add(id);
+            }
+        }
+        if (idSet.isEmpty()) {
+            return error("至少保留一个相册");
+        }
+        List<Long> albumIds = new java.util.ArrayList<Long>(idSet);
+        List<BizAlbum> found = albumService.listByIds(albumIds);
+        Map<Long, BizAlbum> albumMap = new HashMap<Long, BizAlbum>();
+        if (found != null) {
+            for (BizAlbum a : found) {
+                if (a != null && a.getAlbumId() != null) {
+                    albumMap.put(a.getAlbumId(), a);
+                }
+            }
+        }
+        List<BizAlbum> ordered = new java.util.ArrayList<BizAlbum>();
+        for (Long id : albumIds) {
+            BizAlbum a = albumMap.get(id);
+            if (a == null || a.getDeleted() == null || a.getDeleted() != AlbumDeleted.NORMAL) {
+                return error("相册不存在或已删除：" + id);
+            }
+            ordered.add(a);
+        }
+        AjaxResult deny = albumAccessHelper.denyIfCannotEditAny(ordered);
+        if (deny != null) {
+            return deny;
+        }
+        share.setAlbumIdList(albumIds);
+        shareService.writeAlbumIds(share);
+        return null;
+    }
+
+    private void fillAlbumBriefs(List<BizAlbumShare> shares) {
+        if (shares == null || shares.isEmpty()) {
+            return;
+        }
+        java.util.LinkedHashSet<Long> ids = new java.util.LinkedHashSet<Long>();
+        for (BizAlbumShare s : shares) {
+            if (s.getAlbumIdList() != null) {
+                ids.addAll(s.getAlbumIdList());
+            }
+        }
+        Map<Long, String> names = new HashMap<Long, String>();
+        if (!ids.isEmpty()) {
+            List<BizAlbum> albums = albumService.listByIds(ids);
+            if (albums != null) {
+                for (BizAlbum a : albums) {
+                    if (a != null && a.getAlbumId() != null) {
+                        names.put(a.getAlbumId(), a.getAlbumName() != null ? a.getAlbumName() : "未命名相册");
+                    }
+                }
+            }
+        }
+        for (BizAlbumShare s : shares) {
+            List<BizAlbumShare.AlbumBrief> briefs = new java.util.ArrayList<BizAlbumShare.AlbumBrief>();
+            if (s.getAlbumIdList() != null) {
+                for (Long id : s.getAlbumIdList()) {
+                    BizAlbumShare.AlbumBrief brief = new BizAlbumShare.AlbumBrief();
+                    brief.setAlbumId(id);
+                    brief.setAlbumName(names.containsKey(id) ? names.get(id) : "未命名相册");
+                    briefs.add(brief);
+                }
+            }
+            s.setAlbumBriefList(briefs);
+        }
     }
 
     private static String normalizeScope(String scope) {

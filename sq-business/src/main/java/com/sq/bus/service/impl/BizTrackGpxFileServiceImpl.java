@@ -149,7 +149,11 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             // 同相册同名文件：覆盖旧记录，不新增累加
             replaced += retireSameNameFiles(albumId, original);
 
-            double distKm = pathDistanceKm(samples);
+            GpxParseUtils.LoggerStats loggerStats = GpxParseUtils.readLoggerStats(dest);
+            // 记录仪写在文件头的里程已去掉静止漂移；没有该统计时才按坐标累加
+            double distKm = loggerStats.distanceKm != null && loggerStats.distanceKm > 0
+                    ? loggerStats.distanceKm
+                    : pathDistanceKm(samples);
             // 按逐段速度分布推断（排除等灯停顿，兼顾上坡骑行变慢）
             String travelMode = TravelModeInferUtils.inferFromGpx(samples);
 
@@ -531,8 +535,10 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
      * 列表/详情展示用统计（不落库）：
      * - 关闭「启用轨迹」时不计照片轨里程，但保留 photoPointCount；时长仍可与 GPX 取并集
      * - 区域粗定位草稿虽默认关闭启用，仍把照片点计入展示，便于继续确认
-     * - 时长：照片/视频最早～最晚 与 各启用 GPX 首末坐标点 取全局最早/最晚
-     * - 里程：有启用 GPX 时优先 GPX 路径长，不再与照片轨直线距离相加
+     * - 启用 GPX 时：里程、时长都只看 GPX。优先用文件头里记录仪写明的里程和总时长
+     *   （BasicAirData：Distance / Duration 的第一段），没有则用首末点时间差和路径长
+     * - 未启用 GPX 时：时长仍取照片/视频最早～最晚
+     * - 里程：有启用 GPX 时不再与照片轨直线距离相加
      */
     private void applyDisplayStats(BizTrack track, List<BizTrackGpxFile> files) {
         applyDisplayStats(track, files, null, null);
@@ -567,6 +573,10 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
 
         int gpxPoints = 0;
         double gpxDist = 0D;
+        long gpxDurationSec = 0L;
+        boolean gpxHasDuration = false;
+        Date gpxRangeStart = null;
+        Date gpxRangeEnd = null;
         long offsetMs = resolveGpxTimeOffsetMs();
         if (gpxOn) {
             List<BizTrackGpxFile> unique = dedupeByFileName(files);
@@ -575,24 +585,32 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                     continue;
                 }
                 gpxPoints += f.getPointCount() == null ? 0 : f.getPointCount();
-                if (f.getDistanceKm() != null && f.getDistanceKm().compareTo(BigDecimal.ZERO) > 0) {
-                    gpxDist += f.getDistanceKm().doubleValue();
-                } else {
-                    gpxDist += computeStoredDistance(f);
-                }
+                gpxDist += resolveDisplayedDistanceKm(f);
                 // 以文件内首/末坐标点为准（必要时从采样回填库内起止）
                 Date[] gpxBounds = resolveGpxPointTimeBounds(f, offsetMs);
                 if (gpxBounds != null) {
-                    rangeStart = earlier(rangeStart, gpxBounds[0]);
-                    rangeEnd = later(rangeEnd, gpxBounds[1]);
+                    gpxRangeStart = earlier(gpxRangeStart, gpxBounds[0]);
+                    gpxRangeEnd = later(gpxRangeEnd, gpxBounds[1]);
+                }
+                Long fileDuration = resolveDisplayedDurationSec(f, gpxBounds);
+                if (fileDuration != null) {
+                    gpxDurationSec += fileDuration;
+                    gpxHasDuration = true;
                 }
             }
         }
 
-        // 里程：启用 GPX 且有有效路径时用 GPX；否则用照片轨
-        double displayDist = (gpxOn && gpxDist > 0D) ? gpxDist : (trackOn ? photoDist : 0D);
+        // 启用 GPX 时里程和时长都只统计 GPX，不把相册里其他日期的照片拉进来
+        boolean useGpxStats = gpxOn && (gpxDist > 0D || gpxHasDuration);
+        double displayDist = useGpxStats ? gpxDist : (trackOn ? photoDist : 0D);
         long durationSec = 0L;
-        if (rangeStart != null && rangeEnd != null) {
+        if (useGpxStats && gpxHasDuration) {
+            durationSec = gpxDurationSec;
+            if (gpxRangeStart != null && gpxRangeEnd != null) {
+                track.setStartTime(gpxRangeStart);
+                track.setEndTime(gpxRangeEnd);
+            }
+        } else if (rangeStart != null && rangeEnd != null) {
             durationSec = Math.max(0L, (rangeEnd.getTime() - rangeStart.getTime()) / 1000L);
             track.setStartTime(rangeStart);
             track.setEndTime(rangeEnd);
@@ -768,6 +786,50 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                     dup.getAlbumId(), dup.getGpxId(), dup.getFileName());
         }
         return new ArrayList<BizTrackGpxFile>(best.values());
+    }
+
+    /**
+     * 展示里程：优先 GPX 文件头中记录仪写明的距离，并回写库内旧的逐点累加值。
+     */
+    private double resolveDisplayedDistanceKm(BizTrackGpxFile f) {
+        GpxParseUtils.LoggerStats stats = readLoggerStats(f);
+        if (stats.distanceKm != null && stats.distanceKm > 0D) {
+            BigDecimal official = BigDecimal.valueOf(stats.distanceKm).setScale(3, RoundingMode.HALF_UP);
+            if (f.getDistanceKm() == null || f.getDistanceKm().subtract(official).abs()
+                    .compareTo(new BigDecimal("0.01")) > 0) {
+                f.setDistanceKm(official);
+                if (f.getGpxId() != null) {
+                    updateById(f);
+                }
+            }
+            return official.doubleValue();
+        }
+        if (f.getDistanceKm() != null && f.getDistanceKm().compareTo(BigDecimal.ZERO) > 0) {
+            return f.getDistanceKm().doubleValue();
+        }
+        return computeStoredDistance(f);
+    }
+
+    /** 展示时长：优先文件头总时长，否则用该文件首末点时间差 */
+    private Long resolveDisplayedDurationSec(BizTrackGpxFile f, Date[] bounds) {
+        GpxParseUtils.LoggerStats stats = readLoggerStats(f);
+        if (stats.totalDurationSec != null && stats.totalDurationSec >= 0L) {
+            return stats.totalDurationSec;
+        }
+        if (bounds != null && bounds[0] != null && bounds[1] != null) {
+            return Math.max(0L, (bounds[1].getTime() - bounds[0].getTime()) / 1000L);
+        }
+        if (f.getStartTime() != null && f.getEndTime() != null) {
+            return Math.max(0L, (f.getEndTime().getTime() - f.getStartTime().getTime()) / 1000L);
+        }
+        return null;
+    }
+
+    private static GpxParseUtils.LoggerStats readLoggerStats(BizTrackGpxFile f) {
+        if (f == null || StringUtils.isEmpty(f.getStoragePath())) {
+            return new GpxParseUtils.LoggerStats(null, null);
+        }
+        return GpxParseUtils.readLoggerStats(new File(f.getStoragePath()));
     }
 
     private double computeStoredDistance(BizTrackGpxFile f) {
@@ -1630,7 +1692,10 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         stats.put("pointCount", samples.size());
         stats.put("startTime", fmt.format(new Date(first.timeMs)));
         stats.put("endTime", fmt.format(new Date(last.timeMs)));
-        long durationSec = Math.max(0L, (last.timeMs - first.timeMs) / 1000L);
+        GpxParseUtils.LoggerStats loggerStats = readLoggerStats(file);
+        long durationSec = loggerStats.totalDurationSec != null
+                ? Math.max(0L, loggerStats.totalDurationSec)
+                : Math.max(0L, (last.timeMs - first.timeMs) / 1000L);
         stats.put("durationSec", durationSec);
         stats.put("durationText", formatDuration(durationSec));
 
@@ -1661,6 +1726,9 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                 }
             }
             prev = s;
+        }
+        if (loggerStats.distanceKm != null && loggerStats.distanceKm > 0D) {
+            distKm = loggerStats.distanceKm;
         }
         stats.put("distanceKm", Math.round(distKm * 1000.0) / 1000.0);
         stats.put("distanceText", distKm < 1

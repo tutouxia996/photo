@@ -58,7 +58,8 @@ public interface IBizTrackGpxFileService extends IService<BizTrackGpxFile> {
 
     /**
      * 列表/详情回填：hasGpx；按「启用轨迹 / 启用GPX」合并展示点位/里程/时长。
-     * 时长取照片与 GPX 首末点的全局最早～最晚；里程有 GPX 时优先 GPX（不与照片轨相加）。
+     * 启用 GPX 时里程、时长只取 GPX（优先文件头中记录仪写明的数值，不与照片时间合并）；
+     * 未启用时时长取照片最早～最晚。里程有 GPX 时不与照片轨相加。
      */
     void enrichTracks(List<BizTrack> tracks);
 }

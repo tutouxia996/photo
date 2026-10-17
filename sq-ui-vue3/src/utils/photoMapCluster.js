@@ -2,6 +2,7 @@ import L from '@/utils/leaflet'
 import 'leaflet.markercluster'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import { isExternal } from '@/utils/validate'
+import { VIDEO_QUALITY_OPTIONS, videoPlaySrc } from '@/utils/videoProxy'
 
 /** 高德公开瓦片原生约到 18 级；maxZoom=22 + maxNativeZoom=18 可继续放大 */
 export const TILE_OPTS = {
@@ -658,6 +659,207 @@ export function isWaypointPoint(point) {
   return true
 }
 
+const MAP_VIDEO_DEFAULT_QUALITY = '480p'
+
+function buildMapVideoHtml(point, thumb, src) {
+  bindMapVideoQualityControls()
+  const photoId = point?.photoId != null ? escapeHtml(String(point.photoId)) : ''
+  const items = VIDEO_QUALITY_OPTIONS.map(opt => {
+    const active = opt.value === MAP_VIDEO_DEFAULT_QUALITY ? ' is-active' : ''
+    return `<button type="button" class="pmc-quality-item${active}" data-quality="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</button>`
+  }).join('')
+  return `
+    <div class="pmc-video-box" data-photo-id="${photoId}">
+      <video class="pmc-media" preload="metadata" poster="${thumb}" src="${src}" data-quality="${MAP_VIDEO_DEFAULT_QUALITY}" playsinline></video>
+      <div class="pmc-video-bar">
+        <button type="button" class="pmc-video-play" title="播放" aria-label="播放">
+          <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+        </button>
+        <input class="pmc-video-progress" type="range" min="0" max="1000" value="0" aria-label="进度" />
+        <button type="button" class="pmc-video-mute" title="静音" aria-label="静音">
+          <svg class="icon-vol" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 4V6L7 10H3zm13.5 2a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"/></svg>
+          <svg class="icon-mute" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 4V6L7 10H3zm13.59 2.41 2.12-2.12 1.41 1.41-2.12 2.12 2.12 2.12-1.41 1.41-2.12-2.12-2.12 2.12-1.41-1.41 2.12-2.12-2.12-2.12 1.41-1.41z"/></svg>
+        </button>
+        <button type="button" class="pmc-video-full" title="全屏" aria-label="全屏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14H5v5h5v-2H7v-3zm0-4h3V7h2V5H5v5zm10 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </button>
+        <button type="button" class="pmc-video-more" title="清晰度" aria-label="清晰度">⋮</button>
+      </div>
+      <div class="pmc-video-menu" role="menu">
+        <div class="pmc-video-menu-title">清晰度</div>
+        ${items}
+        <button type="button" class="pmc-quality-item pmc-video-download">下载原片</button>
+      </div>
+    </div>
+  `
+}
+
+let mapVideoMenuBound = false
+
+function closeMapVideoMenus(except) {
+  document.querySelectorAll('.pmc-video-menu.is-open').forEach(menu => {
+    if (menu !== except) menu.classList.remove('is-open')
+  })
+}
+
+function applyMapVideoQuality(item) {
+  const box = item.closest('.pmc-video-box')
+  const video = box?.querySelector('video')
+  const photoId = box?.dataset.photoId
+  const quality = item.dataset.quality
+  if (!video || !photoId || !quality) return
+  box.querySelectorAll('.pmc-quality-item').forEach(btn => {
+    btn.classList.toggle('is-active', btn === item)
+  })
+  closeMapVideoMenus()
+  if (video.dataset.quality === quality) return
+  const time = video.currentTime
+  const wasPlaying = !video.paused && !video.ended
+  video.dataset.quality = quality
+  video.src = videoPlaySrc(photoId, quality, 30)
+  const resume = () => {
+    if (Number.isFinite(time) && time > 0.2) {
+      try {
+        const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.05) : time
+        video.currentTime = Math.min(time, end)
+      } catch (_) { /* ignore */ }
+    }
+    if (wasPlaying) video.play().catch(() => {})
+  }
+  video.addEventListener('loadedmetadata', resume, { once: true })
+}
+
+function mapVideoOf(node) {
+  return node?.closest?.('.pmc-video-box')?.querySelector('video') || null
+}
+
+function syncMapVideoChrome(video) {
+  const box = video?.closest?.('.pmc-video-box')
+  if (!box) return
+  box.classList.toggle('is-playing', !video.paused && !video.ended)
+  box.classList.toggle('is-muted', !!video.muted || video.volume === 0)
+  const range = box.querySelector('.pmc-video-progress')
+  if (!range || range.dataset.scrubbing === '1') return
+  const dur = video.duration
+  if (!Number.isFinite(dur) || dur <= 0) return
+  range.value = String(Math.round((video.currentTime / dur) * 1000))
+}
+
+function onMapVideoMedia(event) {
+  const video = event.target
+  if (!video?.classList?.contains('pmc-media')) return
+  syncMapVideoChrome(video)
+}
+
+function onMapVideoPointer(event) {
+  const target = event.target
+  if (!target?.closest) return
+  if (target.classList?.contains('pmc-media') && target.closest('.pmc-video-box')) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (target.paused || target.ended) target.play().catch(() => {})
+    else target.pause()
+    return
+  }
+  const playBtn = target.closest('.pmc-video-play')
+  if (playBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const video = mapVideoOf(playBtn)
+    if (!video) return
+    if (video.paused || video.ended) video.play().catch(() => {})
+    else video.pause()
+    return
+  }
+  const muteBtn = target.closest('.pmc-video-mute')
+  if (muteBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const video = mapVideoOf(muteBtn)
+    if (!video) return
+    video.muted = !video.muted
+    syncMapVideoChrome(video)
+    return
+  }
+  const fullBtn = target.closest('.pmc-video-full')
+  if (fullBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const box = fullBtn.closest('.pmc-video-box')
+    if (!box) return
+    if (document.fullscreenElement === box) document.exitFullscreen?.()
+    else box.requestFullscreen?.()
+    return
+  }
+  const more = target.closest('.pmc-video-more')
+  if (more) {
+    event.preventDefault()
+    event.stopPropagation()
+    const menu = more.closest('.pmc-video-box')?.querySelector('.pmc-video-menu')
+    if (!menu) return
+    const willOpen = !menu.classList.contains('is-open')
+    closeMapVideoMenus()
+    if (willOpen) menu.classList.add('is-open')
+    return
+  }
+  const downloadBtn = target.closest('.pmc-video-download')
+  if (downloadBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const photoId = downloadBtn.closest('.pmc-video-box')?.dataset.photoId
+    closeMapVideoMenus()
+    if (!photoId) return
+    const link = document.createElement('a')
+    link.href = `${videoPlaySrc(photoId, 'original')}&download=true`
+    link.target = '_blank'
+    link.rel = 'noopener'
+    link.click()
+    return
+  }
+  const item = target.closest('.pmc-quality-item')
+  if (item) {
+    event.preventDefault()
+    event.stopPropagation()
+    applyMapVideoQuality(item)
+    return
+  }
+  if (!target.closest('.pmc-video-menu')) closeMapVideoMenus()
+}
+
+function onMapVideoScrub(event) {
+  const range = event.target?.closest?.('.pmc-video-progress')
+  if (!range) return
+  event.stopPropagation()
+  const video = mapVideoOf(range)
+  const dur = video?.duration
+  if (!video || !Number.isFinite(dur) || dur <= 0) return
+  video.currentTime = (Number(range.value) / 1000) * dur
+}
+
+/** 地图弹层是静态 HTML，清晰度菜单用一次文档委托（Leaflet / 高德共用） */
+export function bindMapVideoQualityControls() {
+  if (mapVideoMenuBound || typeof document === 'undefined') return
+  mapVideoMenuBound = true
+  document.addEventListener('click', onMapVideoPointer, true)
+  document.addEventListener('input', onMapVideoScrub, true)
+  document.addEventListener('pointerdown', (event) => {
+    if (event.target?.closest?.('.pmc-video-progress')) {
+      event.target.dataset.scrubbing = '1'
+    }
+  }, true)
+  document.addEventListener('pointerup', () => {
+    document.querySelectorAll('.pmc-video-progress[data-scrubbing]').forEach((range) => {
+      delete range.dataset.scrubbing
+    })
+  }, true)
+  document.addEventListener('timeupdate', onMapVideoMedia, true)
+  document.addEventListener('play', onMapVideoMedia, true)
+  document.addEventListener('pause', onMapVideoMedia, true)
+  document.addEventListener('ended', onMapVideoMedia, true)
+  document.addEventListener('volumechange', onMapVideoMedia, true)
+}
+
 export function buildPopupHtml(point) {
   const waypoint = isWaypointPoint(point)
   const isVideo = Number(point.fileType) === 2
@@ -692,7 +894,7 @@ export function buildPopupHtml(point) {
   }
   // 弹层视频优先 480p30；浏览档未就绪时后端回退原片（此前 409 导致地图无法播放）
   const media = isVideo
-    ? `<video class="pmc-media" controls preload="metadata" poster="${thumb}" src="${original}" playsinline></video>`
+    ? buildMapVideoHtml(point, thumb, original)
     : `<img class="pmc-media" src="${thumb || original}" alt="${title}" loading="eager" decoding="async" />`
   return `
     <div class="pmc-popup">

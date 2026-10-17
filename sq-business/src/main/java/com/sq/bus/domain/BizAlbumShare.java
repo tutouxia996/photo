@@ -78,4 +78,15 @@ public class BizAlbumShare implements Serializable {
     /** 相册名称（非库字段，列表展示用；多相册时为首个或拼接） */
     @TableField(exist = false)
     private String albumName;
+
+    /** 本次分享包含的相册名称（非库字段，与 albumIdList 顺序一致） */
+    @TableField(exist = false)
+    private List<AlbumBrief> albumBriefList;
+
+    @Data
+    public static class AlbumBrief implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private Long albumId;
+        private String albumName;
+    }
 }

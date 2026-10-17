@@ -1,0 +1,15 @@
+# 家里部署机 → 阿里云 frps
+# 与云上 /etc/frp/frps.toml 的 token 必须一致
+
+serverAddr = "101.200.88.62"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "a5113a9b4d704d12900e3a20"
+
+[[proxies]]
+name = "album"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 18080
+remotePort = 18080

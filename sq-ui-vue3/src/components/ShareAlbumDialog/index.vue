@@ -142,6 +142,34 @@
                 <span>· 访问 {{ Number(item.viewCount) || 0 }} 次</span>
               </div>
               <div class="manage-url">{{ buildUrlForShare(item) }}</div>
+              <div v-if="(item.albumBriefList || []).length" class="share-album-chips manage-chips">
+                <span v-for="a in item.albumBriefList" :key="a.albumId" class="share-album-chip" :title="a.albumName">
+                  {{ a.albumName || '未命名相册' }}
+                </span>
+              </div>
+              <div v-if="editingShareId === item.shareId" class="manage-album-editor">
+                <p class="share-hint">链接不变。去掉的相册，访客刷新后将看不到；新加的相册会出现在同一条链接里。</p>
+                <el-select
+                  v-model="draftAlbumIds"
+                  multiple
+                  filterable
+                  placeholder="搜索相册名称可添加，点标签上的叉可去掉"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="a in albumChoices"
+                    :key="a.albumId"
+                    :label="a.albumName || '未命名相册'"
+                    :value="Number(a.albumId)"
+                  />
+                </el-select>
+                <div class="manage-album-actions">
+                  <el-button size="small" @click="cancelEditAlbums">取消</el-button>
+                  <el-button size="small" type="primary" :loading="savingAlbums" :disabled="!draftAlbumIds.length" @click="saveShareAlbums(item)">
+                    保存
+                  </el-button>
+                </div>
+              </div>
             </div>
             <div class="manage-actions">
               <el-switch
@@ -154,6 +182,7 @@
                 @change="(val) => toggleShareStatus(item, val)"
               />
               <el-button size="small" @click="showShareLink(item)">链接/二维码</el-button>
+              <el-button size="small" @click="openEditAlbums(item)">调整相册</el-button>
               <el-button size="small" type="danger" plain :loading="deletingId === item.shareId" @click="removeShare(item)">
                 删除
               </el-button>
@@ -196,6 +225,7 @@
 import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { listPhoto } from '@/api/photos/photo'
+import { listAlbum } from '@/api/photos/album'
 import {
   createAlbumShare,
   updateAlbumShare,
@@ -230,6 +260,10 @@ const tab = ref('create')
 const shareList = ref([])
 const togglingId = ref(null)
 const deletingId = ref(null)
+const editingShareId = ref(null)
+const draftAlbumIds = ref([])
+const albumOptions = ref([])
+const savingAlbums = ref(false)
 const managePreviewUrl = ref('')
 
 const form = ref({
@@ -251,6 +285,24 @@ const albumTargets = computed(() => {
     return [{ albumId: props.albumId, albumName: props.albumName || '' }]
   }
   return []
+})
+
+const albumChoices = computed(() => {
+  const map = new Map()
+  for (const a of albumOptions.value) {
+    if (!a || a.albumId == null || a.canEdit === false) continue
+    const albumId = Number(a.albumId)
+    map.set(albumId, { albumId, albumName: a.albumName || '未命名相册' })
+  }
+  const current = shareList.value.find(s => s.shareId === editingShareId.value)
+  for (const a of current?.albumBriefList || []) {
+    if (!a || a.albumId == null) continue
+    const albumId = Number(a.albumId)
+    if (!map.has(albumId)) {
+      map.set(albumId, { albumId, albumName: a.albumName || '未命名相册' })
+    }
+  }
+  return Array.from(map.values())
 })
 
 const isMulti = computed(() => albumTargets.value.length > 1)
@@ -571,6 +623,58 @@ async function showShareLink(item) {
   await renderQr(manageQrRef, managePreviewUrl.value)
 }
 
+async function loadAlbumOptions() {
+  try {
+    const res = await listAlbum({ pageNum: 1, pageSize: 500 })
+    albumOptions.value = res.rows || []
+  } catch (e) {
+    albumOptions.value = []
+  }
+}
+
+async function openEditAlbums(item) {
+  if (!item?.shareId) return
+  editingShareId.value = item.shareId
+  const ids = (item.albumIdList && item.albumIdList.length)
+    ? item.albumIdList
+    : (item.albumBriefList || []).map(a => a.albumId)
+  draftAlbumIds.value = ids.map(id => Number(id)).filter(id => !Number.isNaN(id))
+  if (!albumOptions.value.length) await loadAlbumOptions()
+}
+
+function cancelEditAlbums() {
+  editingShareId.value = null
+  draftAlbumIds.value = []
+}
+
+async function saveShareAlbums(item) {
+  if (!item?.shareId) return
+  if (!draftAlbumIds.value.length) {
+    proxy?.$modal?.msgWarning?.('至少保留一个相册')
+    return
+  }
+  savingAlbums.value = true
+  try {
+    await updateAlbumShare({
+      shareId: item.shareId,
+      albumIdList: draftAlbumIds.value,
+      shareTrack: item.shareTrack,
+      mediaScope: item.mediaScope,
+      selectMode: draftAlbumIds.value.length > 1 ? 'all' : item.selectMode,
+      photoIdList: draftAlbumIds.value.length > 1 ? [] : (item.photoIdList || []),
+      expireTime: item.expireTime || null,
+      status: item.status
+    })
+    proxy?.$modal?.msgSuccess?.('已更新这条分享包含的相册，链接不变')
+    cancelEditAlbums()
+    await loadShareList()
+  } catch (e) {
+    /* 全局已提示 */
+  } finally {
+    savingAlbums.value = false
+  }
+}
+
 async function openManage() {
   tab.value = 'manage'
   sharePath.value = ''
@@ -587,6 +691,9 @@ function resetForm() {
   shareUrl.value = ''
   resultExpireText.value = ''
   managePreviewUrl.value = ''
+  editingShareId.value = null
+  draftAlbumIds.value = []
+  albumOptions.value = []
   tab.value = 'create'
 }
 
@@ -898,6 +1005,28 @@ watch(
   font-size: 12px;
   color: #409eff;
   word-break: break-all;
+}
+
+.manage-chips {
+  margin: 8px 0 0;
+  max-height: 72px;
+}
+
+.manage-album-editor {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.manage-album-editor .share-hint {
+  margin: 0;
+}
+
+.manage-album-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .manage-actions {

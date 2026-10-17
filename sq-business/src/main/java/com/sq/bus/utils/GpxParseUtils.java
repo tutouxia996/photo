@@ -6,7 +6,10 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -16,6 +19,8 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 解析 GPX 1.0/1.1 中的 trkpt / rtept（WGS84）。
@@ -55,6 +60,105 @@ public final class GpxParseUtils {
             this.rawTime = rawTime;
             this.hasRealTime = hasRealTime;
         }
+    }
+
+    /**
+     * BasicAirData GPS Logger 写在文件头注释里的统计。
+     * 例如 {@code Distance = 15.7 公里}、{@code Duration = 6:50:22 | 04:11:35}，
+     * 前者是记录仪认可的里程，后者第一段是总时长（第二段为移动时间）。
+     */
+    public static final class LoggerStats {
+        public final Double distanceKm;
+        /** 总时长（秒），对应 Duration 中 “|” 左侧 */
+        public final Long totalDurationSec;
+
+        public LoggerStats(Double distanceKm, Long totalDurationSec) {
+            this.distanceKm = distanceKm;
+            this.totalDurationSec = totalDurationSec;
+        }
+
+        public boolean isEmpty() {
+            return distanceKm == null && totalDurationSec == null;
+        }
+    }
+
+    private static final Pattern DISTANCE_STAT = Pattern.compile(
+            "Distance\\s*=\\s*([0-9]+(?:[.,][0-9]+)?)\\s*([^\\r\\n<]*)",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern DURATION_STAT = Pattern.compile(
+            "Duration\\s*=\\s*(\\d{1,4}):(\\d{1,2}):(\\d{2})",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 只读文件开头的注释统计，不解析轨迹点。
+     */
+    public static LoggerStats readLoggerStats(File file) {
+        if (file == null || !file.isFile()) {
+            return new LoggerStats(null, null);
+        }
+        try (InputStream in = new FileInputStream(file)) {
+            return readLoggerStats(in);
+        } catch (Exception e) {
+            return new LoggerStats(null, null);
+        }
+    }
+
+    public static LoggerStats readLoggerStats(InputStream in) {
+        if (in == null) {
+            return new LoggerStats(null, null);
+        }
+        try {
+            byte[] buf = new byte[8192];
+            int n = in.read(buf);
+            if (n <= 0) {
+                return new LoggerStats(null, null);
+            }
+            String head = new String(buf, 0, n, StandardCharsets.UTF_8);
+            Double distanceKm = null;
+            Matcher dist = DISTANCE_STAT.matcher(head);
+            if (dist.find()) {
+                distanceKm = parseDistanceKm(dist.group(1), dist.group(2));
+            }
+            Long durationSec = null;
+            Matcher dur = DURATION_STAT.matcher(head);
+            if (dur.find()) {
+                long h = Long.parseLong(dur.group(1));
+                long m = Long.parseLong(dur.group(2));
+                long s = Long.parseLong(dur.group(3));
+                if (m < 60 && s < 60) {
+                    durationSec = h * 3600L + m * 60L + s;
+                }
+            }
+            return new LoggerStats(distanceKm, durationSec);
+        } catch (Exception e) {
+            return new LoggerStats(null, null);
+        }
+    }
+
+    private static Double parseDistanceKm(String number, String unitRaw) {
+        if (number == null || number.isEmpty()) {
+            return null;
+        }
+        double value;
+        try {
+            value = Double.parseDouble(number.replace(',', '.'));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (value < 0 || Double.isNaN(value) || Double.isInfinite(value)) {
+            return null;
+        }
+        String unit = unitRaw == null ? "" : unitRaw.trim().toLowerCase();
+        boolean km = unit.contains("公里") || unit.contains("千米") || unit.contains("km");
+        boolean meters = !km && (unit.contains("米") || unit.equals("m") || unit.startsWith("m ")
+                || unit.startsWith("m)") || unit.contains("meter"));
+        if (meters) {
+            value = value / 1000.0;
+        } else if (!km && value >= 1000.0) {
+            // 无单位的大数按米处理（15.7 这种小数仍视为公里）
+            value = value / 1000.0;
+        }
+        return value;
     }
 
     public static List<GpxSample> parse(InputStream in, int timeOffsetHours) {
