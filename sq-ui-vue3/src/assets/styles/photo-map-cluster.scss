@@ -675,6 +675,25 @@
   border-radius: 8px;
 }
 
+/* GPX 弹窗锚点：与轨迹同色的查看圆点（二维 CircleMarker） */
+.pmc-gpx-focus {
+  pointer-events: none !important;
+}
+
+/* 3D：贴地 SVG 圆点，矢量清晰、无阴影 */
+.pmc-amap-gpx-focus {
+  width: 14px;
+  height: 14px;
+  line-height: 0;
+  pointer-events: none;
+  transform: translateZ(0);
+}
+
+.pmc-amap-gpx-focus svg {
+  display: block;
+  overflow: visible;
+}
+
 /* 去掉 markercluster 默认饼图样式干扰 */
 .marker-cluster {
   background: transparent !important;

@@ -12,7 +12,7 @@
             class="style-btn style-btn--view"
             :class="{ active: !terrainMode }"
             :disabled="terrainLoading"
-            title="二维地图"
+            title="二维地图：左键平移；中键/Shift+左键绕点俯仰旋转；滚轮绕光标缩放"
             @click="toggleViewMenu('2d')"
           >
             二维<span class="view-caret">▾</span>
@@ -52,7 +52,9 @@
         </div>
       </div>
     </div>
-    <div ref="mapEl" class="map-canvas" :class="{ 'is-hidden': terrainMode }" />
+    <div ref="pitchStageEl" class="map-pitch-stage" :class="{ 'is-hidden': terrainMode }">
+      <div ref="mapEl" class="map-canvas" />
+    </div>
     <div ref="amapEl" class="map-canvas map-canvas--amap" :class="{ 'is-hidden': !terrainMode }" />
     <div v-if="!hasPoints" class="map-empty">{{ emptyText }}</div>
     <div class="pmc-br-stack">
@@ -208,6 +210,7 @@ const emit = defineEmits([
 ])
 
 const mapEl = ref(null)
+const pitchStageEl = ref(null)
 const amapEl = ref(null)
 const currentStyle = ref('normal')
 const mapStyles = MAP_STYLES
@@ -257,6 +260,14 @@ let amapOverlays = []
 let amapInfoWindow = null
 /** 当前打开弹窗对应的 photoId / 坐标，便于再次点击同一张关闭 */
 let amapInfoWindowKey = null
+/** 3D GPX 点击拾取索引（不绑折线事件，避免打断高德拖拽） */
+let terrainGpxPickSegments = []
+let terrainGpxMapClickBound = false
+let terrainGpxOpenTimer = 0
+let terrainGpxMoveLastAt = 0
+/** 二维 / 3D：弹窗尖角对准的轨迹查看点 */
+let gpxFocusMarker = null
+let amapGpxFocusMarker = null
 /** 可复用的底图图层（勿用 setLayers，会丢掉覆盖物） */
 let amapLayerDefault = null
 let amapLayerSatellite = null
@@ -291,6 +302,8 @@ let terrainViewHandlers = null
 /** 自定义滚轮缩放（比高德默认更灵敏） */
 let terrainWheelBound = false
 let terrainWheelHandler = null
+/** 二维俯仰角（度），0 为正射，手势上限与 3D 相同 */
+let leafletPitch = 0
 /** 二维 Leaflet：与 3D 对齐的视角/滚轮手势 */
 let leafletViewControlsBound = false
 let leafletViewDrag = null
@@ -452,6 +465,7 @@ function visibleMatchedPhotos() {
 function invalidateMapSize() {
   if (!map) return
   map.invalidateSize({ animate: false })
+  applyLeafletPitch()
 }
 
 /** 容器尚未撑开时（弹窗/过渡），延后校准，避免灰屏无瓦片 */
@@ -645,6 +659,7 @@ function unbindTerrainClusterZoom() {
 function clearAmapOverlays() {
   unbindTerrainClusterZoom()
   clearAmapClusterOverlays()
+  clearAmapGpxFocusMarker()
   terrainClusterSource = []
   terrainSpiderfyActive = false
   if (!amap || !amapOverlays.length) {
@@ -1011,10 +1026,129 @@ function unbindTerrainWheelZoom() {
   terrainWheelBound = false
 }
 
+const LEAFLET_PITCH_MAX = 83
+/** 只改 CSS，不挪地图。角度再大就会缩成一条，所以画面封顶 */
+const LEAFLET_VISUAL_PITCH_MAX = 36
+
+function visualPitchDeg() {
+  const t = Math.max(0, Math.min(LEAFLET_PITCH_MAX, leafletPitch)) / LEAFLET_PITCH_MAX
+  return LEAFLET_VISUAL_PITCH_MAX * t
+}
+
+function pitchDepth() {
+  const h = pitchStageEl.value?.clientHeight || mapEl.value?.clientHeight || 800
+  return Math.max(900, h * 2.2)
+}
+
+/** 绕窗口中心俯仰，正中的地点留在原地 */
+function pitchOrigin() {
+  const el = mapEl.value
+  const w = el?.clientWidth || map?.getSize?.()?.x || 0
+  const h = el?.clientHeight || map?.getSize?.()?.y || 0
+  return L.point(w / 2, h / 2)
+}
+
+function projectPitchPoint(flat) {
+  const point = L.point(flat)
+  const visual = visualPitchDeg()
+  if (visual < 0.05) return point
+  const origin = pitchOrigin()
+  const x = point.x - origin.x
+  const y = point.y - origin.y
+  const rad = visual * Math.PI / 180
+  const sin = Math.sin(rad)
+  const cos = Math.cos(rad)
+  const depth = pitchDepth()
+  const denom = depth - y * sin
+  if (Math.abs(denom) < 1) return point
+  const k = depth / denom
+  return L.point(origin.x + x * k, origin.y + y * cos * k)
+}
+
+function unprojectPitchPoint(visualPoint) {
+  const point = L.point(visualPoint)
+  const visual = visualPitchDeg()
+  if (visual < 0.05) return point
+  const origin = pitchOrigin()
+  const sx = point.x - origin.x
+  const sy = point.y - origin.y
+  const rad = visual * Math.PI / 180
+  const sin = Math.sin(rad)
+  const cos = Math.cos(rad)
+  const depth = pitchDepth()
+  const denom = depth * cos + sy * sin
+  if (Math.abs(denom) < 1) return point
+  const y = sy * depth / denom
+  const x = sx * (depth - y * sin) / depth
+  return L.point(origin.x + x, origin.y + y)
+}
+
+function ensurePitchRig() {
+  const container = map?.getContainer?.()
+  const pane = map?._mapPane
+  if (!container || !pane) return
+  if (pane.parentElement?.classList?.contains('pmc-pitch-tilt')) return
+  const tilt = document.createElement('div')
+  tilt.className = 'pmc-pitch-tilt'
+  container.insertBefore(tilt, pane)
+  tilt.appendChild(pane)
+  container.classList.add('pmc-pitch-host')
+}
+
+function applyLeafletPitch() {
+  const stage = pitchStageEl.value
+  const visual = visualPitchDeg()
+  if (stage) {
+    stage.style.perspective = `${pitchDepth()}px`
+    stage.style.perspectiveOrigin = '50% 50%'
+  }
+  const tilt = map?.getContainer?.()?.querySelector?.('.pmc-pitch-tilt')
+  if (!tilt) return
+  tilt.style.transformOrigin = '50% 50%'
+  tilt.style.transform = visual >= 0.05 ? `rotateX(${visual}deg)` : ''
+}
+
+function installLeafletPitchPointer() {
+  if (!map || map._pmcPitchPointer) return
+  const raw = L.Map.prototype.mouseEventToContainerPoint
+  map.mouseEventToContainerPoint = function (e) {
+    const visual = raw.call(this, e)
+    return unprojectPitchPoint(visual)
+  }
+  map._pmcPitchPointer = true
+}
+
+/**
+ * 左右旋转时把按下点钉回准星。俯仰不调用这里，避免把地图平移走。
+ */
+function lockLeafletBearing(anchorX, anchorY, pivotLatLng) {
+  if (!map || !pivotLatLng) return
+  try {
+    const px = map.latLngToContainerPoint(pivotLatLng)
+    const dx = px.x - anchorX
+    const dy = px.y - anchorY
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+    map.panBy([dx, dy], { animate: false })
+  } catch (err) { /* ignore */ }
+}
+
+/** 滚轮缩放时按俯仰后的画面位置把光标下的地点锁回去 */
+function lockLeafletPivot(anchorX, anchorY, pivotLatLng) {
+  if (!map || !pivotLatLng) return
+  try {
+    const flat = map.latLngToContainerPoint(pivotLatLng)
+    const target = unprojectPitchPoint(L.point(anchorX, anchorY))
+    const dx = flat.x - target.x
+    const dy = flat.y - target.y
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+    map.panBy([dx, dy], { animate: false })
+  } catch (err) { /* ignore */ }
+}
+
 /**
  * 二维操作与 3D 对齐：
  * - 左键拖动：平移
- * - 中键 / Shift+左键：绕按下点旋转（二维无俯仰）
+ * - 中键 / Shift+左键：绕按下点旋转，上下拖动调整俯仰
  * - 滚轮：细腻绕光标缩放
  */
 function bindLeafletViewControls() {
@@ -1022,10 +1156,12 @@ function bindLeafletViewControls() {
   if (!el || !map || leafletViewControlsBound) return
 
   const ROTATE_SENS = 0.45
+  const PITCH_SENS = 0.40
   let rafId = 0
   let pendingBearing = null
+  let pendingPitch = null
   let crosshairEl = null
-  const host = el.parentElement || el
+  const host = el
 
   const isOrbitGesture = (e) => {
     return e.button === 1 || (e.button === 0 && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey)
@@ -1052,28 +1188,29 @@ function bindLeafletViewControls() {
     if (crosshairEl) crosshairEl.classList.remove('is-on')
   }
 
-  /** setBearing 绕地图中心；补偿平移使按下点钉在准星上 */
-  const lockPivotToCrosshair = () => {
-    if (!map || !leafletViewDrag?.pivotLatLng) return
-    try {
-      const px = map.latLngToContainerPoint(leafletViewDrag.pivotLatLng)
-      if (!px) return
-      const dx = px.x - leafletViewDrag.anchorX
-      const dy = px.y - leafletViewDrag.anchorY
-      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
-      map.panBy([dx, dy], { animate: false })
-    } catch (err) { /* ignore */ }
-  }
-
   const applyView = () => {
     rafId = 0
-    if (!map || pendingBearing == null || !leafletViewDrag) return
+    if (!map || !leafletViewDrag) return
+    const drag = leafletViewDrag
     try {
-      map.setBearing(pendingBearing)
-      lockPivotToCrosshair()
-      mapHeading.value = ((pendingBearing % 360) + 360) % 360
+      if (pendingPitch != null) {
+        leafletPitch = pendingPitch
+        applyLeafletPitch()
+      }
+      if (pendingBearing != null) {
+        const prev = Number(map.getBearing?.() || 0)
+        let delta = pendingBearing - prev
+        if (delta > 180) delta -= 360
+        if (delta < -180) delta += 360
+        if (Math.abs(delta) > 0.05) {
+          map.setBearing(pendingBearing)
+          lockLeafletBearing(drag.anchorX, drag.anchorY, drag.pivotLatLng)
+        }
+        mapHeading.value = ((pendingBearing % 360) + 360) % 360
+      }
     } catch (err) { /* ignore */ }
     pendingBearing = null
+    pendingPitch = null
   }
 
   const endViewDrag = () => {
@@ -1084,6 +1221,7 @@ function bindLeafletViewControls() {
       rafId = 0
     }
     pendingBearing = null
+    pendingPitch = null
     hideCrosshair()
     try {
       // 框选激活时保持禁用平移
@@ -1114,6 +1252,7 @@ function bindLeafletViewControls() {
       startX: e.clientX,
       startY: e.clientY,
       startBearing: Number(map.getBearing?.() || 0),
+      startPitch: leafletPitch,
       pivotLatLng,
       anchorX,
       anchorY,
@@ -1130,10 +1269,13 @@ function bindLeafletViewControls() {
     if (!leafletViewDrag || !map || terrainMode.value) return
     e.preventDefault()
     const dx = e.clientX - leafletViewDrag.startX
-    // 二维无俯仰，仅左右旋转（与 3D 水平分量一致）
+    const dy = e.clientY - leafletViewDrag.startY
+    // 与 3D 相同：上拖抬高，下拖回到俯视；左右绕准星旋转
+    const pitch = Math.max(0, Math.min(LEAFLET_PITCH_MAX, leafletViewDrag.startPitch - dy * PITCH_SENS))
     let bearing = leafletViewDrag.startBearing - dx * ROTATE_SENS
     bearing = ((bearing % 360) + 360) % 360
     pendingBearing = bearing
+    pendingPitch = pitch
     if (!rafId) rafId = requestAnimationFrame(applyView)
   }
 
@@ -1248,17 +1390,13 @@ function bindLeafletWheelZoom() {
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
     try {
-      // 先取光标下经纬度，缩放后再平移锁回光标（兼容 leaflet-rotate）
-      const pivot = map.containerPointToLatLng([mx, my])
+      // 先取光标下经纬度，缩放后再平移锁回光标（兼容旋转与俯仰）
+      const flat = unprojectPitchPoint(L.point(mx, my))
+      const pivot = map.containerPointToLatLng(flat)
       map.setZoom(z1, { animate: false })
       // 若被 zoomSnap 吸回原级，绝不做平移，避免「只平移不缩放」
       if (Math.abs(map.getZoom() - z0) < 0.001) return
-      const after = map.latLngToContainerPoint(pivot)
-      const ox = after.x - mx
-      const oy = after.y - my
-      if (Math.abs(ox) > 0.5 || Math.abs(oy) > 0.5) {
-        map.panBy([ox, oy], { animate: false })
-      }
+      lockLeafletPivot(mx, my, pivot)
     } catch (err) {
       try { map.setZoom(z1, { animate: false }) } catch (e2) { /* ignore */ }
     }
@@ -1282,6 +1420,7 @@ function destroyAmap() {
   stopTerrainTraveler()
   unbindTerrainWheelZoom()
   unbindTerrainViewControls()
+  unbindTerrainGpxMapPick()
   if (amapStyleRedrawTimer) {
     clearTimeout(amapStyleRedrawTimer)
     amapStyleRedrawTimer = 0
@@ -1443,6 +1582,7 @@ function closeAmapInfoWindow() {
     try { amapInfoWindow.close() } catch (e) { /* ignore */ }
   }
   amapInfoWindowKey = null
+  clearAmapGpxFocusMarker()
 }
 
 function ensureAmapInfoWindow(AMap) {
@@ -1452,12 +1592,102 @@ function ensureAmapInfoWindow(AMap) {
     autoMove: true,
     // 与 Leaflet 默认一致：点击地图空白处关闭弹窗
     closeWhenClickMap: true,
+    // 照片标记默认上移，避开图钉；GPX 详情打开时改为贴轨迹
     offset: new AMap.Pixel(0, -40)
   })
   amapInfoWindow.on('close', () => {
     amapInfoWindowKey = null
+    clearAmapGpxFocusMarker()
   })
   return amapInfoWindow
+}
+
+function setAmapInfoOffset(AMap, x, y) {
+  if (!amapInfoWindow || !AMap) return
+  try {
+    amapInfoWindow.setOffset(new AMap.Pixel(x, y))
+  } catch (e) { /* ignore */ }
+}
+
+/** GPX 最近点 → { lat, lng } */
+function nearestGpxLatLng(nearest) {
+  if (!nearest) return null
+  const lat = Number(nearest.lat != null ? nearest.lat : nearest[0])
+  const lng = Number(nearest.lng != null ? nearest.lng : nearest[1])
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null
+  return { lat, lng }
+}
+
+function gpxFocusColor(item, nearest, segmentMode, fallbackColor) {
+  return travelModeColor(
+    nearest?.travelMode || segmentMode || item?.travelMode,
+    fallbackColor || item?.color || '#10B981'
+  )
+}
+
+function clearGpxFocusMarker() {
+  if (gpxFocusMarker) {
+    try { map?.removeLayer(gpxFocusMarker) } catch (e) { /* ignore */ }
+    gpxFocusMarker = null
+  }
+}
+
+/** 二维：弹窗锚点处画与轨迹同色的查看圆点 */
+function showGpxFocusMarker(latlng, color) {
+  clearGpxFocusMarker()
+  if (!map || !latlng) return
+  const ll = latlng.lat != null ? latlng : L.latLng(latlng[0], latlng[1])
+  gpxFocusMarker = L.circleMarker(ll, {
+    radius: 6,
+    color: '#ffffff',
+    weight: 2,
+    fillColor: color || '#10B981',
+    fillOpacity: 1,
+    opacity: 1,
+    interactive: false,
+    bubblingMouseEvents: false,
+    className: 'pmc-gpx-focus'
+  }).addTo(map)
+  try { gpxFocusMarker.bringToFront() } catch (e) { /* ignore */ }
+}
+
+function clearAmapGpxFocusMarker() {
+  if (amapGpxFocusMarker && amap) {
+    try { amap.remove(amapGpxFocusMarker) } catch (e) { /* ignore */ }
+  }
+  amapGpxFocusMarker = null
+}
+
+/**
+ * 3D：贴地 SVG 圆点（比 CSS 圆 + 阴影更锐利）。
+ * 锚点为折线投影坐标，与绿色轨迹重合。
+ */
+function showAmapGpxFocusMarker(AMap, latlng, color) {
+  clearAmapGpxFocusMarker()
+  if (!amap || !AMap || !latlng) return
+  const fill = color || '#10B981'
+  const size = 14
+  const el = document.createElement('div')
+  el.className = 'pmc-amap-gpx-focus'
+  el.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">`
+    + `<circle cx="${size / 2}" cy="${size / 2}" r="5" fill="${fill}" stroke="#fff" stroke-width="2"/>`
+    + `</svg>`
+  const half = size / 2
+  amapGpxFocusMarker = new AMap.Marker({
+    position: [latlng.lng, latlng.lat],
+    content: el,
+    offset: new AMap.Pixel(-half, -half),
+    height: 0,
+    zIndex: 180,
+    bubble: true,
+    clickable: false,
+    cursor: 'default'
+  })
+  try {
+    amap.add(amapGpxFocusMarker)
+  } catch (e) {
+    try { amapGpxFocusMarker.setMap?.(amap) } catch (e2) { amapGpxFocusMarker = null }
+  }
 }
 
 function openTerrainPhotoInfo(AMap, point, position) {
@@ -1470,10 +1700,210 @@ function openTerrainPhotoInfo(AMap, point, position) {
     closeAmapInfoWindow()
     return
   }
+  clearAmapGpxFocusMarker()
   const info = ensureAmapInfoWindow(AMap)
+  setAmapInfoOffset(AMap, 0, -40)
   info.setContent(buildPopupHtml(point))
   amapInfoWindowKey = key
   info.open(amap, position)
+}
+
+/** 从高德覆盖物点击事件取出 { lat, lng } */
+function amapEventLatLng(e) {
+  const ll = e?.lnglat
+  if (ll && Number.isFinite(Number(ll.lat)) && Number.isFinite(Number(ll.lng))) {
+    return { lat: Number(ll.lat), lng: Number(ll.lng) }
+  }
+  return null
+}
+
+/** 信息窗 DOM 上的按下不要落到地图 */
+function shieldAmapInfoWindowDom() {
+  requestAnimationFrame(() => {
+    const host = amap?.getContainer?.()
+    if (!host) return
+    host.querySelectorAll('.amap-info, .amap-info-contentWrapper, .amap-info-content').forEach((el) => {
+      if (el.dataset.pmcShielded === '1') return
+      el.dataset.pmcShielded = '1'
+      el.addEventListener('mousedown', (ev) => ev.stopPropagation())
+      el.addEventListener('pointerdown', (ev) => ev.stopPropagation())
+      el.addEventListener('touchstart', (ev) => ev.stopPropagation(), { passive: true })
+    })
+  })
+}
+
+/** 3D：打开 GPX 详情（与 Leaflet 同一套 HTML） */
+function openTerrainGpxInfo(AMap, { item, nearest, latlng, segmentMode, color }) {
+  if (!amap || !latlng || props.gpxEndpointPickable) return
+  const key = `gpx:${item?.fileName || ''}:${nearest?.seq ?? ''}`
+  if (amapInfoWindowKey === key && amapInfoWindow?.getIsOpen?.()) {
+    closeAmapInfoWindow()
+    return
+  }
+  // 锚点用折线投影点（非原始最近点），保证落在绿色轨迹上
+  const tip = latlng
+  const focusColor = gpxFocusColor(item, nearest, segmentMode, color)
+  const info = ensureAmapInfoWindow(AMap)
+  // 尖角对准轨迹上的圆点中心（照片弹窗仍用 -40 避开图钉）
+  setAmapInfoOffset(AMap, 0, 0)
+  info.setContent(buildGpxPopupHtml(item, nearest, segmentMode))
+  amapInfoWindowKey = key
+  info.open(amap, [tip.lng, tip.lat])
+  showAmapGpxFocusMarker(AMap, tip, focusColor)
+  shieldAmapInfoWindowDom()
+}
+
+/** 像素坐标：点投影到线段上的位置 */
+function projectPointOntoSegPx(p, a, b) {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  if (dx === 0 && dy === 0) return { x: a.x, y: a.y, t: 0 }
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)
+  t = Math.max(0, Math.min(1, t))
+  return { x: a.x + t * dx, y: a.y + t * dy, t }
+}
+
+/** 像素坐标点到线段距离的平方 */
+function distPointToSegSqPx(p, a, b) {
+  const proj = projectPointOntoSegPx(p, a, b)
+  const ddx = p.x - proj.x
+  const ddy = p.y - proj.y
+  return ddx * ddx + ddy * ddy
+}
+
+/**
+ * 在地图 click 坐标附近拾取 GPX（屏幕像素阈值，与 2D 透明 hit 线约 16px 相当）。
+ * 折线本身 clickable:false，不参与高德拖拽状态机。
+ */
+function pickTerrainGpxHit(latlng, maxPx = 14) {
+  if (!amap || !latlng || !terrainGpxPickSegments.length) return null
+  let clickPx
+  try {
+    clickPx = amap.lngLatToContainer([latlng.lng, latlng.lat])
+  } catch (e) {
+    return null
+  }
+  if (!clickPx || !Number.isFinite(clickPx.x) || !Number.isFinite(clickPx.y)) return null
+  const p = { x: clickPx.x, y: clickPx.y }
+  const maxD = maxPx * maxPx
+  let bestD = maxD
+  let best = null
+  let bestProjPx = null
+  for (const entry of terrainGpxPickSegments) {
+    const pts = entry.points
+    if (!pts || pts.length < 2) continue
+    let prev = null
+    for (let i = 0; i < pts.length; i++) {
+      let cur
+      try {
+        cur = amap.lngLatToContainer([pts[i].lng, pts[i].lat])
+      } catch (e) {
+        prev = null
+        continue
+      }
+      if (!cur || !Number.isFinite(cur.x)) {
+        prev = null
+        continue
+      }
+      const c = { x: cur.x, y: cur.y }
+      if (prev) {
+        const proj = projectPointOntoSegPx(p, prev, c)
+        const ddx = p.x - proj.x
+        const ddy = p.y - proj.y
+        const d = ddx * ddx + ddy * ddy
+        if (d < bestD) {
+          bestD = d
+          best = entry
+          bestProjPx = proj
+        }
+      }
+      prev = c
+    }
+  }
+  if (!best) return null
+  // 投影回经纬度，锚点落在绘制折线上（避免吸到原始最近点导致偏移）
+  let tipLatLng = latlng
+  if (bestProjPx) {
+    try {
+      const ll = amap.containerToLngLat([bestProjPx.x, bestProjPx.y])
+      if (ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
+        tipLatLng = { lat: Number(ll.lat), lng: Number(ll.lng) }
+      }
+    } catch (e) { /* keep click latlng */ }
+  }
+  const nearest = findNearestGpxPoint(best.item.path, tipLatLng)
+  return {
+    item: best.item,
+    seg: best.seg,
+    nearest,
+    latlng: tipLatLng,
+    segmentMode: best.seg?.travelMode,
+    color: best.seg?.color || best.item?.color
+  }
+}
+
+function onTerrainGpxMapClick(e) {
+  if (!amap || props.gpxEndpointPickable || terrainViewDrag) return
+  // 点在照片 Marker DOM 上时不要抢（Marker 已 bubble:false，一般到不了这里）
+  const native = e?.originEvent || e?.domEvent || e?.originalEvent
+  if (native?.target?.closest?.('.pmc-amap-marker-hit, .amap-marker')) return
+  const latlng = amapEventLatLng(e)
+  if (!latlng) return
+  const hit = pickTerrainGpxHit(latlng)
+  if (!hit) return
+  // 推迟打开：避开同帧 dragend / closeWhenClickMap，防止拖拽粘连
+  if (terrainGpxOpenTimer) clearTimeout(terrainGpxOpenTimer)
+  terrainGpxOpenTimer = setTimeout(() => {
+    terrainGpxOpenTimer = 0
+    if (!amap || !terrainMode.value || !window.AMap) return
+    openTerrainGpxInfo(window.AMap, hit)
+    emit('gpx-click', {
+      overlay: hit.item,
+      nearest: hit.nearest,
+      latlng: hit.latlng,
+      segmentMode: hit.segmentMode
+    })
+  }, 0)
+}
+
+function onTerrainGpxMapMouseMove(e) {
+  if (!amap || props.gpxEndpointPickable || terrainViewDrag) return
+  const now = performance.now()
+  if (now - terrainGpxMoveLastAt < 80) return
+  terrainGpxMoveLastAt = now
+  const latlng = amapEventLatLng(e)
+  if (!latlng) return
+  const hit = pickTerrainGpxHit(latlng, 12)
+  try {
+    const el = amap.getContainer?.()
+    if (el) el.style.cursor = hit ? 'pointer' : ''
+  } catch (err) { /* ignore */ }
+}
+
+function bindTerrainGpxMapPick() {
+  if (!amap || terrainGpxMapClickBound) return
+  amap.on('click', onTerrainGpxMapClick)
+  amap.on('mousemove', onTerrainGpxMapMouseMove)
+  terrainGpxMapClickBound = true
+}
+
+function unbindTerrainGpxMapPick() {
+  if (terrainGpxOpenTimer) {
+    clearTimeout(terrainGpxOpenTimer)
+    terrainGpxOpenTimer = 0
+  }
+  terrainGpxPickSegments = []
+  if (amap && terrainGpxMapClickBound) {
+    try {
+      amap.off('click', onTerrainGpxMapClick)
+      amap.off('mousemove', onTerrainGpxMapMouseMove)
+    } catch (e) { /* ignore */ }
+    try {
+      const el = amap.getContainer?.()
+      if (el) el.style.cursor = ''
+    } catch (e2) { /* ignore */ }
+  }
+  terrainGpxMapClickBound = false
 }
 
 function stopAmapEventBubble(e) {
@@ -1760,6 +2190,7 @@ function drawTerrainPolylines(AMap) {
 }
 
 function drawTerrainGpx(AMap) {
+  terrainGpxPickSegments = []
   if (!hasGpxPathOverlay.value) return
   overlayList.value.forEach((item) => {
     if (item?.showPath === false) return
@@ -1775,12 +2206,26 @@ function drawTerrainGpx(AMap) {
       const path = pathToAmapPath(latlngs)
       if (path.length < 2) return
       const color = travelModeColor(seg.travelMode, seg.color || item.color || '#10B981')
+      // 仅绘制：不接收鼠标，拖拽完全交给地图；点击由 bindTerrainGpxMapPick 像素拾取
       addAmapOverlay(new AMap.Polyline({
         ...buildTerrainPolylineOpts(AMap, path, color),
-        zIndex: 55
+        zIndex: 55,
+        bubble: true,
+        clickable: false,
+        cursor: 'default'
       }))
+      if (!props.gpxEndpointPickable) {
+        // 与绘制抽稀一致，避免上万点拾取卡顿
+        const capped = decimateAmapPath(path, 2500)
+        terrainGpxPickSegments.push({
+          item,
+          seg,
+          points: capped.map(p => ({ lng: p[0], lat: p[1] }))
+        })
+      }
     })
   })
+  bindTerrainGpxMapPick()
 }
 
 function drawTerrainMarkers(AMap) {
@@ -2027,6 +2472,8 @@ function resetMapOrientation() {
       map.setBearing(0)
     } catch (e) { /* ignore */ }
   }
+  leafletPitch = 0
+  applyLeafletPitch()
   mapHeading.value = 0
 }
 
@@ -2077,6 +2524,7 @@ function clearPathEditMarkers() {
 function clearOverlays() {
   stopTravelers()
   clearPathEditMarkers()
+  clearGpxFocusMarker()
   segmentRefs = []
   if (lineLayer) lineLayer.clearLayers()
   if (gpxOverlayLayer) gpxOverlayLayer.clearLayers()
@@ -3009,12 +3457,16 @@ function drawGpxOverlays() {
         if (props.gpxEndpointPickable) return
         L.DomEvent.stopPropagation(e)
         const nearest = findNearestGpxPoint(item.path, e.latlng)
+        const tip = nearestGpxLatLng(nearest) || e.latlng
+        const focusColor = gpxFocusColor(item, nearest, seg.travelMode, color)
         const html = buildGpxPopupHtml(item, nearest, seg.travelMode)
-        L.popup({ maxWidth: 320, className: 'pmc-popup-wrap', autoPan: true })
-          .setLatLng(e.latlng)
+        const popup = L.popup({ maxWidth: 320, className: 'pmc-popup-wrap', autoPan: true })
+          .setLatLng(tip)
           .setContent(html)
-          .openOn(map)
-        emit('gpx-click', { overlay: item, nearest, latlng: e.latlng, segmentMode: seg.travelMode })
+        popup.on('remove', clearGpxFocusMarker)
+        popup.openOn(map)
+        showGpxFocusMarker(tip, focusColor)
+        emit('gpx-click', { overlay: item, nearest, latlng: tip, segmentMode: seg.travelMode })
       }
       line.on('click', openPopup)
       hit.on('click', openPopup)
@@ -3382,6 +3834,9 @@ function initMap() {
     zoomSnap: 0,
     zoomDelta: 0.35
   }).setView([35.0, 105.0], 4)
+  ensurePitchRig()
+  installLeafletPitchPointer()
+  applyLeafletPitch()
   L.control.zoom({ position: 'bottomleft' }).addTo(map)
   try {
     map.on('rotate', syncMapHeading)
@@ -3846,19 +4301,41 @@ defineExpose({
 }
 
 
+.map-pitch-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: #e8eef5;
+  perspective-origin: 50% 50%;
+}
+
+.map-pitch-stage.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+
 .map-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  background: #e8eef5;
+  background: transparent;
   z-index: 0;
 }
 
-.map-canvas.is-hidden {
-  visibility: hidden;
-  pointer-events: none;
-  z-index: -1;
+.photo-cluster-map :deep(.leaflet-container.pmc-pitch-host) {
+  overflow: visible;
+  background: transparent;
+}
+
+.photo-cluster-map :deep(.pmc-pitch-tilt) {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  will-change: transform;
 }
 
 .map-canvas--amap {
@@ -3872,7 +4349,7 @@ defineExpose({
 /* 谷歌地球式绕点旋转十字准星 */
 .ge-orbit-crosshair {
   position: absolute;
-  z-index: 450;
+  z-index: 2000;
   width: 28px;
   height: 28px;
   margin-left: -14px;
