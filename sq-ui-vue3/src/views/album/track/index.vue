@@ -116,6 +116,23 @@
           />
         </template>
       </el-table-column>
+      <el-table-column width="130" align="center">
+        <template #header>
+          <span title="开启后地图隐藏 GPS 定位漂移段；关闭则以紫红色单独标出漂移">优化漂移</span>
+        </template>
+        <template #default="scope">
+          <el-switch
+            :model-value="isGpxDriftOptimize(scope.row)"
+            :loading="gpxDriftOptimizeLoadingId === scope.row.trackId"
+            :disabled="!canEditTrack || !hasGpxFiles(scope.row) || !isGpxEnabled(scope.row)"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :title="gpxDriftOptimizeTitle(scope.row)"
+            @change="(val) => handleGpxDriftOptimizeChange(scope.row, val)"
+          />
+        </template>
+      </el-table-column>
       <el-table-column label="公开" prop="isPublic" width="70" align="center">
         <template #default="scope">{{ scope.row.isPublic === 1 ? '是' : '否' }}</template>
       </el-table-column>
@@ -468,6 +485,7 @@ const gpxImportTrackName = ref('')
 const gpxFileList = ref([])
 const gpxUploadRef = ref(null)
 const gpxEnabledLoadingId = ref(null)
+const gpxDriftOptimizeLoadingId = ref(null)
 
 function albumLabel(item) {
   if (!item) return ''
@@ -553,6 +571,20 @@ function canShowGpxImport(row) {
 function isGpxEnabled(row) {
   if (!hasGpxFiles(row)) return false
   return row.gpxEnabled == null || row.gpxEnabled === 1
+}
+
+/** 默认开启：隐藏地图上的 GPS 定位漂移段 */
+function isGpxDriftOptimize(row) {
+  if (!hasGpxFiles(row)) return false
+  return row.gpxDriftOptimize == null || row.gpxDriftOptimize === 1
+}
+
+function gpxDriftOptimizeTitle(row) {
+  if (!hasGpxFiles(row)) return '请先导入 GPX'
+  if (!isGpxEnabled(row)) return '请先开启「启用GPX」'
+  return isGpxDriftOptimize(row)
+    ? '已开启：地图隐藏 GPS 定位漂移段'
+    : '已关闭：漂移段以紫红色「GPS定位漂移」显示'
 }
 
 function formatDuration(sec) {
@@ -1223,6 +1255,42 @@ async function handleGpxEnabledChange(row, val) {
     proxy.$modal.msgError('更新失败')
   } finally {
     gpxEnabledLoadingId.value = null
+  }
+}
+
+async function handleGpxDriftOptimizeChange(row, val) {
+  if (!row?.trackId) return
+  if (!hasGpxFiles(row)) {
+    proxy.$modal.msgWarning('请先在操作中导入 GPX')
+    return
+  }
+  if (!isGpxEnabled(row)) {
+    proxy.$modal.msgWarning('请先开启「启用GPX」')
+    return
+  }
+  const enabled = val ? 1 : 0
+  const prev = row.gpxDriftOptimize == null ? 1 : row.gpxDriftOptimize
+  if (prev === enabled) return
+  gpxDriftOptimizeLoadingId.value = row.trackId
+  row.gpxDriftOptimize = enabled
+  try {
+    await updateTrack({ trackId: row.trackId, gpxDriftOptimize: enabled })
+    proxy.$modal.msgSuccess(enabled === 1
+      ? '已开启：地图隐藏 GPS 定位漂移段'
+      : '已关闭：漂移段以紫红色「GPS定位漂移」显示')
+    getList()
+    if (detailOpen.value && detailTrack.value?.trackId === row.trackId) {
+      const { track, points, gpxOverlays } = await loadTrackWithRoutes(row.trackId, false)
+      detailTrack.value = track || detailTrack.value
+      detailPoints.value = points || []
+      detailGpxOverlays.value = gpxOverlays || []
+      nextTick(() => mapViewerRef.value?.refresh?.({ fit: false }))
+    }
+  } catch (e) {
+    row.gpxDriftOptimize = prev
+    proxy.$modal.msgError('更新失败')
+  } finally {
+    gpxDriftOptimizeLoadingId.value = null
   }
 }
 

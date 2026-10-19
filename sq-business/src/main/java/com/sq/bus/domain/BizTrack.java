@@ -49,6 +49,11 @@ public class BizTrack implements Serializable {
     /** 是否在地图启用 GPX 线路：0否 1是 */
     private Integer gpxEnabled;
 
+    /**
+     * 优化原地漂移显示：1（默认）隐藏 GPS 漂移段；0 以「GPS定位漂移」专用色显示
+     */
+    private Integer gpxDriftOptimize;
+
     /** 来源：photo / gpx / mixed */
     private String sourceType;
 

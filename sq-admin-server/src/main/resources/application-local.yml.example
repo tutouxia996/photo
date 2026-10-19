@@ -13,6 +13,13 @@ album:
     jsKey: 请填写你的高德JS-API-Key
     # 可选：控制台「安全密钥」，新版 Key 加载 3D 地形时常需要
     securityJsCode:
+    # 火车车次/经停（聚合数据）；不配也能手填经停站贴轨
+    # 申请：https://www.juhe.cn/docs/api/id/817 （火车订票查询）
+    # 也可设环境变量 JUHE_TRAIN_KEY
+    train:
+      enabled: true
+      provider: juhe
+      apiKey: 请填写聚合火车API-Key
   aiLandmark:
     enabled: true
     # 通义千问：https://dashscope.console.aliyun.com/apiKey

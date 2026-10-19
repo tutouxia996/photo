@@ -123,17 +123,100 @@ public class TrainRoutePlanService {
         }
         travelMode = travelMode.toLowerCase(Locale.ROOT);
 
-        geocodeStops(stops);
-        TrackRoutePlanResult planned = stitchRailway(stops, travelMode);
+        geocodeStops(stops, travelMode);
+        TrackRoutePlanResult planned;
+        if (allSegmentsHaveRoutePath(stops)) {
+            // 前端预览已算好的折线：原样拼回，保证「预览即所得」
+            planned = assembleFromStopPaths(stops, travelMode);
+        } else {
+            planned = stitchRailway(stops, travelMode);
+        }
 
         Map<String, Object> result = new LinkedHashMap<String, Object>();
         result.putAll(amapDirectionService.toPreviewMap(planned));
         result.put("trainNo", StringUtils.isEmpty(trainNo) ? null : trainNo.trim().toUpperCase(Locale.ROOT));
         result.put("travelMode", travelMode);
         result.put("source", source);
+        // 站间 routePath 已写入 stops，插入轨迹时可直接复用，避免再次规划漂移/回退公路
         result.put("stops", toStopViews(stops));
         result.put("description", buildDescription(trainNo, stops));
+        result.put("straightSegments", planned.getMessage() != null && planned.getMessage().contains("直线")
+                ? Boolean.TRUE : Boolean.FALSE);
         return result;
+    }
+
+    private boolean allSegmentsHaveRoutePath(List<TrainStop> stops) {
+        if (stops == null || stops.size() < 2) {
+            return false;
+        }
+        for (int i = 0; i < stops.size() - 1; i++) {
+            if (StringUtils.isEmpty(stops.get(i).getRoutePath())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private TrackRoutePlanResult assembleFromStopPaths(List<TrainStop> stops, String travelMode) {
+        List<double[]> full = new ArrayList<double[]>();
+        double meters = 0;
+        for (int i = 0; i < stops.size() - 1; i++) {
+            List<double[]> path = parseRoutePathJson(stops.get(i).getRoutePath());
+            if (path == null || path.size() < 2) {
+                return stitchRailway(stops, travelMode);
+            }
+            if (full.isEmpty()) {
+                full.addAll(path);
+            } else {
+                full.addAll(path.subList(1, path.size()));
+            }
+            for (int j = 1; j < path.size(); j++) {
+                meters += GeoDistanceUtils.haversineKm(
+                        path.get(j - 1)[0], path.get(j - 1)[1],
+                        path.get(j)[0], path.get(j)[1]) * 1000;
+            }
+        }
+        TrackRoutePlanResult result = new TrackRoutePlanResult();
+        result.setTravelMode(travelMode);
+        result.setPath(full);
+        result.setDistanceMeters(meters);
+        result.setProvider("preview");
+        result.setMessage("复用预览折线（" + stops.size() + " 站，" + full.size() + " 点）");
+        return result;
+    }
+
+    private List<double[]> parseRoutePathJson(String json) {
+        if (StringUtils.isEmpty(json)) {
+            return null;
+        }
+        try {
+            com.alibaba.fastjson2.JSONArray arr = com.alibaba.fastjson2.JSON.parseArray(json);
+            if (arr == null || arr.isEmpty()) {
+                return null;
+            }
+            List<double[]> path = new ArrayList<double[]>(arr.size());
+            for (int i = 0; i < arr.size(); i++) {
+                Object row = arr.get(i);
+                if (row instanceof com.alibaba.fastjson2.JSONArray) {
+                    com.alibaba.fastjson2.JSONArray p = (com.alibaba.fastjson2.JSONArray) row;
+                    if (p.size() >= 2) {
+                        path.add(new double[]{p.getDoubleValue(0), p.getDoubleValue(1)});
+                    }
+                } else if (row instanceof List) {
+                    List<?> p = (List<?>) row;
+                    if (p.size() >= 2) {
+                        path.add(new double[]{
+                                Double.parseDouble(String.valueOf(p.get(0))),
+                                Double.parseDouble(String.valueOf(p.get(1)))
+                        });
+                    }
+                }
+            }
+            return path.size() >= 2 ? path : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private List<TrainStop> fromStopMaps(List<?> raw) {
@@ -153,10 +236,12 @@ public class TrainRoutePlanService {
             stop.setName(cleanStationName(name));
             stop.setArriveTime(emptyToNull(str(m.get("arriveTime"))));
             stop.setDepartTime(emptyToNull(str(m.get("departTime"))));
-            stop.setLatWgs(toDouble(m.get("latWgs")));
-            stop.setLngWgs(toDouble(m.get("lngWgs")));
-            stop.setLatGcj(toDouble(m.get("latGcj") != null ? m.get("latGcj") : m.get("lat")));
-            stop.setLngGcj(toDouble(m.get("lngGcj") != null ? m.get("lngGcj") : m.get("lng")));
+            // 前端/预览用 wgsLat；个别调用方用 latWgs，两种都认
+            stop.setLatWgs(firstDouble(m, "wgsLat", "latWgs"));
+            stop.setLngWgs(firstDouble(m, "wgsLng", "lngWgs"));
+            stop.setLatGcj(firstDouble(m, "latGcj", "lat"));
+            stop.setLngGcj(firstDouble(m, "lngGcj", "lng"));
+            stop.setRoutePath(str(m.get("routePath")));
             stop.setSequence(seq++);
             list.add(stop);
         }
@@ -166,27 +251,58 @@ public class TrainRoutePlanService {
         return list;
     }
 
-    private void geocodeStops(List<TrainStop> stops) {
+    private void geocodeStops(List<TrainStop> stops, String travelMode) {
+        boolean preferHsr = "hsr".equals(travelMode);
         for (TrainStop stop : stops) {
             if (stop.getLatWgs() != null && stop.getLngWgs() != null) {
+                if (stop.getLatGcj() == null || stop.getLngGcj() == null) {
+                    double[] gcj = CoordTransformUtils.wgs84ToGcj02(stop.getLngWgs(), stop.getLatWgs());
+                    stop.setLngGcj(gcj[0]);
+                    stop.setLatGcj(gcj[1]);
+                }
                 continue;
             }
             if (stop.getLatGcj() != null && stop.getLngGcj() != null) {
-                double[] wgs = com.sq.bus.utils.CoordTransformUtils.gcj02ToWgs84(
+                double[] wgs = CoordTransformUtils.gcj02ToWgs84(
                         stop.getLngGcj(), stop.getLatGcj());
                 stop.setLngWgs(wgs[0]);
                 stop.setLatWgs(wgs[1]);
                 continue;
             }
-            Map<String, Object> poi = findStationPoi(stop.getName());
+            // 已知枢纽站先用内置坐标，避免部署机上高德 CUQPS 把整次预览打挂
+            Map<String, Object> poi = builtinStationPoi(stop.getName());
             if (poi == null) {
-                throw new ServiceException("无法定位车站：" + stop.getName() + "（请补全站名或检查高德 Key）");
+                poi = findStationPoi(stop.getName(), preferHsr);
             }
-            stop.setLatGcj(toDouble(poi.get("lat")));
-            stop.setLngGcj(toDouble(poi.get("lng")));
-            stop.setLatWgs(toDouble(poi.get("wgsLat")));
-            stop.setLngWgs(toDouble(poi.get("wgsLng")));
-            // 用搜索到的规范名
+            if (poi == null) {
+                throw new ServiceException("无法定位车站：" + stop.getName()
+                        + "（可改写成「朝阳站」等官方站名，或检查高德 Key）");
+            }
+            Double latGcj = toDouble(poi.get("lat"));
+            Double lngGcj = toDouble(poi.get("lng"));
+            Double latWgs = toDouble(poi.get("wgsLat"));
+            Double lngWgs = toDouble(poi.get("wgsLng"));
+            if (latWgs == null || lngWgs == null) {
+                if (latGcj != null && lngGcj != null) {
+                    double[] wgs = CoordTransformUtils.gcj02ToWgs84(lngGcj, latGcj);
+                    lngWgs = wgs[0];
+                    latWgs = wgs[1];
+                }
+            }
+            if (latGcj == null || lngGcj == null) {
+                if (latWgs != null && lngWgs != null) {
+                    double[] gcj = CoordTransformUtils.wgs84ToGcj02(lngWgs, latWgs);
+                    lngGcj = gcj[0];
+                    latGcj = gcj[1];
+                }
+            }
+            if (latWgs == null || lngWgs == null || latGcj == null || lngGcj == null) {
+                throw new ServiceException("无法定位车站：" + stop.getName() + "（搜索结果无有效坐标）");
+            }
+            stop.setLatGcj(latGcj);
+            stop.setLngGcj(lngGcj);
+            stop.setLatWgs(latWgs);
+            stop.setLngWgs(lngWgs);
             String poiName = str(poi.get("name"));
             if (StringUtils.isNotEmpty(poiName)) {
                 stop.setName(poiName);
@@ -194,54 +310,215 @@ public class TrainRoutePlanService {
         }
     }
 
-    private Map<String, Object> findStationPoi(String name) {
+    /**
+     * 优先高德「火车站」类型，再按站名匹配；高铁偏好名称含高铁/动车的 POI，
+     * 避免吸到同名商业体或老站。
+     */
+    private Map<String, Object> findStationPoi(String name, boolean preferHsr) {
         String base = cleanStationName(name);
-        String[] keywords = new String[]{
-                base.endsWith("站") ? base : base + "站",
-                base + "火车站",
-                base + "高铁站",
-                base
-        };
+        List<String> keywords = stationSearchKeywords(base, preferHsr);
+        // 用所有别名参与打分，避免「北京朝阳」对不上「朝阳站」
+        List<String> wantKeys = new ArrayList<String>();
+        for (String kw : keywords) {
+            String k = JuheTrainScheduleClient.normalizeStationKey(kw);
+            if (StringUtils.isNotEmpty(k) && !wantKeys.contains(k)) {
+                wantKeys.add(k);
+            }
+        }
+        Map<String, Object> bestOverall = null;
+        int bestScore = Integer.MIN_VALUE;
         for (String kw : keywords) {
             try {
-                List<Map<String, Object>> list = amapPlaceSearchService.search(kw, null, 8);
+                List<Map<String, Object>> typed = amapPlaceSearchService.search(
+                        kw, null, 12, false, "150200");
+                List<Map<String, Object>> list = (typed != null && !typed.isEmpty())
+                        ? typed
+                        : amapPlaceSearchService.search(kw, null, 12);
                 if (list == null || list.isEmpty()) {
                     continue;
                 }
-                Map<String, Object> best = list.get(0);
-                String key = JuheTrainScheduleClient.normalizeStationKey(base);
                 for (Map<String, Object> row : list) {
-                    String n = JuheTrainScheduleClient.normalizeStationKey(str(row.get("name")));
-                    if (n.equals(key) || n.contains(key) || key.contains(n)) {
-                        return row;
+                    int score = 0;
+                    for (String wantKey : wantKeys) {
+                        score = Math.max(score, scoreStationPoi(row, wantKey, preferHsr));
+                    }
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestOverall = row;
                     }
                 }
-                return best;
+                if (bestScore >= 90) {
+                    return bestOverall;
+                }
             } catch (Exception e) {
-                log.debug("geocode station {} failed: {}", kw, e.getMessage());
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                log.warn("geocode station {} failed: {}", kw, msg);
+                if (msg.contains("CUQPS") || msg.contains("EXCEEDED")) {
+                    log.warn("高德地点搜索 QPS 超限，停止继续搜站，改用内置坐标（若有）");
+                    return null;
+                }
             }
         }
-        return null;
+        // 拒绝明显不相关的弱匹配（如只命中同名商圈）
+        if (bestOverall != null && bestScore < 25) {
+            log.info("discard weak station match name={} score={} poi={}",
+                    name, bestScore, bestOverall.get("name"));
+            return null;
+        }
+        return bestOverall;
+    }
+
+    /**
+     * 生成搜索词：官方短名优先（朝阳站），再试「北京朝阳站」等。
+     * 票面/聚合常写「北京朝阳」，高德 POI 多为「朝阳站」。
+     */
+    private List<String> stationSearchKeywords(String raw, boolean preferHsr) {
+        LinkedHashMap<String, Boolean> ordered = new LinkedHashMap<String, Boolean>();
+        String base = cleanStationName(raw);
+        for (String alias : stationAliases(base)) {
+            String a = cleanStationName(alias);
+            if (StringUtils.isEmpty(a)) {
+                continue;
+            }
+            ordered.put(a.endsWith("站") ? a : a + "站", Boolean.TRUE);
+            ordered.put(a, Boolean.TRUE);
+            if (preferHsr) {
+                ordered.put(a + "高铁站", Boolean.TRUE);
+            }
+            ordered.put(a + "火车站", Boolean.TRUE);
+        }
+        return new ArrayList<String>(ordered.keySet());
+    }
+
+    private List<String> stationAliases(String name) {
+        List<String> list = new ArrayList<String>();
+        String base = cleanStationName(name);
+        if (StringUtils.isEmpty(base)) {
+            return list;
+        }
+        list.add(base);
+        String key = JuheTrainScheduleClient.normalizeStationKey(base);
+        // 常见「市名+站名」票面写法 → 官方短名
+        String[][] pairs = new String[][]{
+                {"北京朝阳", "朝阳"},
+                {"北京丰台", "丰台"},
+                {"北京清河", "清河"},
+                {"北京北", "北京北"},
+                {"上海虹桥", "上海虹桥"},
+                {"上海松江", "松江"},
+                {"天津西", "天津西"},
+                {"广州南", "广州南"},
+                {"深圳北", "深圳北"},
+                {"星火", "朝阳"},
+        };
+        for (String[] p : pairs) {
+            if (key.equals(p[0]) || key.equals(JuheTrainScheduleClient.normalizeStationKey(p[0]))) {
+                if (!list.contains(p[1])) {
+                    list.add(p[1]);
+                }
+                if (!list.contains(p[1] + "站")) {
+                    list.add(p[1] + "站");
+                }
+            }
+        }
+        // 去掉省会前缀再搜：北京朝阳 → 朝阳
+        for (String prefix : new String[]{"北京", "上海", "天津", "重庆", "广州", "深圳", "成都", "武汉", "西安", "南京", "杭州"}) {
+            if (key.startsWith(JuheTrainScheduleClient.normalizeStationKey(prefix))
+                    && key.length() > prefix.length()) {
+                String shortName = base;
+                if (shortName.startsWith(prefix)) {
+                    shortName = shortName.substring(prefix.length());
+                } else if (key.length() > prefix.length()) {
+                    // key 已去「站」，用去掉前缀后的汉字近似
+                    shortName = base.replaceFirst("^" + prefix, "");
+                }
+                shortName = cleanStationName(shortName);
+                if (StringUtils.isNotEmpty(shortName) && !list.contains(shortName)) {
+                    list.add(shortName);
+                    list.add(shortName.endsWith("站") ? shortName : shortName + "站");
+                }
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 高德偶发搜不到时的内置坐标（WGS84）。仅作兜底，优先仍走搜索。
+     */
+    private Map<String, Object> builtinStationPoi(String name) {
+        String key = JuheTrainScheduleClient.normalizeStationKey(name);
+        // latWgs, lngWgs
+        double[] ll = null;
+        String official = null;
+        if ("朝阳".equals(key) || "北京朝阳".equals(key) || "星火".equals(key)) {
+            // 北京朝阳站（原星火站）
+            ll = new double[]{39.9428, 116.5079};
+            official = "朝阳站";
+        } else if ("清河".equals(key) || "北京清河".equals(key)) {
+            ll = new double[]{40.0416, 116.3145};
+            official = "清河站";
+        } else if ("丰台".equals(key) || "北京丰台".equals(key)) {
+            ll = new double[]{39.8498, 116.3042};
+            official = "丰台站";
+        }
+        if (ll == null) {
+            return null;
+        }
+        double[] gcj = CoordTransformUtils.wgs84ToGcj02(ll[1], ll[0]);
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("name", official);
+        row.put("type", "火车站");
+        row.put("wgsLat", ll[0]);
+        row.put("wgsLng", ll[1]);
+        row.put("lat", gcj[1]);
+        row.put("lng", gcj[0]);
+        log.info("use builtin station coords for {} → {}", name, official);
+        return row;
+    }
+
+    private int scoreStationPoi(Map<String, Object> row, String wantKey, boolean preferHsr) {
+        String n = JuheTrainScheduleClient.normalizeStationKey(str(row.get("name")));
+        String type = str(row.get("type"));
+        String name = str(row.get("name"));
+        int score = 0;
+        if (n.equals(wantKey)) {
+            score += 50;
+        } else if (n.startsWith(wantKey) || wantKey.startsWith(n)) {
+            score += 35;
+        } else if (n.contains(wantKey) || wantKey.contains(n)) {
+            score += 20;
+        } else {
+            score -= 30;
+        }
+        if (type != null && (type.contains("火车站") || type.contains("高铁"))) {
+            score += 40;
+        } else if (name != null && (name.contains("火车站") || name.contains("高铁站") || name.endsWith("站"))) {
+            score += 15;
+        }
+        if (preferHsr) {
+            if (name != null && (name.contains("高铁") || name.contains("动车"))) {
+                score += 25;
+            }
+            // 同城老站常与高铁站同名关键词，略降「仅火车站」无高铁字样的分
+            if (name != null && name.contains("火车站") && !name.contains("高铁") && !name.contains("南")
+                    && !name.contains("东") && !name.contains("西") && !name.contains("北")) {
+                score -= 5;
+            }
+        }
+        return score;
     }
 
     private TrackRoutePlanResult stitchRailway(List<TrainStop> stops, String travelMode) {
         List<double[]> full = new ArrayList<double[]>();
         double meters = 0;
-        List<String> notes = new ArrayList<String>();
+        int osmN = 0;
+        int straightN = 0;
         for (int i = 0; i < stops.size() - 1; i++) {
             TrainStop a = stops.get(i);
             TrainStop b = stops.get(i + 1);
-            TrackRoutePlanResult seg = osmRailwayRouteService.route(
+            TrackRoutePlanResult seg = routeRailSegment(
                     a.getLatWgs(), a.getLngWgs(), b.getLatWgs(), b.getLngWgs(), travelMode);
-            if ((!seg.hasPath() || seg.getPath().size() < 3)
-                    && ("walk".equals(travelMode) || "drive".equals(travelMode)
-                    || "bike".equals(travelMode) || "bus".equals(travelMode))) {
-                // 非铁路方式才回退高德路网
-                seg = amapDirectionService.plan(
-                        a.getLatWgs(), a.getLngWgs(), b.getLatWgs(), b.getLngWgs(), travelMode);
-            }
             if (!seg.hasPath() || seg.getPath().size() < 2) {
-                // 铁路方式失败：站到站直线，避免误画成公路
                 double[] ga = CoordTransformUtils.wgs84ToGcj02(a.getLngWgs(), a.getLatWgs());
                 double[] gb = CoordTransformUtils.wgs84ToGcj02(b.getLngWgs(), b.getLatWgs());
                 List<double[]> straight = new ArrayList<double[]>(2);
@@ -254,10 +531,13 @@ public class TrainRoutePlanService {
                 seg.setDistanceMeters(GeoDistanceUtils.haversineKm(
                         a.getLatWgs(), a.getLngWgs(), b.getLatWgs(), b.getLngWgs()) * 1000);
                 seg.setMessage("该段 OSM 未连通，暂用站间直线");
-                notes.add("直线");
-            } else if (StringUtils.isNotEmpty(seg.getMessage()) && seg.getMessage().contains("OSM")) {
-                notes.add("OSM");
+                straightN++;
+            } else if ("straight".equals(seg.getProvider())) {
+                straightN++;
+            } else {
+                osmN++;
             }
+            a.setRoutePath(amapDirectionService.toRoutePathJson(seg.getPath()));
             List<double[]> path = seg.getPath();
             if (full.isEmpty()) {
                 full.addAll(path);
@@ -275,9 +555,45 @@ public class TrainRoutePlanService {
         result.setTravelMode(travelMode);
         result.setPath(full);
         result.setDistanceMeters(meters);
-        result.setProvider(notes.contains("OSM") ? "osm+train" : "train");
-        result.setMessage("已按 " + stops.size() + " 个经停站贴轨（" + full.size() + " 点）");
+        result.setProvider(osmN > 0 ? "osm+train" : "train");
+        String tip = "已按 " + stops.size() + " 个经停站贴轨（" + full.size() + " 点";
+        if (osmN > 0) {
+            tip += "，OSM " + osmN + " 段";
+        }
+        if (straightN > 0) {
+            tip += "，直线 " + straightN + " 段";
+        }
+        tip += "）";
+        result.setMessage(tip);
         return result;
+    }
+
+    /**
+     * 铁路段：只走 OSM；高铁失败再试普铁图（站场引线）；绝不回退高德驾车。
+     */
+    private TrackRoutePlanResult routeRailSegment(double fromLat, double fromLng,
+                                                  double toLat, double toLng,
+                                                  String travelMode) {
+        TrackRoutePlanResult seg = osmRailwayRouteService.route(
+                fromLat, fromLng, toLat, toLng, travelMode);
+        if (seg.hasPath() && seg.getPath().size() >= 3) {
+            return seg;
+        }
+        if ("hsr".equals(travelMode)) {
+            TrackRoutePlanResult soft = osmRailwayRouteService.route(
+                    fromLat, fromLng, toLat, toLng, "train");
+            if (soft.hasPath() && soft.getPath().size() >= 3) {
+                soft.setTravelMode("hsr");
+                soft.setMessage((soft.getMessage() == null ? "" : soft.getMessage())
+                        + "；高铁段改用正线/支线连通");
+                return soft;
+            }
+        }
+        if ("walk".equals(travelMode) || "drive".equals(travelMode)
+                || "bike".equals(travelMode) || "bus".equals(travelMode)) {
+            return amapDirectionService.plan(fromLat, fromLng, toLat, toLng, travelMode);
+        }
+        return seg;
     }
 
     private List<Map<String, Object>> toStopViews(List<TrainStop> stops) {
@@ -292,6 +608,9 @@ public class TrainRoutePlanService {
             m.put("wgsLat", s.getLatWgs());
             m.put("wgsLng", s.getLngWgs());
             m.put("sequence", s.getSequence());
+            if (StringUtils.isNotEmpty(s.getRoutePath())) {
+                m.put("routePath", s.getRoutePath());
+            }
             list.add(m);
         }
         return list;
@@ -352,7 +671,10 @@ public class TrainRoutePlanService {
         if (name == null) {
             return "";
         }
-        return name.trim().replaceAll("\\s+", "");
+        String s = name.trim().replaceAll("\\s+", "");
+        s = s.replace("（出站口）", "").replace("(出站口)", "").replace("出站口", "");
+        s = s.replace("（进站口）", "").replace("(进站口)", "");
+        return s;
     }
 
     private String emptyToNull(String s) {
@@ -367,10 +689,21 @@ public class TrainRoutePlanService {
         if (v == null || "".equals(String.valueOf(v).trim()) || "null".equalsIgnoreCase(String.valueOf(v))) {
             return null;
         }
+        if (v instanceof Number) {
+            return ((Number) v).doubleValue();
+        }
         try {
             return Double.parseDouble(String.valueOf(v));
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private Double firstDouble(Map<String, Object> m, String k1, String k2) {
+        Double a = toDouble(m.get(k1));
+        if (a != null) {
+            return a;
+        }
+        return toDouble(m.get(k2));
     }
 }

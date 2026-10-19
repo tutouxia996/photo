@@ -71,7 +71,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
     private static final ZoneId ALBUM_WALL_CLOCK_ZONE = ZoneId.of("Asia/Shanghai");
 
     private static final Set<String> VALID_TRAVEL_MODES = new HashSet<String>(Arrays.asList(
-            "hsr", "train", "bus", "metro", "walk", "drive", "bike", "flight", "stay", "other"
+            "hsr", "train", "bus", "metro", "walk", "drive", "bike", "flight", "stay", "drift", "other"
     ));
 
     @Autowired
@@ -355,6 +355,8 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                 return "#0891B2";
             case "stay":
                 return "#57534E";
+            case "drift":
+                return "#C026D3";
             case "other":
                 return "#94A3B8";
             default:
@@ -414,7 +416,50 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
             // 匹配媒体应回落到照片轨，使用自身 GPS 生成/编辑轨迹。
             return new ArrayList<Map<String, Object>>();
         }
-        return listOverlays(track.getAlbumId());
+        List<Map<String, Object>> overlays = listOverlays(track.getAlbumId());
+        // 默认开启：隐藏 GPS 定位漂移段，地图只保留真实移动折线
+        boolean optimizeDrift = track.getGpxDriftOptimize() == null || track.getGpxDriftOptimize() == 1;
+        if (optimizeDrift) {
+            return hideDriftSegments(overlays);
+        }
+        return overlays;
+    }
+
+    /**
+     * 「优化原地漂移」开启时：从叠层中去掉 drift 段（matchedPhotos 仍保留）。
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> hideDriftSegments(List<Map<String, Object>> overlays) {
+        if (overlays == null || overlays.isEmpty()) {
+            return overlays;
+        }
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>(overlays.size());
+        for (Map<String, Object> item : overlays) {
+            if (item == null) {
+                continue;
+            }
+            Map<String, Object> copy = new HashMap<String, Object>(item);
+            Object segsObj = item.get("segments");
+            if (segsObj instanceof List) {
+                List<Map<String, Object>> segs = (List<Map<String, Object>>) segsObj;
+                List<Map<String, Object>> kept = new ArrayList<Map<String, Object>>();
+                for (Map<String, Object> seg : segs) {
+                    if (seg == null) {
+                        continue;
+                    }
+                    Object mode = seg.get("travelMode");
+                    if (mode != null && "drift".equalsIgnoreCase(String.valueOf(mode))) {
+                        continue;
+                    }
+                    kept.add(seg);
+                }
+                copy.put("segments", kept);
+            }
+            // path 保留完整点列（含漂移点），供匹配媒体/弹窗；折线只画 segments
+            copy.put("driftOptimized", Boolean.TRUE);
+            out.add(copy);
+        }
+        return out;
     }
 
     @Override
@@ -1555,7 +1600,7 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         }
         Map<String, Double> distByMode = new HashMap<String, Double>();
         for (TravelModeInferUtils.ModeSegment seg : modeSegs) {
-            if ("stay".equals(seg.travelMode)) {
+            if ("stay".equals(seg.travelMode) || "drift".equals(seg.travelMode)) {
                 continue;
             }
             double d = 0D;

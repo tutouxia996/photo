@@ -308,6 +308,7 @@ CREATE TABLE `biz_track` (
   `is_public` tinyint(4) NOT NULL DEFAULT '1' COMMENT '是否前台展示',
   `enabled` tinyint(4) NOT NULL DEFAULT '1' COMMENT '是否启用轨迹：0关闭（不生成/地图不显示）1开启',
   `gpx_enabled` tinyint(4) NOT NULL DEFAULT '1' COMMENT '是否在地图启用GPX线路：0否 1是',
+  `gpx_drift_optimize` tinyint(4) NOT NULL DEFAULT '1' COMMENT '优化原地漂移显示：1隐藏漂移段 0以漂移色显示',
   `source_type` varchar(16) DEFAULT 'photo' COMMENT '来源：photo/gpx/mixed',
   `create_by` varchar(64) DEFAULT '' COMMENT '创建者',
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',

@@ -54,12 +54,17 @@ public class OsmRailwayRouteService {
 
     private static final double DEFAULT_MAX_SPAN_KM = 1600.0;
     private static final double DEFAULT_MAX_SPAN_KM_METRO = 120.0;
-    private static final double MAX_SNAP_KM = 3.0;
+    /** 车站建筑常距正线 2～4km，过小易吸附失败或吸到平行老线 */
+    private static final double MAX_SNAP_KM = 5.0;
     /** 展示抽稀：相邻点最小间距（米） */
     private static final double SIMPLIFY_MIN_METERS = 40.0;
     /** 局部打结：闭合距离（米）内若绕行过长则剪掉中间点 */
     private static final double LOOP_CLOSE_METERS = 90.0;
     private static final double LOOP_MIN_DETOUR_METERS = 220.0;
+    /** 中尺度打结（平行复线来回切换），沿程扫描上限 */
+    private static final double MID_LOOP_ALONG_CAP_M = 18000.0;
+    private static final double MID_LOOP_CLOSE_METERS = 350.0;
+    private static final double MID_LOOP_MIN_DETOUR_METERS = 1200.0;
     /** 换轨惩罚（米代价），抑制平行复线来回切换形成泡泡 */
     private static final double WAY_SWITCH_PENALTY_M = 900.0;
 
@@ -108,21 +113,30 @@ public class OsmRailwayRouteService {
         }
 
         try {
-            // 长途缩小 padding，避免 bbox 过大拖垮图搜索
-            double padDeg = spanKm > 500
-                    ? Math.max(0.25, Math.min(0.8, spanKm * 0.08 / 111.0))
-                    : Math.max(0.15, Math.min(0.6, spanKm * 0.15 / 111.0));
+            // 长途缩小 padding（本地索引时更要紧，避免 bbox 过大 OOM）；市内短段加大
+            double padDeg;
+            if (spanKm > 500) {
+                padDeg = Math.max(0.2, Math.min(0.55, spanKm * 0.06 / 111.0));
+            } else if (spanKm < 45) {
+                padDeg = Math.max(0.35, Math.min(0.7, spanKm * 0.35 / 111.0 + 0.25));
+            } else if (localOsmRailwayIndex.isReady()) {
+                padDeg = Math.max(0.12, Math.min(0.35, spanKm * 0.1 / 111.0));
+            } else {
+                padDeg = Math.max(0.15, Math.min(0.6, spanKm * 0.15 / 111.0));
+            }
             double south = Math.min(fromLatWgs, toLatWgs) - padDeg;
             double north = Math.max(fromLatWgs, toLatWgs) + padDeg;
             double west = Math.min(fromLngWgs, toLngWgs) - padDeg;
             double east = Math.max(fromLngWgs, toLngWgs) + padDeg;
 
-            // 高铁：只走 highspeed，必要时带正线；禁止退到 all（易串京包/站场）
+            // 高铁：highspeed → 混正线 → 正线；市内短段再加 main_ext
             String[] passes;
             if ("metro".equals(mode)) {
                 passes = new String[]{"metro"};
             } else if ("hsr".equals(mode)) {
-                passes = new String[]{"hsr", "hsr_main"};
+                passes = spanKm < 45
+                        ? new String[]{"hsr", "hsr_main", "main", "main_ext"}
+                        : new String[]{"hsr", "hsr_main", "main"};
             } else {
                 passes = new String[]{"main", "main_ext"};
             }
@@ -168,13 +182,22 @@ public class OsmRailwayRouteService {
                     }
                     double pathKm = pathLengthKm(graph, path);
                     double maxDetour = "hsr".equals(mode)
-                            ? Math.max(spanKm * 2.2, spanKm + 25)
+                            ? Math.max(spanKm * 1.85, spanKm + 20)
                             : Math.max(spanKm * 3.0, spanKm + 40);
                     if (pathKm > maxDetour) {
                         lastErr = pass + " 绕路过多(" + Math.round(pathKm) + "km)";
                         continue;
                     }
-                    double score = scorePath(graph, path, spanKm, pathKm, pass, mode);
+                    double backtrack = axisBacktrackRatio(graph, path,
+                            fromLatWgs, fromLngWgs, toLatWgs, toLngWgs);
+                    // 两点直贴时若沿起终点方向大量折返，多为平行线来回或错通道
+                    if ("hsr".equals(mode) && spanKm > 60 && backtrack > 0.28) {
+                        lastErr = pass + " 路径折返过多(backtrack="
+                                + Math.round(backtrack * 100) + "%)";
+                        continue;
+                    }
+                    double score = scorePath(graph, path, spanKm, pathKm, pass, mode,
+                            fromLatWgs, fromLngWgs, toLatWgs, toLngWgs);
                     if (score < bestScore) {
                         bestScore = score;
                         bestPath = path;
@@ -310,7 +333,8 @@ public class OsmRailwayRouteService {
     }
 
     /**
-     * 优先本地中国 PBF 铁路索引；不可用再打公网 Overpass。
+     * 优先本地中国 PBF 铁路索引。
+     * 索引已就绪时即使该档为空也不再打公网 Overpass（镜像常超时/500，会把预览卡死数分钟）。
      */
     private JSONObject loadRailElements(double south, double west, double north, double east, String pass)
             throws Exception {
@@ -318,16 +342,49 @@ public class OsmRailwayRouteService {
             JSONObject local = localOsmRailwayIndex.query(south, west, north, east, pass);
             if (local != null) {
                 JSONArray elements = local.getJSONArray("elements");
-                if (elements != null && !elements.isEmpty()) {
-                    log.info("OSM railway hit local PBF index, pass={} elements={}", pass, elements.size());
+                int n = elements == null ? 0 : elements.size();
+                if (n > 0) {
+                    log.info("OSM railway hit local PBF index, pass={} elements={}", pass, n);
+                    return local;
+                }
+                if (localOsmRailwayIndex.isReady()) {
+                    log.info("本地铁路索引该档为空，跳过 Overpass pass={}", pass);
                     return local;
                 }
             }
         } catch (Exception e) {
-            log.warn("本地 PBF 铁路查询失败，回退 Overpass: {}", e.getMessage());
+            log.warn("本地 PBF 铁路查询失败: {}", e.getMessage());
+            if (localOsmRailwayIndex.isReady()) {
+                JSONObject empty = new JSONObject();
+                empty.put("elements", new JSONArray());
+                return empty;
+            }
+        }
+        if (preferLocalIndex()) {
+            log.info("已配置本地铁路优先，跳过公网 Overpass pass={}", pass);
+            JSONObject empty = new JSONObject();
+            empty.put("elements", new JSONArray());
+            return empty;
         }
         String query = buildQuery(south, west, north, east, pass);
         return postOverpassWithFallback(query);
+    }
+
+    private boolean preferLocalIndex() {
+        AlbumProperties.MapConfig map = albumProperties.getMap();
+        if (map == null || !map.isOsmPreferLocal()) {
+            return false;
+        }
+        String pbf = map.getOsmPbfPath();
+        if (StringUtils.isEmpty(pbf)) {
+            return false;
+        }
+        try {
+            return Files.isRegularFile(Paths.get(pbf.trim()))
+                    || Files.isRegularFile(Paths.get(pbf.trim()).getParent().resolve("china-railway-index.bin.gz"));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private JSONObject postOverpassWithFallback(String query) throws Exception {
@@ -342,7 +399,13 @@ public class OsmRailwayRouteService {
         }
 
         Exception last = null;
+        // 最多试 2 个镜像，避免预览被一串超时拖死
+        int tried = 0;
         for (String endpoint : mirrorUrls()) {
+            if (tried >= 2) {
+                break;
+            }
+            tried++;
             try {
                 JSONObject json = postOverpass(endpoint, query);
                 JSONArray elements = json.getJSONArray("elements");
@@ -365,8 +428,8 @@ public class OsmRailwayRouteService {
         if (conn instanceof HttpsURLConnection && trustAllSsl()) {
             applyTrustAll((HttpsURLConnection) conn);
         }
-        conn.setConnectTimeout(8000);
-        conn.setReadTimeout(22000);
+        conn.setConnectTimeout(4000);
+        conn.setReadTimeout(8000);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
@@ -712,7 +775,8 @@ public class OsmRailwayRouteService {
 
     /** 越小越好 */
     private double scorePath(RailGraph graph, List<Long> path, double spanKm, double pathKm,
-                             String pass, String mode) {
+                             String pass, String mode,
+                             double fromLat, double fromLng, double toLat, double toLng) {
         double detour = spanKm < 0.1 ? 1.0 : pathKm / spanKm;
         double avgQ = 0;
         int n = 0;
@@ -724,15 +788,98 @@ public class OsmRailwayRouteService {
             avgQ /= n;
         }
         double zig = zigzagPenalty(graph, path);
+        double backtrack = axisBacktrackRatio(graph, path, fromLat, fromLng, toLat, toLng);
+        double corr = meanCorridorDeviationKm(graph, path, fromLat, fromLng, toLat, toLng);
         double passPenalty = 0;
         if ("hsr".equals(mode)) {
             if ("hsr_main".equals(pass)) {
                 passPenalty = 0.35;
+            } else if ("main".equals(pass)) {
+                // 末档回退：可用但明显劣于纯高铁图，避免无解时画公路
+                passPenalty = 1.15;
             }
         } else if ("main_ext".equals(pass)) {
             passPenalty = 0.25;
         }
-        return detour + zig * 0.8 + (1.0 - avgQ / 100.0) * 0.6 + passPenalty;
+        // 走廊偏离按 span 归一；折返权重大，抑制平行复线来回画圈
+        double corrNorm = spanKm < 1 ? corr : corr / spanKm;
+        return detour + zig * 0.8 + (1.0 - avgQ / 100.0) * 0.6 + passPenalty
+                + backtrack * 2.4 + corrNorm * 1.6;
+    }
+
+    /**
+     * 将路径投影到起→终轴，统计「投影进度回退」比例。
+     * 正常高铁应大体单调前进；平行线折返/错通道会明显抬高此值。
+     */
+    private double axisBacktrackRatio(RailGraph graph, List<Long> path,
+                                      double fromLat, double fromLng,
+                                      double toLat, double toLng) {
+        if (path == null || path.size() < 3) {
+            return 0;
+        }
+        double span = GeoDistanceUtils.haversineKm(fromLat, fromLng, toLat, toLng);
+        if (span < 0.5) {
+            return 0;
+        }
+        double prevT = projectOnAxis(fromLat, fromLng, toLat, toLng, fromLat, fromLng);
+        double back = 0;
+        double forward = 0;
+        for (Long id : path) {
+            Node n = graph.nodes.get(id);
+            if (n == null) {
+                continue;
+            }
+            double t = projectOnAxis(fromLat, fromLng, toLat, toLng, n.lat, n.lng);
+            double d = t - prevT;
+            if (d >= 0) {
+                forward += d;
+            } else {
+                back += -d;
+            }
+            prevT = t;
+        }
+        double total = forward + back;
+        return total < 1e-6 ? 0 : back / total;
+    }
+
+    /** 点在起→终线段上的归一化投影（可 &lt;0 或 &gt;1） */
+    private double projectOnAxis(double aLat, double aLng, double bLat, double bLng,
+                                 double pLat, double pLng) {
+        double midLat = (aLat + bLat) / 2.0;
+        double cos = Math.cos(Math.toRadians(midLat));
+        double ax = aLng * cos;
+        double ay = aLat;
+        double bx = bLng * cos;
+        double by = bLat;
+        double px = pLng * cos;
+        double py = pLat;
+        double vx = bx - ax;
+        double vy = by - ay;
+        double len2 = vx * vx + vy * vy;
+        if (len2 < 1e-12) {
+            return 0;
+        }
+        return ((px - ax) * vx + (py - ay) * vy) / len2;
+    }
+
+    private double meanCorridorDeviationKm(RailGraph graph, List<Long> path,
+                                           double fromLat, double fromLng,
+                                           double toLat, double toLng) {
+        if (path == null || path.isEmpty()) {
+            return 0;
+        }
+        double sum = 0;
+        int n = 0;
+        int step = Math.max(1, path.size() / 40);
+        for (int i = 0; i < path.size(); i += step) {
+            Node node = graph.nodes.get(path.get(i));
+            if (node == null) {
+                continue;
+            }
+            sum += perpendicularKm(fromLat, fromLng, toLat, toLng, node.lat, node.lng);
+            n++;
+        }
+        return n == 0 ? 0 : sum / n;
     }
 
     private double zigzagPenalty(RailGraph graph, List<Long> path) {
@@ -789,10 +936,18 @@ public class OsmRailwayRouteService {
     }
 
     private List<double[]> removeLocalLoops(List<double[]> path) {
+        List<double[]> pts = removeLoopsOnce(path, 2500, LOOP_CLOSE_METERS, LOOP_MIN_DETOUR_METERS, 8);
+        // 再清中尺度平行线泡泡（白洋淀一带常见）
+        return removeLoopsOnce(pts, MID_LOOP_ALONG_CAP_M, MID_LOOP_CLOSE_METERS,
+                MID_LOOP_MIN_DETOUR_METERS, 6);
+    }
+
+    private List<double[]> removeLoopsOnce(List<double[]> path, double alongCapM,
+                                           double closeM, double minDetourM, int maxPass) {
         List<double[]> pts = new ArrayList<double[]>(path);
         boolean changed = true;
         int guard = 0;
-        while (changed && guard++ < 8) {
+        while (changed && guard++ < maxPass) {
             changed = false;
             for (int i = 0; i < pts.size(); i++) {
                 double[] a = pts.get(i);
@@ -803,11 +958,11 @@ public class OsmRailwayRouteService {
                     double[] prev = pts.get(j - 1);
                     double[] cur = pts.get(j);
                     along += GeoDistanceUtils.haversineKm(prev[0], prev[1], cur[0], cur[1]) * 1000;
-                    if (along > 2500) {
+                    if (along > alongCapM) {
                         break;
                     }
                     double close = GeoDistanceUtils.haversineKm(a[0], a[1], cur[0], cur[1]) * 1000;
-                    if (close <= LOOP_CLOSE_METERS && along >= LOOP_MIN_DETOUR_METERS) {
+                    if (close <= closeM && along >= minDetourM) {
                         if (along - close > bestDetour) {
                             bestDetour = along - close;
                             bestJ = j;
@@ -815,7 +970,6 @@ public class OsmRailwayRouteService {
                     }
                 }
                 if (bestJ > i + 1) {
-                    // 删掉 i+1 .. bestJ-1，保留闭合点
                     pts.subList(i + 1, bestJ).clear();
                     changed = true;
                     break;

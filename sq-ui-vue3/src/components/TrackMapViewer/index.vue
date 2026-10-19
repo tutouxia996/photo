@@ -373,7 +373,8 @@
       <template v-else>
         <p class="path-tip">
           手工填经停即可贴轨（用高德定位车站 + OSM 铁路）。
-          「查询班次 / 拉取经停」需要配置聚合 Key（JUHE_TRAIN_KEY），未配置时按钮会禁用，不影响手填预览。
+          长途不要只填起终点：中间站越多贴轨越准（如 G7812 朝阳→保定东应经 北京站、北京西站）。
+          「查询班次 / 拉取经停」需配置聚合 Key；未配置时请手填经停。
         </p>
 
         <div class="seg-label">车次（可选，写入说明）</div>
@@ -1608,10 +1609,14 @@ async function previewTrainSegment() {
       : ''
     const stopN = data.stops?.length ? `${data.stops.length} 站` : ''
     const pts = path.length
+    const mostlyStraight = pts <= 2 || data.straightSegments
+    const onlyTwoStops = (data.stops?.length || 0) === 2
+    const longKm = Number(data.distanceMeters || 0) >= 80000
     customHint.value = [
-      pts <= 2 ? '仍是直线（OSM 可能失败）' : '车次预览成功',
+      mostlyStraight ? '部分/全部为直线（OSM 未连通，未画公路）' : '车次预览成功',
       stopN,
       dist ? `约 ${dist}` : '',
+      onlyTwoStops && longKm ? '建议补中间站，两点直贴易绕错通道' : '',
       data.message || ''
     ].filter(Boolean).join(' · ')
     clusterMapRef.value?.refresh?.({ fit: true })

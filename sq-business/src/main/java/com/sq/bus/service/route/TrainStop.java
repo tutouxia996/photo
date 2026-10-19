@@ -31,4 +31,10 @@ public class TrainStop {
 
     /** 站序（从 1 起，可选） */
     private Integer sequence;
+
+    /**
+     * 本站 → 下一站的贴轨折线（GCJ-02 [[lat,lng],...] JSON）。
+     * 仅规划结果写入；终点站为空。
+     */
+    private String routePath;
 }

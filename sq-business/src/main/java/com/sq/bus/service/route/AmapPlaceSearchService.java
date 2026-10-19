@@ -106,6 +106,14 @@ public class AmapPlaceSearchService {
      * @param cityLimit 是否强制限制在 city 内（区域锚定 AI 地标时建议 true）
      */
     public List<Map<String, Object>> search(String keywords, String city, Integer offset, boolean cityLimit) {
+        return search(keywords, city, offset, cityLimit, null);
+    }
+
+    /**
+     * @param types 高德 POI 类型码，如 150200（火车站）；可空
+     */
+    public List<Map<String, Object>> search(String keywords, String city, Integer offset,
+                                            boolean cityLimit, String types) {
         if (StringUtils.isEmpty(keywords)) {
             throw new ServiceException("搜索关键词不能为空");
         }
@@ -123,6 +131,9 @@ public class AmapPlaceSearchService {
                 url.append("&city=").append(urlEncode(city.trim()));
                 url.append("&citylimit=").append(cityLimit ? "true" : "false");
             }
+            if (StringUtils.isNotEmpty(types)) {
+                url.append("&types=").append(urlEncode(types.trim()));
+            }
             JSONObject json = getJson(url.toString());
             if (!"1".equals(String.valueOf(json.get("status")))) {
                 String info = json.getString("info");
@@ -139,7 +150,7 @@ public class AmapPlaceSearchService {
     }
 
     public List<Map<String, Object>> search(String keywords, String city, Integer offset) {
-        return search(keywords, city, offset, false);
+        return search(keywords, city, offset, false, null);
     }
 
     /**

@@ -283,6 +283,9 @@ public class BizTrackController extends BaseController {
                     prevGpxEnabled == null ? 1 : prevGpxEnabled,
                     db.getGpxEnabled());
         }
+        if (track.getGpxDriftOptimize() != null) {
+            db.setGpxDriftOptimize(track.getGpxDriftOptimize() == 1 ? 1 : 0);
+        }
         // 允许清空行程说明
         if (track.getRemark() != null) {
             db.setRemark(track.getRemark());

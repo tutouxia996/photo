@@ -15,6 +15,9 @@ import java.util.Map;
  * <b>不使用</b> GPX 文件头 / metadata 中的 Activity、keywords 等标签
  * （如 walking、running），这些常不准，仅作记录仪备注。
  * 长停顿标为 stay；短停（等红绿灯）并入当前骑行/自驾/步行片段，不单独切开。
+ * <p>
+ * 抗噪：孤立速度尖刺不参与分位数；路径长但净位移很小判为 {@code drift}（GPS 定位漂移）；
+ * 驾车/骑行片段内持续慢走会剥成 walk，过短的快段碎片降级。
  */
 public final class TravelModeInferUtils {
 
@@ -57,15 +60,46 @@ public final class TravelModeInferUtils {
     private static final double MIN_BIKE_MOVE_KM = 0.20;
     /** 骑行片段至少要有这么长真实移动时间 */
     private static final long MIN_BIKE_MOVE_MS = 60_000L;
+    /** 骑行至少要有这么多净位移（公里），抑制原地漂移假骑行 */
+    private static final double MIN_BIKE_NET_KM = 0.12;
     /** 自驾片段门槛 */
     private static final double MIN_DRIVE_MOVE_KM = 0.40;
     private static final long MIN_DRIVE_MOVE_MS = 60_000L;
+    /** 自驾至少要有这么多净位移，避免漂移/短挪被判驾车 */
+    private static final double MIN_DRIVE_NET_KM = 0.80;
+    /** 火车/高铁/飞行：短于该里程或时长视为 GPS 跳点，降级 */
+    private static final double MIN_RAIL_MOVE_KM = 2.0;
+    private static final long MIN_RAIL_MOVE_MS = 120_000L;
     /** 骑行/自驾片段前后：局部中位速低于此视为可剥离的步行前缀/后缀 */
     private static final double PEEL_WALK_MEDIAN_KMH = 7.0;
     /** 剥离步行前缀/后缀时，局部窗口半宽 */
     private static final long PEEL_WINDOW_HALF_MS = 45_000L;
     /** 前缀/后缀至少这么长才剥离（避免骑行中短暂减速被切掉） */
-    private static final long MIN_PEEL_WALK_MS = 60_000L;
+    private static final long MIN_PEEL_WALK_MS = 45_000L;
+    /** 快段内部持续慢走超过此时长则剥成 walk（驾车后接着走） */
+    private static final long SLOW_INTERIOR_MS = 90_000L;
+
+    /** 超过该速度且邻边不够快 → 视为孤立 GPS 尖刺 */
+    private static final double SPIKE_SPEED_KMH = 45.0;
+    /** 尖刺邻域内算「够快」的速度 */
+    private static final double SPIKE_NEIGHBOR_KMH = 18.0;
+    /** 尖刺检测左右各看几条边 */
+    private static final int SPIKE_NEIGHBOR_WINDOW = 2;
+    /**
+     * GPS 漂移判定（须同时满足，避免园内绕行步行被误判）：
+     * <ul>
+     *   <li>路径够长、中位速像慢走</li>
+     *   <li>点云活动半径很小（真漂移挤在原地；步行绕圈半径通常更大）</li>
+     *   <li>净位移/路径比偏低，且路径远长于活动半径（来回乱画）</li>
+     * </ul>
+     */
+    private static final double DRIFT_NET_RATIO = 0.15;
+    private static final double DRIFT_PATH_MIN_KM = 0.20;
+    private static final double DRIFT_MAX_MEDIAN_KMH = 12.0;
+    /** 相对质心最大距离超过此值（公里）视为真实活动范围，不是原地漂移 */
+    private static final double DRIFT_MAX_RADIUS_KM = 0.08;
+    /** 路径至少为活动半径的多少倍才像「原地乱画」 */
+    private static final double DRIFT_PATH_OVER_RADIUS = 4.0;
 
     private TravelModeInferUtils() {
     }
@@ -109,10 +143,10 @@ public final class TravelModeInferUtils {
      * <ul>
      *   <li>连续停顿 &gt; 2 分钟切开移动片段；片段内短停（等灯）仍属该趟 walk/bike/drive</li>
      *   <li>每个移动片段单独判定 walk/bike/drive</li>
+     *   <li>孤立高速尖刺不参与速度分位数；路径长净位移小判为 drift（GPS 定位漂移）</li>
      *   <li>片段外间隙：连续停顿 ≥ 5 分钟才是 stay；更短停顿算 walk</li>
      *   <li>即便时长够「停留」，若路径位移明显（慢走），仍改判 walk</li>
-     *   <li>骑行需足够连续移动里程/时长，避免漂移尖刺误判</li>
-     *   <li>骑行/自驾片段若前后有持续慢走（先走后骑），剥离为 walk，避免整段染成骑行</li>
+     *   <li>骑行/自驾需足够里程/时长/净位移；前后及内部持续慢走剥成 walk</li>
      * </ul>
      */
     public static List<ModeSegment> segmentGpx(List<GpxSample> samples) {
@@ -124,6 +158,7 @@ public final class TravelModeInferUtils {
         for (int i = 0; i < edges.length; i++) {
             edges[i] = buildEdge(samples.get(i), samples.get(i + 1));
         }
+        boolean[] spikes = markSpikes(edges);
 
         List<int[]> bouts = findMovementBouts(edges);
         // 间隙先标 stay，再把短停降为 walk；移动片段覆盖为 walk/bike/drive
@@ -133,8 +168,9 @@ public final class TravelModeInferUtils {
         }
 
         for (int[] bout : bouts) {
-            assignBoutModes(edgeModes, edges, bout[0], bout[1]);
+            assignBoutModes(edgeModes, edges, spikes, samples, bout[0], bout[1]);
         }
+        demoteTinyFastRuns(edgeModes, edges, spikes, samples);
         reclassifyStayGaps(edgeModes, edges);
 
         List<ModeSegment> segments = mergeEdgesToSegments(edgeModes);
@@ -154,14 +190,21 @@ public final class TravelModeInferUtils {
     /**
      * 将移动片段写入 edgeModes。
      * <ul>
-     *   <li>整体 bike/drive：前后持续慢走剥成 walk（先走后骑）</li>
-     *   <li>整体 walk：内部持续较快段提升为 bike/drive（先走后骑、长时间步行夹骑行）</li>
+     *   <li>整体 bike/drive：前后持续慢走剥成 walk；内部长慢走也剥</li>
+     *   <li>整体 walk：内部持续较快段提升为 bike/drive</li>
      * </ul>
      */
-    private static void assignBoutModes(String[] edgeModes, Edge[] edges, int fromEdge, int toEdge) {
-        String mode = classifyBout(edges, fromEdge, toEdge);
+    private static void assignBoutModes(String[] edgeModes, Edge[] edges, boolean[] spikes,
+                                       List<GpxSample> samples, int fromEdge, int toEdge) {
+        String mode = classifyBout(edges, spikes, samples, fromEdge, toEdge);
         if ("walk".equals(mode) || "stay".equals(mode)) {
-            promoteFastInsideWalkBout(edgeModes, edges, fromEdge, toEdge);
+            promoteFastInsideWalkBout(edgeModes, edges, spikes, samples, fromEdge, toEdge);
+            return;
+        }
+        if ("drift".equals(mode)) {
+            for (int i = fromEdge; i <= toEdge; i++) {
+                edgeModes[i] = "drift";
+            }
             return;
         }
         if (!"bike".equals(mode) && !"drive".equals(mode)) {
@@ -171,11 +214,11 @@ public final class TravelModeInferUtils {
             return;
         }
         int fastFrom = fromEdge;
-        while (fastFrom <= toEdge && isPeelWalkWindow(edges, fastFrom, fromEdge, toEdge)) {
+        while (fastFrom <= toEdge && isPeelWalkWindow(edges, spikes, fastFrom, fromEdge, toEdge)) {
             fastFrom++;
         }
         int fastTo = toEdge;
-        while (fastTo >= fastFrom && isPeelWalkWindow(edges, fastTo, fromEdge, toEdge)) {
+        while (fastTo >= fastFrom && isPeelWalkWindow(edges, spikes, fastTo, fromEdge, toEdge)) {
             fastTo--;
         }
         // 前缀/后缀过短则不剥，避免骑行中短暂减速被切开
@@ -187,11 +230,12 @@ public final class TravelModeInferUtils {
         if (suffixMs < MIN_PEEL_WALK_MS) {
             fastTo = toEdge;
         }
-        // 剥完后中间必须仍够骑行门槛，否则整段保持原判定
-        if (fastFrom > fastTo || !isBoutStillFastEnough(edges, fastFrom, fastTo, mode)) {
+        // 剥完后中间必须仍够骑行门槛，否则整段保持原判定再剥内部慢走
+        if (fastFrom > fastTo || !isBoutStillFastEnough(edges, spikes, samples, fastFrom, fastTo, mode)) {
             for (int i = fromEdge; i <= toEdge; i++) {
                 edgeModes[i] = mode;
             }
+            demoteSlowInterior(edgeModes, edges, spikes, fromEdge, toEdge);
             return;
         }
         for (int i = fromEdge; i < fastFrom; i++) {
@@ -203,33 +247,81 @@ public final class TravelModeInferUtils {
         for (int i = fastTo + 1; i <= toEdge; i++) {
             edgeModes[i] = "walk";
         }
+        demoteSlowInterior(edgeModes, edges, spikes, fastFrom, fastTo);
     }
 
     /**
      * 长步行片段内找出持续较快的子段，提升为 bike/drive（园博园傍晚骑行这类）。
      */
-    private static void promoteFastInsideWalkBout(String[] edgeModes, Edge[] edges,
-                                                 int fromEdge, int toEdge) {
+    private static void promoteFastInsideWalkBout(String[] edgeModes, Edge[] edges, boolean[] spikes,
+                                                 List<GpxSample> samples, int fromEdge, int toEdge) {
         for (int i = fromEdge; i <= toEdge; i++) {
             edgeModes[i] = "walk";
         }
         int i = fromEdge;
         while (i <= toEdge) {
-            if (isPeelWalkWindow(edges, i, fromEdge, toEdge)) {
+            if (isPeelWalkWindow(edges, spikes, i, fromEdge, toEdge)) {
                 i++;
                 continue;
             }
             int j = i;
-            while (j <= toEdge && !isPeelWalkWindow(edges, j, fromEdge, toEdge)) {
+            while (j <= toEdge && !isPeelWalkWindow(edges, spikes, j, fromEdge, toEdge)) {
                 j++;
             }
             int hi = j - 1;
             long dur = spanMs(edges, i, hi);
-            String fastMode = classifyBout(edges, i, hi);
+            String fastMode = classifyBout(edges, spikes, samples, i, hi);
             if (dur >= MIN_BIKE_MOVE_MS
                     && ("bike".equals(fastMode) || "drive".equals(fastMode))) {
                 for (int k = i; k <= hi; k++) {
                     edgeModes[k] = fastMode;
+                }
+            }
+            i = j;
+        }
+    }
+
+    /** 快段内部：连续慢走够长则改成 walk（先驾后走未切开时） */
+    private static void demoteSlowInterior(String[] edgeModes, Edge[] edges, boolean[] spikes,
+                                          int fromEdge, int toEdge) {
+        int i = fromEdge;
+        while (i <= toEdge) {
+            if (!isPeelWalkWindow(edges, spikes, i, fromEdge, toEdge)) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j <= toEdge && isPeelWalkWindow(edges, spikes, j, fromEdge, toEdge)) {
+                j++;
+            }
+            if (spanMs(edges, i, j - 1) >= SLOW_INTERIOR_MS) {
+                for (int k = i; k < j; k++) {
+                    edgeModes[k] = "walk";
+                }
+            }
+            i = j;
+        }
+    }
+
+    /** 剥离后残留的过短 bike/drive 再按门槛降级 */
+    private static void demoteTinyFastRuns(String[] edgeModes, Edge[] edges, boolean[] spikes,
+                                          List<GpxSample> samples) {
+        int i = 0;
+        while (i < edgeModes.length) {
+            String mode = edgeModes[i];
+            if (!"bike".equals(mode) && !"drive".equals(mode)) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j < edgeModes.length && mode.equals(edgeModes[j])) {
+                j++;
+            }
+            String again = classifyBout(edges, spikes, samples, i, j - 1);
+            if (!mode.equals(again)) {
+                String fill = again == null ? "walk" : again;
+                for (int k = i; k < j; k++) {
+                    edgeModes[k] = fill;
                 }
             }
             i = j;
@@ -247,22 +339,24 @@ public final class TravelModeInferUtils {
         return ms;
     }
 
-    private static boolean isBoutStillFastEnough(Edge[] edges, int from, int to, String mode) {
-        String again = classifyBout(edges, from, to);
+    private static boolean isBoutStillFastEnough(Edge[] edges, boolean[] spikes,
+                                                List<GpxSample> samples,
+                                                int from, int to, String mode) {
+        String again = classifyBout(edges, spikes, samples, from, to);
         if ("bike".equals(mode)) {
             return "bike".equals(again) || "drive".equals(again);
         }
         return mode.equals(again);
     }
 
-    /** 以 center 为中心的局部窗口是否像慢走（可从骑行/自驾片段剥离） */
-    private static boolean isPeelWalkWindow(Edge[] edges, int center, int boutFrom, int boutTo) {
-        // 用累计时间近似窗口：向两侧扩到半宽
+    /** 以 center 为中心的局部窗口是否像慢走（可从骑行/自驾片段剥离）；忽略尖刺 */
+    private static boolean isPeelWalkWindow(Edge[] edges, boolean[] spikes,
+                                           int center, int boutFrom, int boutTo) {
         List<Double> speeds = new ArrayList<Double>();
         long before = 0L;
         for (int i = center; i >= boutFrom; i--) {
             Edge e = edges[i];
-            if (!e.stop && e.speedKmh >= STOP_SPEED_KMH && e.distKm >= MIN_SEG_KM) {
+            if (!e.stop && !spikes[i] && e.speedKmh >= STOP_SPEED_KMH && e.distKm >= MIN_SEG_KM) {
                 speeds.add(e.speedKmh);
             }
             if (i < center) {
@@ -276,7 +370,7 @@ public final class TravelModeInferUtils {
         for (int i = center + 1; i <= boutTo; i++) {
             Edge e = edges[i];
             after += e.dtMs;
-            if (!e.stop && e.speedKmh >= STOP_SPEED_KMH && e.distKm >= MIN_SEG_KM) {
+            if (!e.stop && !spikes[i] && e.speedKmh >= STOP_SPEED_KMH && e.distKm >= MIN_SEG_KM) {
                 speeds.add(e.speedKmh);
             }
             if (after >= PEEL_WINDOW_HALF_MS) {
@@ -363,11 +457,52 @@ public final class TravelModeInferUtils {
         return bouts;
     }
 
-    /** 对单个移动片段分类；里程/时长不够的「骑行样」尖刺降为步行 */
-    private static String classifyBout(Edge[] edges, int fromEdge, int toEdge) {
+    /** 孤立高速边：邻域内几乎没有够快的边 → GPS 跳点 */
+    private static boolean[] markSpikes(Edge[] edges) {
+        boolean[] spikes = new boolean[edges.length];
+        for (int i = 0; i < edges.length; i++) {
+            Edge e = edges[i];
+            if (e.stop || e.speedKmh < SPIKE_SPEED_KMH) {
+                continue;
+            }
+            int lo = Math.max(0, i - SPIKE_NEIGHBOR_WINDOW);
+            int hi = Math.min(edges.length - 1, i + SPIKE_NEIGHBOR_WINDOW);
+            int nbr = 0;
+            for (int j = lo; j <= hi; j++) {
+                if (j == i) {
+                    continue;
+                }
+                if (!edges[j].stop && edges[j].speedKmh >= SPIKE_NEIGHBOR_KMH) {
+                    nbr++;
+                }
+            }
+            spikes[i] = nbr < 2;
+        }
+        return spikes;
+    }
+
+    /** 边 from..to 对应样本 from .. to+1 的净位移（公里） */
+    private static double netDisplacementKm(List<GpxSample> samples, int fromEdge, int toEdge) {
+        if (samples == null || samples.isEmpty()) {
+            return 0D;
+        }
+        int a = Math.max(0, fromEdge);
+        int b = Math.min(toEdge + 1, samples.size() - 1);
+        if (b <= a) {
+            return 0D;
+        }
+        GpxSample sa = samples.get(a);
+        GpxSample sb = samples.get(b);
+        return GeoDistanceUtils.haversineKm(sa.latWgs, sa.lngWgs, sb.latWgs, sb.lngWgs);
+    }
+
+    /** 对单个移动片段分类；尖刺/漂移/过短快段降为步行 */
+    private static String classifyBout(Edge[] edges, boolean[] spikes, List<GpxSample> samples,
+                                      int fromEdge, int toEdge) {
         List<Double> moving = new ArrayList<Double>();
         List<Double> cruise = new ArrayList<Double>();
         double moveKm = 0D;
+        double pathKm = 0D;
         long moveMs = 0L;
         long stopMs = 0L;
         int steepUp = 0;
@@ -375,7 +510,8 @@ public final class TravelModeInferUtils {
 
         for (int i = fromEdge; i <= toEdge; i++) {
             Edge e = edges[i];
-            if (e.stop || e.speedKmh < STOP_SPEED_KMH || e.distKm < MIN_SEG_KM) {
+            pathKm += Math.max(e.distKm, 0D);
+            if (e.stop || e.speedKmh < STOP_SPEED_KMH || e.distKm < MIN_SEG_KM || spikes[i]) {
                 stopMs += e.dtMs;
                 continue;
             }
@@ -395,6 +531,14 @@ public final class TravelModeInferUtils {
         }
         Collections.sort(moving);
         Collections.sort(cruise);
+        double netKm = netDisplacementKm(samples, fromEdge, toEdge);
+        double radiusKm = extentRadiusKm(samples, fromEdge, toEdge);
+        double med = percentile(moving, 0.50);
+        // 原地漂移：挤在很小范围内乱画（园内绕行半径大，不算漂移）
+        if (isGpsDrift(pathKm, netKm, radiusKm, med)) {
+            return "drift";
+        }
+
         double stopRatio = (moveMs + stopMs) > 0 ? stopMs * 1.0 / (moveMs + stopMs) : 0D;
         long durationSec = Math.max(0L, (moveMs + stopMs) / 1000L);
         double avg = durationSec > 0 ? moveKm / (durationSec / 3600.0) : 0D;
@@ -402,18 +546,95 @@ public final class TravelModeInferUtils {
                 steepUp, steepDown);
         String mode = classifyByProfile(profile);
 
-        // 硬门槛：骑行/自驾必须是「像样的一趟」，否则算步行（含原地晃、短挪）
-        if ("bike".equals(mode) && (moveKm < MIN_BIKE_MOVE_KM || moveMs < MIN_BIKE_MOVE_MS)) {
-            return "walk";
-        }
-        if ("drive".equals(mode) && (moveKm < MIN_DRIVE_MOVE_KM || moveMs < MIN_DRIVE_MOVE_MS)) {
-            // 短距离高速尖刺：更可能是骑行冲刺或噪声
-            if (moveKm >= MIN_BIKE_MOVE_KM && moveMs >= MIN_BIKE_MOVE_MS) {
-                return "bike";
+        if ("train".equals(mode) || "hsr".equals(mode) || "flight".equals(mode)) {
+            if (moveKm < MIN_RAIL_MOVE_KM || moveMs < MIN_RAIL_MOVE_MS
+                    || netKm < MIN_RAIL_MOVE_KM * 0.5) {
+                if (isGpsDrift(pathKm, netKm, radiusKm, med)) {
+                    return "drift";
+                }
+                if (med < 7.5) {
+                    return "walk";
+                }
+                if (med < 22) {
+                    return netKm >= MIN_BIKE_NET_KM ? "bike" : "walk";
+                }
+                return netKm >= MIN_DRIVE_NET_KM ? "drive" : "walk";
             }
-            return "walk";
+        }
+
+        // 硬门槛：骑行/自驾必须是「像样的一趟」，否则算步行或漂移（含原地晃、短挪）
+        if ("bike".equals(mode) && (moveKm < MIN_BIKE_MOVE_KM || moveMs < MIN_BIKE_MOVE_MS
+                || netKm < MIN_BIKE_NET_KM)) {
+            return isGpsDrift(pathKm, netKm, radiusKm, med) ? "drift" : "walk";
+        }
+        if ("drive".equals(mode)) {
+            if (moveKm < MIN_DRIVE_MOVE_KM || moveMs < MIN_DRIVE_MOVE_MS
+                    || netKm < MIN_DRIVE_NET_KM) {
+                if (moveKm >= MIN_BIKE_MOVE_KM && moveMs >= MIN_BIKE_MOVE_MS
+                        && netKm >= MIN_BIKE_NET_KM) {
+                    return "bike";
+                }
+                return isGpsDrift(pathKm, netKm, radiusKm, med) ? "drift" : "walk";
+            }
+            // 尖刺滤掉后整体仍像慢走：整段步行
+            if (med < 7.0 && percentile(moving, 0.75) < 14) {
+                return "walk";
+            }
         }
         return mode;
+    }
+
+    /**
+     * GPS 原地漂移：活动半径很小 + 路径在原地来回乱画。
+     * 园内步行绕行净位移也可能很小，但半径通常远大于 {@link #DRIFT_MAX_RADIUS_KM}。
+     */
+    private static boolean isGpsDrift(double pathKm, double netKm, double radiusKm, double medianKmh) {
+        if (pathKm < DRIFT_PATH_MIN_KM || pathKm <= 0 || medianKmh >= DRIFT_MAX_MEDIAN_KMH) {
+            return false;
+        }
+        if (radiusKm > DRIFT_MAX_RADIUS_KM) {
+            return false;
+        }
+        if (netKm / pathKm >= DRIFT_NET_RATIO) {
+            return false;
+        }
+        // 路径远长于簇半径，才像定位抖动乱画；短直线走过小范围不算
+        return pathKm >= radiusKm * DRIFT_PATH_OVER_RADIUS;
+    }
+
+    /** 边 from..to 样本点相对质心的最大距离（公里） */
+    private static double extentRadiusKm(List<GpxSample> samples, int fromEdge, int toEdge) {
+        if (samples == null || samples.isEmpty()) {
+            return 0D;
+        }
+        int a = Math.max(0, fromEdge);
+        int b = Math.min(toEdge + 1, samples.size() - 1);
+        if (b < a) {
+            return 0D;
+        }
+        double sumLat = 0D;
+        double sumLng = 0D;
+        int n = 0;
+        for (int i = a; i <= b; i++) {
+            GpxSample s = samples.get(i);
+            sumLat += s.latWgs;
+            sumLng += s.lngWgs;
+            n++;
+        }
+        if (n <= 0) {
+            return 0D;
+        }
+        double cLat = sumLat / n;
+        double cLng = sumLng / n;
+        double maxR = 0D;
+        for (int i = a; i <= b; i++) {
+            GpxSample s = samples.get(i);
+            double d = GeoDistanceUtils.haversineKm(cLat, cLng, s.latWgs, s.lngWgs);
+            if (d > maxR) {
+                maxR = d;
+            }
+        }
+        return maxR;
     }
 
     /**
@@ -426,8 +647,8 @@ public final class TravelModeInferUtils {
         List<ModeSegment> segments = segmentGpx(samples);
         Map<String, Double> distByMode = new HashMap<String, Double>();
         for (ModeSegment seg : segments) {
-            // 停留折线常含 GPS 漂移，主方式只看真实移动段
-            if ("stay".equals(seg.travelMode)) {
+            // 停留/漂移折线不计入主方式
+            if ("stay".equals(seg.travelMode) || "drift".equals(seg.travelMode)) {
                 continue;
             }
             double d = pathDistanceKm(samples, seg.fromIndex, seg.toIndex);

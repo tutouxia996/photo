@@ -2987,7 +2987,7 @@ function planTimeline(spans) {
     const len = Math.max(0, s.end - s.start)
     const motion = travelModeMotion(s.mode)
     let dt
-    if (s.mode === 'stay') {
+    if (s.mode === 'stay' || s.mode === 'drift') {
       dt = Math.max(1200, Math.min(2800, len > 0 ? (len / 8) * 1000 : 1800))
     } else {
       dt = (len / (motion.mps || 50)) * 1000

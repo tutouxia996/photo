@@ -30,6 +30,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -49,6 +50,10 @@ public class LocalOsmRailwayIndex {
 
     private static final Logger log = LoggerFactory.getLogger(LocalOsmRailwayIndex.class);
     private static final int INDEX_VERSION = 1;
+    /** 单次 bbox 查询最多返回的 way 数，避免 1g 堆上贴轨 OOM */
+    private static final int MAX_QUERY_WAYS = 6000;
+    /** 导出几何时每条 way 最多点数（抽稀） */
+    private static final int MAX_POINTS_PER_WAY = 64;
 
     @Autowired
     private AlbumProperties albumProperties;
@@ -151,7 +156,7 @@ public class LocalOsmRailwayIndex {
                 }
             }
         }
-        JSONArray elements = new JSONArray();
+        List<RailWay> matched = new ArrayList<RailWay>();
         for (Integer idx : hit) {
             RailWay w = ways.get(idx);
             if (!bboxIntersects(w, south, west, north, east)) {
@@ -163,12 +168,49 @@ public class LocalOsmRailwayIndex {
             if (isExcluded(w)) {
                 continue;
             }
+            matched.add(w);
+        }
+        if (matched.size() > MAX_QUERY_WAYS) {
+            // 优先保留高铁/正线，避免长途 bbox 把堆打满
+            Collections.sort(matched, new Comparator<RailWay>() {
+                @Override
+                public int compare(RailWay a, RailWay b) {
+                    return Integer.compare(wayPriority(b), wayPriority(a));
+                }
+            });
+            log.warn("本地铁路查询 way 过多 {}，截断为 {}（pass={}）",
+                    matched.size(), MAX_QUERY_WAYS, pass);
+            matched = matched.subList(0, MAX_QUERY_WAYS);
+        }
+        JSONArray elements = new JSONArray(matched.size());
+        for (RailWay w : matched) {
             elements.add(toOverpassWay(w));
         }
         JSONObject json = new JSONObject();
         json.put("elements", elements);
         json.put("generator", "local-osm-pbf");
         return json;
+    }
+
+    private int wayPriority(RailWay w) {
+        if (w == null || w.tags == null) {
+            return 0;
+        }
+        if ("yes".equalsIgnoreCase(w.tags.get("highspeed"))) {
+            return 100;
+        }
+        String usage = w.tags.get("usage");
+        if ("main".equalsIgnoreCase(usage)) {
+            return 80;
+        }
+        if ("branch".equalsIgnoreCase(usage)) {
+            return 50;
+        }
+        String rw = w.tags.get("railway");
+        if ("subway".equalsIgnoreCase(rw) || "light_rail".equalsIgnoreCase(rw)) {
+            return 40;
+        }
+        return 20;
     }
 
     private boolean preferLocal() {
@@ -435,12 +477,26 @@ public class LocalOsmRailwayIndex {
             }
         }
         el.put("tags", tags);
-        JSONArray geom = new JSONArray(w.lats.length);
-        for (int i = 0; i < w.lats.length; i++) {
+        int n = w.lats.length;
+        int step = 1;
+        if (n > MAX_POINTS_PER_WAY) {
+            step = (n + MAX_POINTS_PER_WAY - 2) / (MAX_POINTS_PER_WAY - 1);
+            if (step < 1) {
+                step = 1;
+            }
+        }
+        JSONArray geom = new JSONArray();
+        for (int i = 0; i < n; i += step) {
             JSONObject pt = new JSONObject();
             pt.put("lat", w.lats[i]);
             pt.put("lon", w.lngs[i]);
             geom.add(pt);
+        }
+        if (n > 0 && (n - 1) % step != 0) {
+            JSONObject last = new JSONObject();
+            last.put("lat", w.lats[n - 1]);
+            last.put("lon", w.lngs[n - 1]);
+            geom.add(last);
         }
         el.put("geometry", geom);
         return el;

@@ -98,10 +98,21 @@ public class TrainSegmentService {
         List<BizTrackPoint> newPoints = new ArrayList<BizTrackPoint>();
         for (int i = 0; i < stopViews.size(); i++) {
             Map<String, Object> stop = stopViews.get(i);
-            double latWgs = toDouble(stop.get("wgsLat"));
-            double lngWgs = toDouble(stop.get("lngWgs"));
+            // 预览字段为 wgsLat/wgsLng（曾误读 lngWgs 导致「车站坐标缺失」）
+            double latWgs = firstFinite(stop, "wgsLat", "latWgs");
+            double lngWgs = firstFinite(stop, "wgsLng", "lngWgs");
             if (Double.isNaN(latWgs) || Double.isNaN(lngWgs)) {
-                throw new ServiceException("车站坐标缺失：" + stop.get("name"));
+                double latGcj = firstFinite(stop, "lat", "latGcj");
+                double lngGcj = firstFinite(stop, "lng", "lngGcj");
+                if (!Double.isNaN(latGcj) && !Double.isNaN(lngGcj)) {
+                    double[] wgs = CoordTransformUtils.gcj02ToWgs84(lngGcj, latGcj);
+                    lngWgs = wgs[0];
+                    latWgs = wgs[1];
+                }
+            }
+            if (Double.isNaN(latWgs) || Double.isNaN(lngWgs)) {
+                throw new ServiceException("车站坐标缺失：" + stop.get("name")
+                        + "（请重新预览，或把站名改成「朝阳站」等）");
             }
             BizTrackPoint p = new BizTrackPoint();
             p.setTrackId(trackId);
@@ -112,15 +123,22 @@ public class TrainSegmentService {
             p.setDescription(stopDescription(baseDesc, stop, i, stopViews.size()));
             if (i < stopViews.size() - 1) {
                 p.setTravelMode(travelMode);
+                // 优先复用预览阶段已算好的站间折线，避免二次规划失败回退成公路
+                String ready = str(stop.get("routePath"));
+                if (StringUtils.isNotEmpty(ready)) {
+                    p.setRoutePath(ready);
+                }
             }
             newPoints.add(p);
         }
 
-        // 站间贴轨
+        // 缺折线的站间再贴轨（铁路失败只用直线，不用驾车）
         for (int i = 0; i < newPoints.size() - 1; i++) {
             BizTrackPoint from = newPoints.get(i);
             BizTrackPoint to = newPoints.get(i + 1);
-            from.setRoutePath(planSegmentJson(from, to, travelMode));
+            if (StringUtils.isEmpty(from.getRoutePath())) {
+                from.setRoutePath(planSegmentJson(from, to, travelMode));
+            }
         }
 
         List<BizTrackPoint> merged = new ArrayList<BizTrackPoint>(existing.size() + newPoints.size());
@@ -165,21 +183,27 @@ public class TrainSegmentService {
     }
 
     private String planSegmentJson(BizTrackPoint from, BizTrackPoint to, String mode) {
-        TrackRoutePlanResult seg = osmRailwayRouteService.route(
-                from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
-                to.getLatitude().doubleValue(), to.getLongitude().doubleValue(),
-                mode);
-        if (!seg.hasPath()) {
-            seg = amapDirectionService.plan(
-                    from.getLatitude().doubleValue(), from.getLongitude().doubleValue(),
-                    to.getLatitude().doubleValue(), to.getLongitude().doubleValue(),
-                    mode);
+        double fromLat = from.getLatitude().doubleValue();
+        double fromLng = from.getLongitude().doubleValue();
+        double toLat = to.getLatitude().doubleValue();
+        double toLng = to.getLongitude().doubleValue();
+        TrackRoutePlanResult seg = osmRailwayRouteService.route(fromLat, fromLng, toLat, toLng, mode);
+        // 高铁站场引线常不在 highspeed 图上：再试正线网
+        if ((!seg.hasPath() || seg.getPath().size() < 3) && "hsr".equals(mode)) {
+            TrackRoutePlanResult soft = osmRailwayRouteService.route(
+                    fromLat, fromLng, toLat, toLng, "train");
+            if (soft.hasPath() && soft.getPath().size() >= 3) {
+                seg = soft;
+            }
         }
-        if (!seg.hasPath()) {
-            double[] a = CoordTransformUtils.wgs84ToGcj02(
-                    from.getLongitude().doubleValue(), from.getLatitude().doubleValue());
-            double[] b = CoordTransformUtils.wgs84ToGcj02(
-                    to.getLongitude().doubleValue(), to.getLatitude().doubleValue());
+        boolean railMode = "hsr".equals(mode) || "train".equals(mode) || "metro".equals(mode);
+        // 铁路绝不回退高德驾车（会画成公路）；非铁路才走高德
+        if ((!seg.hasPath() || seg.getPath().size() < 2) && !railMode) {
+            seg = amapDirectionService.plan(fromLat, fromLng, toLat, toLng, mode);
+        }
+        if (!seg.hasPath() || seg.getPath().size() < 2) {
+            double[] a = CoordTransformUtils.wgs84ToGcj02(fromLng, fromLat);
+            double[] b = CoordTransformUtils.wgs84ToGcj02(toLng, toLat);
             List<double[]> path = new ArrayList<double[]>(2);
             path.add(new double[]{a[1], a[0]});
             path.add(new double[]{b[1], b[0]});
@@ -223,15 +247,26 @@ public class TrainSegmentService {
         return v == null ? null : String.valueOf(v).trim();
     }
 
-    private Double toDouble(Object v) {
-        if (v == null) {
+    private double toDouble(Object v) {
+        if (v == null || "".equals(String.valueOf(v).trim()) || "null".equalsIgnoreCase(String.valueOf(v))) {
             return Double.NaN;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).doubleValue();
         }
         try {
             return Double.parseDouble(String.valueOf(v));
         } catch (Exception e) {
             return Double.NaN;
         }
+    }
+
+    private double firstFinite(Map<String, Object> m, String k1, String k2) {
+        double a = toDouble(m.get(k1));
+        if (!Double.isNaN(a)) {
+            return a;
+        }
+        return toDouble(m.get(k2));
     }
 
     private Long toLong(Object v) {
