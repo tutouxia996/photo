@@ -1,6 +1,7 @@
 package com.sq.admin.share.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.github.pagehelper.PageInfo;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizAlbumShare;
@@ -115,7 +116,11 @@ public class PublicShareController extends BaseController {
         Long filter = resolveAlbumFilter(share, albumId);
         startPage();
         List<BizPhoto> list = photoService.list(shareService.buildPhotoQuery(share, filter));
-        return getDataTable(shareService.sanitizePhotos(list));
+        // sanitize 会换成普通 List，PageHelper 的 total 会丢成当前页条数，超过一页的文件不再加载
+        long total = new PageInfo<BizPhoto>(list).getTotal();
+        TableDataInfo table = getDataTable(shareService.sanitizePhotos(list));
+        table.setTotal(total);
+        return table;
     }
 
     /**
