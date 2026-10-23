@@ -24,7 +24,7 @@ export default defineConfig(({ mode, command }) => {
     },
     // vite 相关配置
     server: {
-      port: 5173,
+      port: 5177, // 5173 落在 Windows 排除端口段 5077-5176 内会 EACCES
       host: true,
       open: true,
       proxy: {

@@ -286,6 +286,12 @@ const TERRAIN_CLUSTER_MAX_ZOOM = 16
 let terrainTraveler = null
 let terrainTravelerRaf = 0
 let terrainTravelerStartedAt = 0
+/** 3D 轨迹方向流动虚线（对齐 Leaflet pmc-flow-dash） */
+/** @type {any[]} */
+let terrainFlowLines = []
+let terrainFlowRaf = 0
+let terrainFlowPhase = 0
+let terrainFlowLastTick = 0
 let onViewMenuDocClick = null
 let amapStyleRedrawTimer = 0
 /** 当前参与聚合的媒体点（缩放时重算） */
@@ -657,6 +663,7 @@ function unbindTerrainClusterZoom() {
 }
 
 function clearAmapOverlays() {
+  stopTerrainFlowAnim()
   unbindTerrainClusterZoom()
   clearAmapClusterOverlays()
   clearAmapGpxFocusMarker()
@@ -1567,6 +1574,82 @@ function buildTerrainPolylineOpts(AMap, path, color) {
   }
 }
 
+/** 与二维 dashArray '10 22' + stroke-dashoffset 动画对齐 */
+const TERRAIN_FLOW_DASH = 10
+const TERRAIN_FLOW_GAP = 22
+const TERRAIN_FLOW_PERIOD = TERRAIN_FLOW_DASH + TERRAIN_FLOW_GAP
+
+function stopTerrainFlowAnim() {
+  if (terrainFlowRaf) {
+    cancelAnimationFrame(terrainFlowRaf)
+    terrainFlowRaf = 0
+  }
+  terrainFlowLines = []
+  terrainFlowPhase = 0
+  terrainFlowLastTick = 0
+}
+
+function terrainFlowDashArray(phase) {
+  const off = ((phase % TERRAIN_FLOW_PERIOD) + TERRAIN_FLOW_PERIOD) % TERRAIN_FLOW_PERIOD
+  if (off === 0) return [TERRAIN_FLOW_DASH, TERRAIN_FLOW_GAP]
+  // 前置空白模拟 stroke-dashoffset，形成沿线流动
+  return [0, off, TERRAIN_FLOW_DASH, TERRAIN_FLOW_GAP]
+}
+
+function startTerrainFlowAnim() {
+  if (terrainFlowRaf || !terrainFlowLines.length || prefersReducedMotion()) return
+  const tick = (now) => {
+    if (!terrainFlowLines.length) {
+      terrainFlowRaf = 0
+      return
+    }
+    // ~20fps，避免对大量折线每帧 setOptions
+    if (!terrainFlowLastTick || now - terrainFlowLastTick >= 50) {
+      terrainFlowLastTick = now
+      terrainFlowPhase = (terrainFlowPhase + 2) % TERRAIN_FLOW_PERIOD
+      const dash = terrainFlowDashArray(terrainFlowPhase)
+      for (let i = 0; i < terrainFlowLines.length; i++) {
+        try {
+          terrainFlowLines[i].setOptions({ strokeDasharray: dash })
+        } catch (e) { /* ignore */ }
+      }
+    }
+    terrainFlowRaf = requestAnimationFrame(tick)
+  }
+  terrainFlowRaf = requestAnimationFrame(tick)
+}
+
+/** 3D 流动方向层（对齐 drawFlowOverlay / drawGpxFlow） */
+function drawTerrainFlowOverlay(AMap, path, baseColor, zIndex = 56) {
+  if (!path || path.length < 2) return
+  const common = {
+    ...buildTerrainPolylineOpts(AMap, path, baseColor),
+    strokeStyle: 'dashed',
+    strokeDasharray: terrainFlowDashArray(0),
+    bubble: true,
+    clickable: false,
+    cursor: 'default',
+    showDir: false
+  }
+  const white = new AMap.Polyline({
+    ...common,
+    strokeColor: '#ffffff',
+    strokeWeight: 3,
+    strokeOpacity: 0.92,
+    zIndex
+  })
+  const accent = new AMap.Polyline({
+    ...common,
+    strokeColor: baseColor || '#2563eb',
+    strokeWeight: 2,
+    strokeOpacity: 0.85,
+    zIndex: zIndex + 1
+  })
+  addAmapOverlay(white)
+  addAmapOverlay(accent)
+  terrainFlowLines.push(white, accent)
+}
+
 function decimateAmapPath(path, maxPoints) {
   if (!Array.isArray(path) || path.length <= maxPoints) return path
   const step = Math.ceil(path.length / maxPoints)
@@ -2170,6 +2253,7 @@ function drawTerrainPolylines(AMap) {
   if (source.length < 2) return
   // 与 Leaflet drawSegments 一致：任一端已挂 GPX 则不画照片轨，避免与 GPX 叠线错乱
   const matched = terrainGpxMatchedIdSet()
+  const wantFlow = props.showDirection && !prefersReducedMotion()
 
   for (let i = 0; i < source.length - 1; i++) {
     const from = source[i]
@@ -2186,6 +2270,10 @@ function drawTerrainPolylines(AMap) {
       ? travelModeColor(from.travelMode, props.polylineColor)
       : (props.polylineColor || '#3B82F6')
     addAmapOverlay(new AMap.Polyline(buildTerrainPolylineOpts(AMap, path, color)))
+    // 与二维一致：仅已贴合路网的实线段叠流动方向
+    if (wantFlow && from?.routePath) {
+      drawTerrainFlowOverlay(AMap, path, color, 56)
+    }
   }
 }
 
@@ -2214,6 +2302,10 @@ function drawTerrainGpx(AMap) {
         clickable: false,
         cursor: 'default'
       }))
+      // 与二维 drawGpxFlow 一致：GPX 始终叠流动方向
+      if (!prefersReducedMotion()) {
+        drawTerrainFlowOverlay(AMap, path, color, 58)
+      }
       if (!props.gpxEndpointPickable) {
         // 与绘制抽稀一致，避免上万点拾取卡顿
         const capped = decimateAmapPath(path, 2500)
@@ -2274,6 +2366,12 @@ function terrainTravelerContent(mode) {
     + `<div class="pmc-traveler-badge">${travelModeIconSvg(mode, 16)}</div></div>`
 }
 
+function terrainTravelerEl(marker) {
+  const root = marker?.dom
+  if (!root) return null
+  return root.querySelector?.('.pmc-traveler') || root
+}
+
 function startTerrainTraveler(journey) {
   stopTerrainTraveler()
   if (!amap || !window.AMap || !journey || !shouldAnimateTravelers()) return
@@ -2282,9 +2380,9 @@ function startTerrainTraveler(journey) {
   const { timed, duration } = planTimeline(spans)
   if (!timed.length || !(duration > 0)) return
   const firstMode = timed[0].mode
-  const start = metrics.segs[0].from
+  const start = pointAlongPath(metrics, 0)
   const marker = new window.AMap.Marker({
-    position: [start.lng, start.lat],
+    position: [start.latlng.lng, start.latlng.lat],
     content: terrainTravelerContent(firstMode),
     offset: new window.AMap.Pixel(-14, -14),
     height: 0,
@@ -2293,6 +2391,7 @@ function startTerrainTraveler(journey) {
   })
   amap.add(marker)
   terrainTraveler = { marker, metrics, timed, duration, mode: firstMode }
+  nextTick(() => applyTravelerHeading(terrainTravelerEl(marker), travelModeMotion(firstMode), start.heading))
   terrainTravelerStartedAt = performance.now()
   const tick = (now) => {
     if (!terrainTraveler || !amap) return
@@ -2303,6 +2402,7 @@ function startTerrainTraveler(journey) {
       terrainTraveler.mode = state.mode
       terrainTraveler.marker.setContent(terrainTravelerContent(state.mode))
     }
+    applyTravelerHeading(terrainTravelerEl(terrainTraveler.marker), travelModeMotion(state.mode), pos.heading)
     terrainTravelerRaf = requestAnimationFrame(tick)
   }
   terrainTravelerRaf = requestAnimationFrame(tick)
@@ -2330,6 +2430,7 @@ function renderTerrainOverlays() {
     drawTerrainGpx(AMap)
     drawTerrainMarkers(AMap)
     drawTerrainTravelers()
+    startTerrainFlowAnim()
   } catch (e) {
     console.warn('[PhotoClusterMap] renderTerrainOverlays failed', e)
   }
@@ -4081,6 +4182,8 @@ watch(
     props.overlayPaths,
     props.visibleTravelModes,
     props.showMediaMarkers,
+    props.showDirection,
+    props.showTravelers,
     props.regionGeoJson,
     props.showRegionHighlight
   ],
@@ -4104,6 +4207,7 @@ onBeforeUnmount(() => {
   syncBoxSelectMode(false)
   stopTravelers()
   stopTerrainTraveler()
+  stopTerrainFlowAnim()
   destroyAmap()
   terrainMode.value = false
   if (resizeObserver) {
