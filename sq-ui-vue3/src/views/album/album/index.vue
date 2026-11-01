@@ -21,13 +21,13 @@
         <el-button type="primary" plain icon="Plus" @click="handleAdd" v-hasPermi="['album:album:add']">新增</el-button>
       </el-col>
       <el-col :span="1.5">
-        <el-button type="danger" plain icon="Delete" :disabled="multiple" @click="handleDelete" v-hasPermi="['album:album:remove']">删除</el-button>
+        <el-button type="danger" plain icon="Delete" :disabled="!editableIds.length" @click="handleDelete" v-hasPermi="['album:album:remove']">删除</el-button>
       </el-col>
       <right-toolbar v-model:showSearch="showSearch" @queryTable="getList" />
     </el-row>
 
     <el-table v-loading="loading" :data="albumList" @selection-change="handleSelectionChange">
-      <el-table-column type="selection" width="55" align="center" />
+      <el-table-column type="selection" width="55" align="center" :selectable="row => row.canEdit === true" />
       <el-table-column label="ID" prop="albumId" width="80" align="center" />
       <el-table-column label="相册名称" prop="albumName" :show-overflow-tooltip="true" />
       <el-table-column label="照片数" prop="photoCount" width="90" align="center" />
@@ -40,9 +40,27 @@
       <el-table-column label="排序" prop="sortOrder" width="80" align="center" />
       <el-table-column label="操作" width="220" align="center">
         <template #default="scope">
-          <el-button link type="primary" @click="handleUpdate(scope.row)" v-hasPermi="['album:album:edit']">修改</el-button>
-          <el-button link type="primary" @click="handleRefresh(scope.row)" v-hasPermi="['album:album:edit']">刷新统计</el-button>
-          <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:album:remove']">删除</el-button>
+          <el-button
+            v-if="scope.row.canEdit === true"
+            link
+            type="primary"
+            @click="handleUpdate(scope.row)"
+            v-hasPermi="['album:album:edit']"
+          >修改</el-button>
+          <el-button
+            v-if="scope.row.canEdit === true"
+            link
+            type="primary"
+            @click="handleRefresh(scope.row)"
+            v-hasPermi="['album:album:edit']"
+          >刷新统计</el-button>
+          <el-button
+            v-if="scope.row.canEdit === true"
+            link
+            type="danger"
+            @click="handleDelete(scope.row)"
+            v-hasPermi="['album:album:remove']"
+          >删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -89,6 +107,10 @@ const open = ref(false)
 const loading = ref(true)
 const showSearch = ref(true)
 const ids = ref([])
+const selectedRows = ref([])
+const editableIds = computed(() =>
+  selectedRows.value.filter(row => row?.canEdit === true).map(row => row.albumId)
+)
 const multiple = ref(true)
 const total = ref(0)
 const title = ref('')
@@ -111,8 +133,9 @@ function getList() {
 function handleQuery() { queryParams.value.pageNum = 1; getList() }
 function resetQuery() { proxy.resetForm('queryRef'); handleQuery() }
 function handleSelectionChange(selection) {
-  ids.value = selection.map(item => item.albumId)
-  multiple.value = !selection.length
+  selectedRows.value = selection || []
+  ids.value = selectedRows.value.map(item => item.albumId)
+  multiple.value = !editableIds.value.length
 }
 function reset() {
   form.value = { albumId: undefined, albumName: undefined, albumDesc: undefined, coverUrl: undefined, isPublic: 1, sortOrder: 0, remark: undefined }
@@ -137,7 +160,15 @@ function submitForm() {
   })
 }
 function handleDelete(row) {
-  const albumIds = row.albumId || ids.value
+  if (row && row.canEdit !== true) {
+    proxy.$modal.msgWarning('无权删除该相册，共享相册仅可查看')
+    return
+  }
+  const albumIds = row?.albumId || editableIds.value
+  if (!albumIds || (Array.isArray(albumIds) && !albumIds.length)) {
+    proxy.$modal.msgWarning('请选择可删除的相册')
+    return
+  }
   proxy.$modal.confirm('确认删除选中相册？').then(() => delAlbum(albumIds)).then(() => {
     getList()
     proxy.$modal.msgSuccess('删除成功')

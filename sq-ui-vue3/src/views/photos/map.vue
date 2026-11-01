@@ -632,6 +632,7 @@ async function loadTrackIfNeeded() {
     clearTrackData()
   }
   trackLoading.value = true
+  let shouldReloadPointsAfterGpxWrite = false
   try {
     const listRes = await listTrack({
       albumId: expectedAlbumId,
@@ -660,12 +661,30 @@ async function loadTrackIfNeeded() {
     trackTotalDistance.value = track.totalDistance ?? row.totalDistance ?? null
     trackTotalDuration.value = track.totalDuration ?? row.totalDuration ?? null
     loadedTrackAlbumId.value = expectedAlbumId
+    // getTrack 拉叠层时后端会把估计点写回 GPX 坐标，需刷新足迹点位
+    shouldReloadPointsAfterGpxWrite = (trackGpxOverlays.value || []).some(
+      o => Array.isArray(o?.matchedPhotos) && o.matchedPhotos.length > 0
+    )
   } catch (e) {
     if (seq !== trackLoadSeq || !sameAlbumId(albumId.value, expectedAlbumId)) return
     clearTrackData()
   } finally {
     if (seq === trackLoadSeq) trackLoading.value = false
   }
+  if (shouldReloadPointsAfterGpxWrite && seq === trackLoadSeq && sameAlbumId(albumId.value, expectedAlbumId)) {
+    reloadMapPointsOnly()
+  }
+}
+
+/** 仅刷新地图点位（不重复拉轨迹，避免循环） */
+function reloadMapPointsOnly() {
+  if (albumId.value == null || albumId.value === '') return
+  listPhotoMapPoints({ includeEstimated: true, albumId: albumId.value }).then(res => {
+    points.value = res.data || []
+    nextTick(() => {
+      mapRef.value?.refresh?.({ fit: false })
+    })
+  }).catch(() => {})
 }
 
 function onTrackToggleChange() {

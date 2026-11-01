@@ -191,6 +191,14 @@
       </div>
     </template>
 
+    <footer v-if="!loading && !errorMsg && viewMode !== 'map'" class="share-beian">
+      <a
+        href="https://beian.miit.gov.cn/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >冀ICP备2026047654号-1</a>
+    </footer>
+
     <!-- 与相册详情一致的白底全屏预览 -->
     <teleport to="body">
       <div v-if="viewerOpen && currentMedia" class="media-viewer" @keydown.stop>
@@ -813,6 +821,23 @@ watch(
   background: rgba(255, 255, 255, 0.92);
   border-bottom: 1px solid #e5e7eb;
   backdrop-filter: blur(8px);
+}
+
+.share-beian {
+  flex-shrink: 0;
+  padding: 12px 16px 20px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.share-beian a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+
+.share-beian a:hover {
+  color: #64748b;
 }
 
 .share-header-main {

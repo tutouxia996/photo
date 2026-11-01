@@ -70,7 +70,11 @@
     </el-form>
     <!--  底部  -->
     <div class="el-register-footer">
-<!--      <span>Copyright © 2018-2025  All Rights Reserved.</span>-->
+      <a
+        href="https://beian.miit.gov.cn/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >冀ICP备2026047654号-1</a>
     </div>
   </div>
 </template>
@@ -211,6 +215,15 @@ getCode();
   font-family: Arial;
   font-size: 12px;
   letter-spacing: 1px;
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
 }
 .register-code-img {
   height: 40px;

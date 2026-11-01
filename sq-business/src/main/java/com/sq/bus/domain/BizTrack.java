@@ -89,4 +89,8 @@ public class BizTrack implements Serializable {
 
     /** 0未删除 1已删除 */
     private Integer deleted;
+
+    /** 当前登录用户是否可编辑/删除（非库字段，按所属相册权限填充） */
+    @TableField(exist = false)
+    private Boolean canEdit;
 }

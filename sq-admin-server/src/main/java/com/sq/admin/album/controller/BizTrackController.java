@@ -2,9 +2,12 @@ package com.sq.admin.album.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.sq.admin.album.support.AlbumAccessHelper;
+import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
 import com.sq.bus.domain.BizTrackPoint;
+import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackGpxFileService;
 import com.sq.bus.service.IBizTrackPointService;
@@ -33,6 +36,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
@@ -82,6 +86,12 @@ public class BizTrackController extends BaseController {
     @Autowired
     private IBizTrackGpxFileService trackGpxFileService;
 
+    @Autowired
+    private IBizAlbumService albumService;
+
+    @Autowired
+    private AlbumAccessHelper albumAccessHelper;
+
     @PreAuthorize("@ss.hasPermi('album:track:list')")
     @GetMapping("/list")
     public TableDataInfo list(BizTrack query) {
@@ -92,8 +102,24 @@ public class BizTrackController extends BaseController {
                 .eq(query.getIsPublic() != null, BizTrack::getIsPublic, query.getIsPublic())
                 .eq(BizTrack::getDeleted, 0)
                 .orderByDesc(BizTrack::getTrackId);
+        // 非超管：仅自己的 + 公开共享相册下的轨迹
+        if (!albumAccessHelper.isSuperAdmin()) {
+            if (query.getAlbumId() != null) {
+                BizAlbum album = albumService.getById(query.getAlbumId());
+                if (albumAccessHelper.denyIfCannotView(album) != null) {
+                    return getDataTable(new ArrayList<>());
+                }
+            } else {
+                List<Long> albumIds = albumAccessHelper.listViewableAlbumIds();
+                if (albumIds == null || albumIds.isEmpty()) {
+                    return getDataTable(new ArrayList<>());
+                }
+                wrapper.in(BizTrack::getAlbumId, albumIds);
+            }
+        }
         List<BizTrack> list = trackService.list(wrapper);
         trackGpxFileService.enrichTracks(list);
+        albumAccessHelper.fillTrackCanEdit(list);
         return getDataTable(list);
     }
 
@@ -537,6 +563,24 @@ public class BizTrackController extends BaseController {
     @Log(title = "轨迹管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{trackIds}")
     public AjaxResult remove(@PathVariable Long[] trackIds) {
+        if (trackIds == null || trackIds.length == 0) {
+            return error("请选择轨迹");
+        }
+        List<BizTrack> tracks = trackService.listByIds(Arrays.asList(trackIds));
+        if (tracks == null || tracks.isEmpty()) {
+            return error("轨迹不存在或已删除");
+        }
+        Set<Long> albumIds = tracks.stream()
+                .map(BizTrack::getAlbumId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (!albumIds.isEmpty()) {
+            List<BizAlbum> albums = albumService.listByIds(albumIds);
+            AjaxResult deny = albumAccessHelper.denyIfCannotEditAny(albums);
+            if (deny != null) {
+                return deny;
+            }
+        }
         // 软删轨迹；若相册下已无轨迹，会级联清理该相册历史 GPX 叠层
         return toAjax(trackService.removeTracks(trackIds, getUsername()));
     }

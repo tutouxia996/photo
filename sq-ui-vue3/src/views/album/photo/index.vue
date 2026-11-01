@@ -37,12 +37,19 @@
         <el-button type="primary" plain icon="Upload" @click="uploadOpen = true" v-hasPermi="['album:photo:upload']">上传图片</el-button>
       </el-col>
       <el-col :span="1.5">
-        <el-button type="danger" plain icon="Delete" :disabled="!ids.length" @click="handleDelete()" v-hasPermi="['album:photo:remove']">删除</el-button>
+        <el-button
+          type="danger"
+          plain
+          icon="Delete"
+          :disabled="!editableSelectedIds.length"
+          @click="handleDelete()"
+          v-hasPermi="['album:photo:remove']"
+        >删除</el-button>
       </el-col>
     </el-row>
 
-    <el-table v-loading="loading" :data="photoList" @selection-change="sel => ids = sel.map(i => i.photoId)">
-      <el-table-column type="selection" width="55" />
+    <el-table v-loading="loading" :data="photoList" @selection-change="onSelectionChange">
+      <el-table-column type="selection" width="55" :selectable="row => row.canEdit === true" />
       <el-table-column label="ID" prop="photoId" width="80" />
       <el-table-column label="相册" min-width="140" :show-overflow-tooltip="true">
         <template #default="scope">
@@ -84,7 +91,13 @@
       </el-table-column>
       <el-table-column label="操作" width="120">
         <template #default="scope">
-          <el-button link type="danger" @click="handleDelete(scope.row)" v-hasPermi="['album:photo:remove']">删除</el-button>
+          <el-button
+            v-if="scope.row.canEdit === true"
+            link
+            type="danger"
+            @click="handleDelete(scope.row)"
+            v-hasPermi="['album:photo:remove']"
+          >删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -191,6 +204,10 @@ const albumNameMap = ref({})
 const loading = ref(true)
 const total = ref(0)
 const ids = ref([])
+const selectedRows = ref([])
+const editableSelectedIds = computed(() =>
+  selectedRows.value.filter(row => row?.canEdit === true).map(row => row.photoId)
+)
 const uploadOpen = ref(false)
 const uploadAlbumId = ref(undefined)
 const uploadFile = ref(null)
@@ -437,8 +454,21 @@ function resetQuery() {
   getList()
 }
 
+function onSelectionChange(sel) {
+  selectedRows.value = sel || []
+  ids.value = selectedRows.value.map(i => i.photoId)
+}
+
 function handleDelete(row) {
-  const photoIds = row?.photoId || ids.value
+  const photoIds = row?.photoId || editableSelectedIds.value
+  if (!photoIds || (Array.isArray(photoIds) && !photoIds.length)) {
+    proxy.$modal.msgWarning('请选择可删除的图片')
+    return
+  }
+  if (row && row.canEdit !== true) {
+    proxy.$modal.msgWarning('无权删除该图片，共享相册仅可查看')
+    return
+  }
   proxy.$modal.confirm('确认将选中图片放入回收站？').then(() => delPhoto(photoIds)).then(() => {
     getList()
     proxy.$modal.msgSuccess('已放入回收站')

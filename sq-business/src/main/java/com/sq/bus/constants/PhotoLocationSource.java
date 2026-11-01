@@ -17,7 +17,7 @@ public final class PhotoLocationSource {
     public static final String EXIF = "exif";
     /** 视频元数据 GPS */
     public static final String VIDEO = "video";
-    /** 按拍摄时间匹配 GPX 后写回（预留） */
+    /** 按拍摄时间匹配 GPX 后写回库内坐标 */
     public static final String GPX_MATCH = "gpx_match";
     /** 用户手工标点 */
     public static final String MANUAL = "manual";

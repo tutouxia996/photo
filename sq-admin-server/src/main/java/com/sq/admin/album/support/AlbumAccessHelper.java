@@ -3,6 +3,8 @@ package com.sq.admin.album.support;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.constants.AlbumDeleted;
 import com.sq.bus.domain.BizAlbum;
+import com.sq.bus.domain.BizPhoto;
+import com.sq.bus.domain.BizTrack;
 import com.sq.bus.service.IBizAlbumService;
 import com.sq.common.core.domain.AjaxResult;
 import com.sq.common.core.domain.entity.SysRole;
@@ -16,7 +18,13 @@ import org.springframework.util.CollectionUtils;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 /**
  * 相册资源级权限：公开相册仅可查看；改删仅所有者或超级管理员。
@@ -93,6 +101,52 @@ public class AlbumAccessHelper {
             if (album != null) {
                 album.setCanEdit(canEdit(album));
             }
+        }
+    }
+
+    /** 图片列表：按所属相册填充 canEdit */
+    public void fillPhotoCanEdit(Collection<BizPhoto> photos) {
+        fillCanEditByAlbum(photos, BizPhoto::getAlbumId, BizPhoto::setCanEdit);
+    }
+
+    /** 轨迹列表：按所属相册填充 canEdit */
+    public void fillTrackCanEdit(Collection<BizTrack> tracks) {
+        fillCanEditByAlbum(tracks, BizTrack::getAlbumId, BizTrack::setCanEdit);
+    }
+
+    private <T> void fillCanEditByAlbum(Collection<T> items,
+                                        Function<T, Long> albumIdGetter,
+                                        BiConsumer<T, Boolean> canEditSetter) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        Set<Long> albumIds = new HashSet<Long>();
+        for (T item : items) {
+            if (item == null) {
+                continue;
+            }
+            Long albumId = albumIdGetter.apply(item);
+            if (albumId != null) {
+                albumIds.add(albumId);
+            }
+        }
+        Map<Long, Boolean> editMap = new HashMap<Long, Boolean>();
+        if (!albumIds.isEmpty()) {
+            List<BizAlbum> albums = albumService.listByIds(albumIds);
+            if (albums != null) {
+                for (BizAlbum album : albums) {
+                    if (album != null && album.getAlbumId() != null) {
+                        editMap.put(album.getAlbumId(), canEdit(album));
+                    }
+                }
+            }
+        }
+        for (T item : items) {
+            if (item == null) {
+                continue;
+            }
+            Long albumId = albumIdGetter.apply(item);
+            canEditSetter.accept(item, albumId != null && Boolean.TRUE.equals(editMap.get(albumId)));
         }
     }
 

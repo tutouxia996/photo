@@ -55,9 +55,10 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * GPX 仅作为相册叠层数据源：不新建、不覆盖 biz_track。
+ * GPX 作为相册叠层数据源：不新建、不覆盖 biz_track。
  * 查看照片/自定义轨迹时，在同一地图上叠加启用中的 GPX 折线；
- * 拍摄时间与 GPX 点接近的媒体会挂到 GPX 坐标上显示。
+ * 拍摄时间与 GPX 点接近的媒体会挂到 GPX 坐标显示，
+ * 并对「估计/兜底」坐标写回 gpx_match，使足迹地图与相册地图一致。
  */
 @Service
 public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMapper, BizTrackGpxFile>
@@ -993,9 +994,83 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
                 interpolated++;
             }
         }
-        log.debug("GPX 叠层匹配相册媒体 albumId={} overlays={} matched={} interpolated={} skewMs={}",
-                albumId, overlays.size(), matched, interpolated, batch.clockSkewMs);
+        int written = persistGpxMatchedCoordinates(batch);
+        log.debug("GPX 叠层匹配相册媒体 albumId={} overlays={} matched={} interpolated={} skewMs={} written={}",
+                albumId, overlays.size(), matched, interpolated, batch.clockSkewMs, written);
         return overlays;
+    }
+
+    /**
+     * 将 GPX 匹配坐标写回库：仅覆盖无坐标、估计/兜底坐标，或已有 gpx_match；
+     * 不覆盖 EXIF / 视频 GPS / 手工标点。
+     */
+    private int persistGpxMatchedCoordinates(MatchBatch batch) {
+        if (batch == null || batch.hits == null || batch.hits.isEmpty()) {
+            return 0;
+        }
+        List<BizPhoto> toUpdate = new ArrayList<BizPhoto>();
+        Date now = new Date();
+        for (MatchedMedia mm : batch.hits) {
+            if (mm == null || mm.photo == null || mm.photo.getPhotoId() == null || mm.hit == null) {
+                continue;
+            }
+            BizPhoto photo = mm.photo;
+            String src = photo.getLocationSource();
+            boolean missingCoords = photo.getLatitude() == null || photo.getLongitude() == null;
+            boolean canWrite = missingCoords
+                    || PhotoLocationSource.isFallback(src)
+                    || PhotoLocationSource.GPX_MATCH.equals(src);
+            if (!canWrite) {
+                continue;
+            }
+            BigDecimal lat = BigDecimal.valueOf(mm.hit.latWgs).setScale(7, RoundingMode.HALF_UP);
+            BigDecimal lng = BigDecimal.valueOf(mm.hit.lngWgs).setScale(7, RoundingMode.HALF_UP);
+            if (PhotoLocationSource.GPX_MATCH.equals(src)
+                    && sameCoord(photo.getLatitude(), lat)
+                    && sameCoord(photo.getLongitude(), lng)
+                    && photo.getLocationConfidence() != null
+                    && photo.getLocationConfidence().compareTo(BigDecimal.ONE) >= 0) {
+                continue;
+            }
+            photo.setLatitude(lat);
+            photo.setLongitude(lng);
+            photo.setLocationSource(PhotoLocationSource.GPX_MATCH);
+            photo.setLocationConfidence(BigDecimal.ONE);
+            photo.setUpdateTime(now);
+            toUpdate.add(photo);
+        }
+        if (toUpdate.isEmpty()) {
+            return 0;
+        }
+        photoService.updateBatchById(toUpdate);
+        log.info("已将 GPX 匹配坐标写回媒体 count={}", toUpdate.size());
+        return toUpdate.size();
+    }
+
+    private static boolean sameCoord(BigDecimal a, BigDecimal b) {
+        if (a == null && b == null) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.compareTo(b) == 0;
+    }
+
+    /** 主动按当前启用 GPX 匹配并写回（导入/启停后调用） */
+    private void persistGpxMatchesForAlbum(Long albumId) {
+        if (albumId == null || !isAlbumGpxActive(albumId)) {
+            return;
+        }
+        AlbumProperties.GpxConfig cfg = albumProperties.getGpx() == null
+                ? new AlbumProperties.GpxConfig() : albumProperties.getGpx();
+        long offsetMs = resolveGpxTimeOffsetMs(cfg);
+        List<TimedSample> merged = loadMergedTimedSamples(albumId, offsetMs);
+        if (merged.isEmpty()) {
+            return;
+        }
+        MatchBatch batch = matchMediaToSamples(listAlbumMedia(albumId), merged, cfg, albumId);
+        persistGpxMatchedCoordinates(batch);
     }
 
     @Override
@@ -1470,6 +1545,8 @@ public class BizTrackGpxFileServiceImpl extends ServiceImpl<BizTrackGpxFileMappe
         if (albumId == null) {
             return null;
         }
+        // 先把估计点写回 GPX 坐标，再刷新照片轨
+        persistGpxMatchesForAlbum(albumId);
         reclaimMislabeledTracks(albumId);
         cleanupDedicatedGpxTracks(albumId);
         // GPX 增删/启停后必须刷新照片轨，把已匹配媒体从照片轨剔除（或重新纳入）

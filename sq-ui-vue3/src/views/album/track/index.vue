@@ -107,7 +107,7 @@
           <el-switch
             :model-value="isGpxEnabled(scope.row)"
             :loading="gpxEnabledLoadingId === scope.row.trackId"
-            :disabled="!canEditTrack || !hasGpxFiles(scope.row)"
+            :disabled="scope.row.canEdit !== true || !canEditTrack || !hasGpxFiles(scope.row)"
             inline-prompt
             active-text="开"
             inactive-text="关"
@@ -124,7 +124,7 @@
           <el-switch
             :model-value="isGpxDriftOptimize(scope.row)"
             :loading="gpxDriftOptimizeLoadingId === scope.row.trackId"
-            :disabled="!canEditTrack || !hasGpxFiles(scope.row) || !isGpxEnabled(scope.row)"
+            :disabled="scope.row.canEdit !== true || !canEditTrack || !hasGpxFiles(scope.row) || !isGpxEnabled(scope.row)"
             inline-prompt
             active-text="开"
             inactive-text="关"
@@ -153,33 +153,35 @@
             v-hasPermi="['album:track:query']"
           >轨迹</el-button>
           <el-button
+            v-if="scope.row.canEdit === true"
             link
             type="primary"
             @click="handleEdit(scope.row)"
             v-hasPermi="['album:track:edit']"
           >编辑</el-button>
           <el-button
-            v-if="canShowRegionLocate(scope.row)"
+            v-if="scope.row.canEdit === true && canShowRegionLocate(scope.row)"
             link
             type="info"
             @click="openRegionLocate(scope.row.albumId)"
             v-hasPermi="['album:photo:edit']"
           >区域定位</el-button>
           <el-button
-            v-if="canShowFallbackLocate(scope.row)"
+            v-if="scope.row.canEdit === true && canShowFallbackLocate(scope.row)"
             link
             type="warning"
             @click="handleFallbackLocate(scope.row.albumId, scope.row)"
             v-hasPermi="['album:photo:edit']"
           >估计补点</el-button>
           <el-button
-            v-if="canShowGpxImport(scope.row)"
+            v-if="scope.row.canEdit === true && canShowGpxImport(scope.row)"
             link
             type="success"
             @click="openGpxImport(scope.row)"
             v-hasPermi="['album:track:generate']"
           >导入GPX</el-button>
           <el-button
+            v-if="scope.row.canEdit === true"
             link
             type="danger"
             @click="handleDelete(scope.row)"
@@ -518,7 +520,7 @@ function isTrackEnabledDisplay(row) {
 }
 
 function canToggleTrackEnabled(row) {
-  return canEditTrack.value && !isRegionDraft(row)
+  return row?.canEdit === true && canEditTrack.value && !isRegionDraft(row)
 }
 
 function trackEnabledTitle(row) {
@@ -1168,6 +1170,10 @@ function onTrackReplan({ trackId, done }) {
 }
 
 function handleDelete(row) {
+  if (row?.canEdit !== true) {
+    proxy.$modal.msgWarning('无权删除该轨迹，共享相册仅可查看')
+    return
+  }
   proxy.$modal.confirm('确认删除该轨迹？若该相册下已无其他轨迹，将同时清除已导入的 GPX 叠层。')
     .then(() => delTrack(row.trackId))
     .then(() => {

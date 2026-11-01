@@ -335,7 +335,9 @@ public class BizPhotoController extends BaseController {
         } else {
             wrapper.orderByDesc(BizPhoto::getShootTime).orderByDesc(BizPhoto::getPhotoId);
         }
-        return getDataTable(photoService.list(wrapper));
+        List<BizPhoto> list = photoService.list(wrapper);
+        albumAccessHelper.fillPhotoCanEdit(list);
+        return getDataTable(list);
     }
 
     /**

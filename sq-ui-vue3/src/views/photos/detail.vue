@@ -602,7 +602,7 @@
             </el-icon>
           </button>
           <button
-            v-if="currentMedia && currentMedia.fileType !== 2 && !isAiDraw(currentMedia) && currentMedia.scorePass === 1"
+            v-if="canEditAlbum && currentMedia && currentMedia.fileType !== 2 && !isAiDraw(currentMedia) && currentMedia.scorePass === 1"
             type="button"
             class="media-action-btn"
             title="AI 出图（万相）"
@@ -610,10 +610,10 @@
           >
             <el-icon :size="20"><Brush /></el-icon>
           </button>
-          <button type="button" class="media-action-btn" title="添加到..." @click.stop="onMediaAddTo">
+          <button v-if="canEditAlbum" type="button" class="media-action-btn" title="添加到..." @click.stop="onMediaAddTo">
             <el-icon :size="20"><FolderAdd /></el-icon>
           </button>
-          <button type="button" class="media-action-btn" title="删除" @click.stop="onMediaDelete">
+          <button v-if="canEditAlbum" type="button" class="media-action-btn" title="删除" @click.stop="onMediaDelete">
             <el-icon :size="20"><Delete /></el-icon>
           </button>
           <button
@@ -1918,6 +1918,7 @@ function removePhotosFromViewer(ids) {
 }
 
 function onMediaAddTo() {
+  if (!canEditAlbum.value) return
   const item = ensureMediaSelected()
   if (!item) {
     proxy.$modal.msgWarning('当前没有可添加的内容')
@@ -1948,6 +1949,7 @@ function goCurrentAlbumFromDetail() {
 }
 
 function onMediaDelete() {
+  if (!canEditAlbum.value) return
   const item = currentMedia.value
   if (!item) {
     proxy.$modal.msgWarning('当前没有可删除的内容')

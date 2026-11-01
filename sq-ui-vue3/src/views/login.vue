@@ -112,9 +112,17 @@
       </div>
     </div>
     <div class="login-footer">
-      <span class="foot-line"></span>
-      <span class="foot-text">COPYRIGHT &copy; 2026 TTX ALL RIGHTS RESERVED</span>
-      <span class="foot-line"></span>
+      <div class="foot-row">
+        <span class="foot-line"></span>
+        <span class="foot-text">COPYRIGHT &copy; 2026 TTX ALL RIGHTS RESERVED</span>
+        <span class="foot-line"></span>
+      </div>
+      <a
+        class="beian-link"
+        href="https://beian.miit.gov.cn/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >冀ICP备2026047654号-1</a>
     </div>
   </div>
 </template>
@@ -130,8 +138,8 @@ const router = useRouter();
 const { proxy } = getCurrentInstance();
 
 const loginForm = ref({
-  username: "",
-  password: "",
+  username: "youke",
+  password: "Youke123456.",
   code: "",
   uuid: ""
 });
@@ -696,12 +704,19 @@ getCode();
   z-index: 1;
   margin-top: 20px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 14px;
+  gap: 8px;
   color: #6b7c95;
   font-size: 11px;
-  letter-spacing: 4px;
+
+  .foot-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    letter-spacing: 4px;
+  }
 
   .foot-line {
     width: 80px;
@@ -728,6 +743,17 @@ getCode();
 
     &::before { left: -4px; }
     &::after  { right: -4px; }
+  }
+
+  .beian-link {
+    color: #6b7c95;
+    text-decoration: none;
+    letter-spacing: 0.5px;
+    line-height: 1.4;
+  }
+
+  .beian-link:hover {
+    color: var(--el-color-primary, #409eff);
   }
 }
 
