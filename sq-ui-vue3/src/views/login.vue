@@ -117,12 +117,20 @@
         <span class="foot-text">COPYRIGHT &copy; 2026 TTX ALL RIGHTS RESERVED</span>
         <span class="foot-line"></span>
       </div>
-      <a
-        class="beian-link"
-        href="https://beian.miit.gov.cn/"
-        target="_blank"
-        rel="noopener noreferrer"
-      >冀ICP备2026047654号-1</a>
+      <div class="beian-row">
+        <a
+          class="beian-link"
+          href="https://beian.miit.gov.cn/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >冀ICP备2026047654号-1</a>
+        <a
+          class="beian-link"
+          href="https://beian.mps.gov.cn/#/query/webSearch?code=13082302000140"
+          target="_blank"
+          rel="noopener noreferrer"
+        >冀公网安备13082302000140号</a>
+      </div>
     </div>
   </div>
 </template>
@@ -138,8 +146,8 @@ const router = useRouter();
 const { proxy } = getCurrentInstance();
 
 const loginForm = ref({
-  username: "youke",
-  password: "Youke123456.",
+  username: "",
+  password: "",
   code: "",
   uuid: ""
 });
@@ -743,6 +751,14 @@ getCode();
 
     &::before { left: -4px; }
     &::after  { right: -4px; }
+  }
+
+  .beian-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px 16px;
   }
 
   .beian-link {

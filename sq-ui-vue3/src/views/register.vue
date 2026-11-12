@@ -75,6 +75,11 @@
         target="_blank"
         rel="noopener noreferrer"
       >冀ICP备2026047654号-1</a>
+      <a
+        href="https://beian.mps.gov.cn/#/query/webSearch?code=13082302000140"
+        target="_blank"
+        rel="noopener noreferrer"
+      >冀公网安备13082302000140号</a>
     </div>
   </div>
 </template>
@@ -205,16 +210,23 @@ getCode();
   }
 }
 .el-register-footer {
-  height: 40px;
-  line-height: 40px;
+  min-height: 40px;
+  line-height: 1.4;
   position: fixed;
   bottom: 0;
   width: 100%;
+  padding: 8px 12px;
+  box-sizing: border-box;
   text-align: center;
   color: #fff;
   font-family: Arial;
   font-size: 12px;
   letter-spacing: 1px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 16px;
 
   a {
     color: inherit;

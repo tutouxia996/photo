@@ -197,6 +197,11 @@
         target="_blank"
         rel="noopener noreferrer"
       >冀ICP备2026047654号-1</a>
+      <a
+        href="https://beian.mps.gov.cn/#/query/webSearch?code=13082302000140"
+        target="_blank"
+        rel="noopener noreferrer"
+      >冀公网安备13082302000140号</a>
     </footer>
 
     <!-- 与相册详情一致的白底全屏预览 -->
@@ -829,6 +834,11 @@ watch(
   text-align: center;
   font-size: 12px;
   line-height: 1.4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 16px;
 }
 
 .share-beian a {
