@@ -162,6 +162,43 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <button
+          type="button"
+          class="tool-btn"
+          :class="{ active: filmBorderEnabled }"
+          title="胶片边框"
+          @click="toggleFilmBorder"
+        >
+          <el-icon><Ticket /></el-icon>
+          <span>胶片边</span>
+        </button>
+        <button
+          type="button"
+          class="tool-btn"
+          :class="{ active: filmInfoEnabled }"
+          title="日期地点"
+          @click="toggleFilmInfo"
+        >
+          <el-icon><Calendar /></el-icon>
+          <span>信息</span>
+        </button>
+        <el-dropdown v-if="filmBorderEnabled" trigger="click" @command="handleFilmStock">
+          <button type="button" class="tool-btn" title="片边样式">
+            <span>{{ filmStockLabel }}</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="s in filmStockOptions"
+                :key="s.id"
+                :command="s.id"
+                :class="{ 'is-active': s.id === filmStockId }"
+              >
+                {{ s.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <button type="button" class="tool-btn icon-only" title="刷新" @click="reload">
           <el-icon><Refresh /></el-icon>
         </button>
@@ -188,10 +225,28 @@
           @dblclick.prevent="onItemDblClick(item)"
           @contextmenu.prevent.stop="onItemContextMenu(item, $event)"
         >
-          <div class="photo-inner">
-            <template v-if="item.fileType === 2">
+          <div class="photo-inner" :class="{ 'film-on': gridFilmOn }">
+            <FilmFrame
+              v-if="gridFilmOn"
+              :photo="item"
+              mode="thumb"
+              :show-border="filmBorderEnabled"
+              :show-info="filmInfoEnabled && item.fileType !== 2"
+              :stock-id="filmStockId"
+            >
+              <template v-if="item.fileType === 2">
+                <img
+                  v-if="canShowThumb(item)"
+                  :src="thumbSrc(item)"
+                  :alt="item.fileName"
+                  loading="lazy"
+                  decoding="async"
+                  @error="onThumbError(item)"
+                />
+                <div v-else class="thumb-placeholder" aria-hidden="true" />
+              </template>
               <img
-                v-if="canShowThumb(item)"
+                v-else-if="canShowThumb(item)"
                 :src="thumbSrc(item)"
                 :alt="item.fileName"
                 loading="lazy"
@@ -199,20 +254,33 @@
                 @error="onThumbError(item)"
               />
               <div v-else class="thumb-placeholder" aria-hidden="true" />
-              <div class="video-mark">
-                <el-icon :size="14"><VideoPlay /></el-icon>
-                <span v-if="formatDuration(item.duration)" class="video-duration">{{ formatDuration(item.duration) }}</span>
-              </div>
+            </FilmFrame>
+            <template v-else>
+              <template v-if="item.fileType === 2">
+                <img
+                  v-if="canShowThumb(item)"
+                  :src="thumbSrc(item)"
+                  :alt="item.fileName"
+                  loading="lazy"
+                  decoding="async"
+                  @error="onThumbError(item)"
+                />
+                <div v-else class="thumb-placeholder" aria-hidden="true" />
+              </template>
+              <img
+                v-else-if="canShowThumb(item)"
+                :src="thumbSrc(item)"
+                :alt="item.fileName"
+                loading="lazy"
+                decoding="async"
+                @error="onThumbError(item)"
+              />
+              <div v-else class="thumb-placeholder" aria-hidden="true" />
             </template>
-            <img
-              v-else-if="canShowThumb(item)"
-              :src="thumbSrc(item)"
-              :alt="item.fileName"
-              loading="lazy"
-              decoding="async"
-              @error="onThumbError(item)"
-            />
-            <div v-else class="thumb-placeholder" aria-hidden="true" />
+            <div v-if="item.fileType === 2" class="video-mark">
+              <el-icon :size="14"><VideoPlay /></el-icon>
+              <span v-if="formatDuration(item.duration)" class="video-duration">{{ formatDuration(item.duration) }}</span>
+            </div>
             <div v-if="isPanoPhoto(item)" class="pano-mark" title="360 全景">360</div>
             <div
               v-if="item.aestheticScore != null"
@@ -503,29 +571,72 @@
           </div>
           <div
             v-else-if="currentMedia && currentMedia.fileType !== 2"
+            ref="mediaCanvasRef"
             class="media-canvas"
+            :class="{ 'loupe-cursor': loupeOn }"
             @wheel.prevent="onImageWheel"
             @dblclick.prevent="onImageDblClick"
             @dragstart.prevent
           >
-            <!-- 变换挂在轻量 wrapper 上，避免直接缩放大图位图导致卡顿 -->
+            <!-- 片边与日期字放在缩放层内：跟图片一起放大缩小 -->
             <div ref="mediaImageLayerRef" class="media-image-layer">
-              <img
-                ref="mediaImageRef"
-                class="media-image"
-                :class="{ 'is-original': imageMode === 'original' }"
-                :src="originalSrc(currentMedia)"
-                :alt="currentMedia.fileName"
-                draggable="false"
-                decoding="async"
-                @load="paintImageTransform(false)"
-                @click.stop
-                @dragstart.prevent
-              />
+              <FilmFrame
+                :photo="currentMedia"
+                mode="viewer"
+                :show-border="filmBorderEnabled"
+                :show-info="filmInfoEnabled"
+                :stock-id="filmStockId"
+                :frame-no="mediaIndex + 1"
+                @rendered="onFilmRendered"
+              >
+                <img
+                  ref="mediaImageRef"
+                  class="media-image"
+                  :class="{ 'is-original': imageMode === 'original' }"
+                  :src="originalSrc(currentMedia)"
+                  :alt="currentMedia.fileName"
+                  draggable="false"
+                  decoding="async"
+                  @load="paintImageTransform(false)"
+                  @click.stop
+                  @dragstart.prevent
+                />
+              </FilmFrame>
             </div>
+            <!-- SpektraLab 观片台 Loupe：3× 圆形镜片跟手 -->
+            <FilmLoupe
+              ref="filmLoupeRef"
+              :active="loupeOn"
+              :stage-el="mediaCanvasRef"
+              :source-root="mediaImageLayerRef"
+              :mag="3"
+            />
           </div>
-          <div v-else-if="currentMedia" class="media-video-wrap">
+          <div v-else-if="currentMedia" class="media-video-wrap" :class="{ 'film-video': viewerFilmOn }">
+            <!-- live：真 video 播放；片边用 DOM/SVG 套在片窗外，不再画成静态 canvas -->
+            <FilmFrame
+              v-if="viewerFilmOn"
+              :photo="currentMedia"
+              mode="viewer"
+              live
+              :show-border="filmBorderEnabled"
+              :show-info="filmInfoEnabled"
+              :stock-id="filmStockId"
+              :frame-no="mediaIndex + 1"
+            >
+              <video
+                ref="mediaVideoRef"
+                :key="videoPlayerKey"
+                class="media-video"
+                :src="videoPlayUrl"
+                controls
+                autoplay
+                playsinline
+                @click.stop
+              />
+            </FilmFrame>
             <video
+              v-else
               ref="mediaVideoRef"
               :key="videoPlayerKey"
               class="media-video"
@@ -545,6 +656,48 @@
                   <option value="original">{{ originalQualityLabel }}</option>
                 </select>
               </label>
+              <span class="media-tool-sep" aria-hidden="true" />
+              <button
+                type="button"
+                class="media-tool-btn"
+                :class="{ active: filmBorderEnabled }"
+                title="胶片边框"
+                @click="toggleFilmBorder"
+              >
+                <el-icon :size="18"><Ticket /></el-icon>
+              </button>
+              <button
+                type="button"
+                class="media-tool-btn"
+                :class="{ active: filmInfoEnabled }"
+                title="日期地点信息"
+                @click="toggleFilmInfo"
+              >
+                <el-icon :size="18"><Calendar /></el-icon>
+              </button>
+              <el-dropdown
+                v-if="filmBorderEnabled"
+                trigger="click"
+                teleported
+                :popper-options="{ strategy: 'fixed' }"
+                popper-class="above-media-film-stock"
+                @command="handleFilmStock"
+              >
+                <button type="button" class="media-tool-btn media-tool-stock" :title="filmStockLabel">
+                  <span>{{ filmStockShort }}</span>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="s in filmStockOptions"
+                      :key="s.id"
+                      :command="s.id"
+                    >
+                      {{ s.label }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <span v-if="videoPlayHint" class="media-video-hint">{{ videoPlayHint }}</span>
             </div>
           </div>
@@ -570,6 +723,61 @@
                 <ScaleToOriginal v-else />
               </el-icon>
             </button>
+            <button
+              type="button"
+              class="media-tool-btn"
+              :class="{ active: loupeOn }"
+              title="放大镜 Loupe（L）"
+              @click="toggleLoupe"
+            >
+              <svg class="loupe-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.25" fill="none" stroke="currentColor" stroke-width="1.8" />
+                <path d="M15.2 15.2 L20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                <circle cx="10.5" cy="10.5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.55" />
+              </svg>
+            </button>
+            <span class="media-tool-sep" aria-hidden="true" />
+            <button
+              type="button"
+              class="media-tool-btn"
+              :class="{ active: filmBorderEnabled }"
+              title="胶片边框"
+              @click="toggleFilmBorder"
+            >
+              <el-icon :size="18"><Ticket /></el-icon>
+            </button>
+            <button
+              type="button"
+              class="media-tool-btn"
+              :class="{ active: filmInfoEnabled }"
+              title="日期地点信息"
+              @click="toggleFilmInfo"
+            >
+              <el-icon :size="18"><Calendar /></el-icon>
+            </button>
+            <el-dropdown
+              v-if="filmBorderEnabled"
+              trigger="click"
+              teleported
+              :popper-options="{ strategy: 'fixed' }"
+              popper-class="above-media-film-stock"
+              @command="handleFilmStock"
+            >
+              <button type="button" class="media-tool-btn media-tool-stock" :title="filmStockLabel">
+                <span>{{ filmStockShort }}</span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="s in filmStockOptions"
+                    :key="s.id"
+                    :command="s.id"
+                  >
+                    {{ s.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </div>
       </div>
@@ -811,6 +1019,41 @@ import usePhotoScoreStore from '@/store/modules/photoScore'
 import useAlbumDownloadStore from '@/store/modules/albumDownload'
 import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
 import ShareAlbumDialog from '@/components/ShareAlbumDialog/index.vue'
+import FilmFrame from '@/components/FilmFrame/index.vue'
+import FilmLoupe from '@/components/FilmLoupe/index.vue'
+import { getStockPreset, presetKey, STOCK_PRESETS } from '@/utils/spektra/stocks'
+
+const FILM_BORDER_KEY = 'album.filmBorder'
+const FILM_INFO_KEY = 'album.filmInfo'
+const FILM_STOCK_KEY = 'album.filmStockPreset'
+
+function readFilmFlag(key, fallback = true) {
+  try {
+    const v = localStorage.getItem(key)
+    if (v == null) return fallback
+    return v === '1' || v === 'true'
+  } catch (_) {
+    return fallback
+  }
+}
+
+function writeFilmFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0')
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function readFilmStock() {
+  try {
+    const v = localStorage.getItem(FILM_STOCK_KEY)
+    const p = getStockPreset(v || presetKey('kodak_portra_400', '135'))
+    return presetKey(p.id, p.formatId)
+  } catch (_) {
+    return presetKey('kodak_portra_400', '135')
+  }
+}
 
 const { proxy } = getCurrentInstance()
 const route = useRoute()
@@ -844,6 +1087,21 @@ const originFilter = ref('original')
 /** 拍摄时间排序：desc 新→旧，asc 旧→新 */
 const shootTimeOrder = ref('desc')
 const sizeMode = ref('small')
+/** 胶片边 / 日期地点 / 片种：网格与全屏 viewer 共用，记 localStorage */
+const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, true))
+const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, true))
+const filmStockId = ref(readFilmStock())
+const filmStockOptions = STOCK_PRESETS.map(s => ({
+  id: presetKey(s.id, s.formatId),
+  label: s.label
+}))
+const filmStockLabel = computed(() => getStockPreset(filmStockId.value).label)
+const filmStockShort = computed(() => {
+  const label = filmStockLabel.value
+  return label.length > 10 ? label.slice(0, 9) + '…' : label
+})
+const gridFilmOn = computed(() => filmBorderEnabled.value || filmInfoEnabled.value)
+const viewerFilmOn = computed(() => filmBorderEnabled.value || filmInfoEnabled.value)
 /** 虚拟网格：只挂载可视区附近的格子 */
 const GRID_MIN = { small: 96, medium: 140, large: 200 }
 const GRID_GAP = { small: 4, medium: 8, large: 12 }
@@ -991,6 +1249,14 @@ const detailFolderPath = computed(() => {
 const imageMode = ref('contain') // contain | original
 const mediaImageRef = ref()
 const mediaImageLayerRef = ref()
+const mediaCanvasRef = ref()
+const filmLoupeRef = ref(null)
+/** SpektraLab 观片台 Loupe：跟手 3× 镜片 */
+const loupeOn = ref(false)
+
+function toggleLoupe() {
+  loupeOn.value = !loupeOn.value
+}
 const imageZoomLabelRef = ref()
 /** 非响应式，交互时直接改 DOM，避免 Vue 每帧重渲染导致高倍缩放卡顿 */
 const imageTransform = {
@@ -1586,6 +1852,36 @@ function handleShootTimeOrder(cmd) {
 function handleSizeMode(cmd) {
   sizeMode.value = cmd
   nextTick(() => scheduleVirtualUpdate())
+}
+
+function toggleFilmBorder() {
+  filmBorderEnabled.value = !filmBorderEnabled.value
+  writeFilmFlag(FILM_BORDER_KEY, filmBorderEnabled.value)
+  nextTick(() => paintImageTransform(false))
+}
+
+function toggleFilmInfo() {
+  filmInfoEnabled.value = !filmInfoEnabled.value
+  writeFilmFlag(FILM_INFO_KEY, filmInfoEnabled.value)
+  nextTick(() => paintImageTransform(false))
+}
+
+function handleFilmStock(cmd) {
+  const p = getStockPreset(cmd)
+  filmStockId.value = presetKey(p.id, p.formatId)
+  try {
+    localStorage.setItem(FILM_STOCK_KEY, filmStockId.value)
+  } catch (_) {
+    /* ignore */
+  }
+  nextTick(() => paintImageTransform(false))
+}
+
+function onFilmRendered() {
+  nextTick(() => {
+    paintImageTransform(false)
+    filmLoupeRef.value?.repaint?.()
+  })
 }
 
 function isSelected(id) {
@@ -2199,6 +2495,7 @@ function openViewer(item) {
 function closeMedia() {
   detailOpen.value = false
   mediaVisible.value = false
+  loupeOn.value = false
   videoPlayUrl.value = ''
   videoSourceMeta.value = null
   videoUsingOriginal.value = false
@@ -2549,11 +2846,21 @@ function onKeydown(e) {
       closeCtxMenu()
       return
     }
+    if (loupeOn.value) {
+      loupeOn.value = false
+      return
+    }
     if (mediaVisible.value) closeMedia()
   }
   if (!mediaVisible.value) return
   if (e.key === 'ArrowLeft') shiftMedia(-1)
   if (e.key === 'ArrowRight') shiftMedia(1)
+  // SpektraLab：L 开关 Loupe
+  if ((e.key === 'l' || e.key === 'L') && currentMedia.value?.fileType !== 2 && !isPanoPhoto(currentMedia.value)) {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return
+    e.preventDefault()
+    toggleLoupe()
+  }
 }
 
 function onWindowBlurOrScroll() {
@@ -2791,6 +3098,10 @@ init()
     color: #111;
   }
 
+  &.active {
+    color: var(--el-color-primary);
+  }
+
   &.icon-only {
     padding: 4px;
   }
@@ -2831,6 +3142,10 @@ init()
     border-radius: 2px;
     overflow: hidden;
     background: #f2f2f2;
+  }
+
+  .photo-inner.film-on {
+    background: #1a1714;
   }
 
   img,
@@ -3088,6 +3403,7 @@ init()
   -webkit-user-select: none;
 }
 
+
 .media-stage {
   position: absolute;
   inset: 0;
@@ -3230,6 +3546,42 @@ init()
   contain: layout style;
 }
 
+.media-canvas.loupe-cursor {
+  cursor: none;
+}
+
+.loupe-icon {
+  display: block;
+}
+
+.media-canvas :deep(.gate-inner) {
+  overflow: hidden;
+}
+
+.media-video-wrap.film-video {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 64px;
+  box-sizing: border-box;
+}
+
+.media-video-wrap.film-video .media-video {
+  max-width: min(88vw, 1200px);
+  max-height: min(72vh, 720px);
+  border-radius: 0;
+}
+
+.media-tool-stock {
+  width: auto !important;
+  min-width: 34px;
+  padding: 0 8px;
+  border-radius: 17px !important;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .media-pano-wrap {
   position: absolute;
   inset: 0;
@@ -3265,6 +3617,17 @@ init()
   &.is-original {
     max-width: min(92vw, 2400px);
     max-height: min(86vh, 1600px);
+  }
+}
+
+/* 有片边时略收一点，给齿孔留空间；背景仍为白底 */
+.media-canvas .media-image {
+  max-width: min(88vw, 1120px);
+  max-height: min(74vh, 740px);
+
+  &.is-original {
+    max-width: min(90vw, 2300px);
+    max-height: min(82vh, 1500px);
   }
 }
 
@@ -3381,6 +3744,17 @@ init()
   &:hover {
     background: rgba(255, 255, 255, 0.16);
   }
+
+  &.active {
+    background: rgba(255, 255, 255, 0.22);
+  }
+}
+
+.media-tool-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .media-zoom-label {
@@ -3418,7 +3792,8 @@ body > .el-overlay:has(.above-media-draw-dialog) {
   z-index: 5100 !important;
 }
 
-.el-popper.above-media-draw-select-popper {
+.el-popper.above-media-draw-select-popper,
+.el-popper.above-media-film-stock {
   z-index: 5200 !important;
 }
 
