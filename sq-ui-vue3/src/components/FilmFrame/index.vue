@@ -230,7 +230,21 @@ function observeView() {
 }
 
 function mediaEl() {
-  return slotRef.value?.querySelector?.('img, video') || null
+  const root = slotRef.value
+  if (!root) return null
+  const hires = root.querySelector?.('img.media-image.is-hires')
+  // 高清已就绪才用；否则先用缩略预览合成，避免干等
+  if (hires && hires.complete && hires.naturalWidth > 0) return hires
+  const preview = root.querySelector?.('img.media-image-preview')
+  if (preview && (preview.complete ? preview.naturalWidth > 0 : true)) return preview
+  if (hires) return hires
+  return root.querySelector?.('img, video') || null
+}
+
+function allMediaEls() {
+  const root = slotRef.value
+  if (!root) return []
+  return Array.from(root.querySelectorAll?.('img, video') || [])
 }
 
 function cancelThumbJob() {
@@ -245,7 +259,13 @@ async function paintNow(token) {
   const media = mediaEl()
   if (!canvas || !media) return false
 
+  // 记录当前 src，避免切图瞬间用上一张的位图合成片边
+  const srcAtStart = media.currentSrc || media.src || ''
+
   const ready = () => {
+    if (token !== renderToken) return false
+    const srcNow = media.currentSrc || media.src || ''
+    if (srcAtStart && srcNow && srcNow !== srcAtStart) return false
     if (media.tagName === 'VIDEO') return media.readyState >= 2 && media.videoWidth > 0
     return media.complete && media.naturalWidth > 0
   }
@@ -264,10 +284,10 @@ async function paintNow(token) {
   }
   if (token !== renderToken || !ready()) return false
 
-  // 缩略图用小边长，避免一屏几十张高分辨率 SpektraLab 合成
+  // 缩略图小边；全屏用更高边长，避免片边合成发糊
   const maxLongEdge = isThumb.value
-    ? Math.min(280, Math.max(media.naturalWidth || 200, 160))
-    : Math.min(1800, Math.max(media.naturalWidth || 1200, 900))
+    ? Math.min(220, Math.max(media.naturalWidth || 160, 120))
+    : Math.min(1600, Math.max(media.naturalWidth || 1000, 900))
 
   const result = renderFilmStrip(canvas, media, {
     stockId: preset.value.id,
@@ -283,6 +303,8 @@ async function paintNow(token) {
   })
 
   if (!result || token !== renderToken) return false
+  const srcAfter = media.currentSrc || media.src || ''
+  if (srcAtStart && srcAfter && srcAfter !== srcAtStart) return false
 
   if (isThumb.value) {
     canvas.style.width = '100%'
@@ -325,16 +347,26 @@ function schedulePaint() {
   }
 }
 
-function bindMedia() {
-  const media = mediaEl()
-  if (boundMedia && boundMedia !== media) {
+function unbindAllMedia() {
+  allMediaEls().forEach((el) => {
+    el.removeEventListener('load', schedulePaint)
+    el.removeEventListener('loadeddata', schedulePaint)
+  })
+  if (boundMedia) {
     boundMedia.removeEventListener('load', schedulePaint)
     boundMedia.removeEventListener('loadeddata', schedulePaint)
+    boundMedia = null
   }
-  boundMedia = media
-  if (!media) return
-  media.addEventListener('load', schedulePaint)
-  media.addEventListener('loadeddata', schedulePaint)
+}
+
+function bindMedia() {
+  unbindAllMedia()
+  const nodes = allMediaEls()
+  nodes.forEach((el) => {
+    el.addEventListener('load', schedulePaint)
+    el.addEventListener('loadeddata', schedulePaint)
+  })
+  boundMedia = mediaEl()
   schedulePaint()
 }
 
@@ -353,10 +385,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   cancelThumbJob()
   renderToken += 1
-  if (boundMedia) {
-    boundMedia.removeEventListener('load', schedulePaint)
-    boundMedia.removeEventListener('loadeddata', schedulePaint)
-  }
+  unbindAllMedia()
   if (mo) mo.disconnect()
   if (gateRo) gateRo.disconnect()
   if (io) io.disconnect()

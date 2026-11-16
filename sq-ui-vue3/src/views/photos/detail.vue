@@ -541,14 +541,26 @@
     <!-- 图片/视频预览（白底；点击空白不关闭，仅返回按钮 / Esc） -->
     <teleport to="body">
       <div v-if="mediaVisible" class="media-viewer" :class="{ 'detail-open': detailOpen }">
-        <!-- 媒体展示区：抽屉打开时收缩，图片与底部工具栏随之适配 -->
-        <div class="media-stage">
+        <!-- 媒体展示区：反转片放映机——快门闭合 → 片子落入片窗 → 开灯 -->
+        <div
+          class="media-stage"
+          :class="[
+            `proj-phase-${slidePhase}`,
+            slideDir > 0 ? 'dir-next' : 'dir-prev'
+          ]"
+        >
+          <div class="projector-shutter" aria-hidden="true">
+            <span class="shutter-blade top" />
+            <span class="shutter-blade bottom" />
+          </div>
+          <div class="projector-flash" aria-hidden="true" />
+          <div class="projector-gate-frame" aria-hidden="true" />
           <button
             v-if="mediaIndex > 0"
             type="button"
             class="media-nav prev"
             title="上一张"
-            @click.stop="shiftMedia(-1)"
+            @click.stop.prevent="onNavClick(-1, $event)"
           >
             <el-icon :size="22"><ArrowLeft /></el-icon>
           </button>
@@ -557,149 +569,170 @@
             type="button"
             class="media-nav next"
             title="下一张"
-            @click.stop="shiftMedia(1)"
+            @click.stop.prevent="onNavClick(1, $event)"
           >
             <el-icon :size="22"><ArrowRight /></el-icon>
           </button>
 
-          <div
-            v-if="currentMedia && currentMedia.fileType !== 2 && isPanoPhoto(currentMedia)"
-            class="media-pano-wrap"
-            @click.stop
-          >
-            <PhotoSphereViewer :src="originalSrc(currentMedia)" :key="currentMedia.photoId" />
-          </div>
-          <div
-            v-else-if="currentMedia && currentMedia.fileType !== 2"
-            ref="mediaCanvasRef"
-            class="media-canvas"
-            :class="{ 'loupe-cursor': loupeOn }"
-            @wheel.prevent="onImageWheel"
-            @dblclick.prevent="onImageDblClick"
-            @dragstart.prevent
-          >
-            <!-- 片边与日期字放在缩放层内：跟图片一起放大缩小 -->
-            <div ref="mediaImageLayerRef" class="media-image-layer">
-              <FilmFrame
-                :photo="currentMedia"
-                mode="viewer"
-                :show-border="filmBorderEnabled"
-                :show-info="filmInfoEnabled"
-                :stock-id="filmStockId"
-                :frame-no="mediaIndex + 1"
-                @rendered="onFilmRendered"
+          <div class="slide-viewport">
+            <Transition name="slide-gate" mode="out-in">
+              <div
+                v-if="currentMedia"
+                :key="currentMedia.photoId"
+                class="slide-pane"
               >
-                <img
-                  ref="mediaImageRef"
-                  class="media-image"
-                  :class="{ 'is-original': imageMode === 'original' }"
-                  :src="originalSrc(currentMedia)"
-                  :alt="currentMedia.fileName"
-                  draggable="false"
-                  decoding="async"
-                  @load="paintImageTransform(false)"
+                <div
+                  v-if="currentMedia.fileType !== 2 && isPanoPhoto(currentMedia)"
+                  class="media-pano-wrap"
                   @click.stop
+                >
+                  <PhotoSphereViewer :src="originalSrc(currentMedia)" />
+                </div>
+                <div
+                  v-else-if="currentMedia.fileType !== 2"
+                  ref="mediaCanvasRef"
+                  class="media-canvas"
+                  :class="{ 'loupe-cursor': loupeOn }"
+                  @wheel.prevent="onImageWheel"
+                  @dblclick.prevent="onImageDblClick"
                   @dragstart.prevent
-                />
-              </FilmFrame>
-            </div>
-            <!-- SpektraLab 观片台 Loupe：3× 圆形镜片跟手 -->
-            <FilmLoupe
-              ref="filmLoupeRef"
-              :active="loupeOn"
-              :stage-el="mediaCanvasRef"
-              :source-root="mediaImageLayerRef"
-              :mag="3"
-            />
-          </div>
-          <div v-else-if="currentMedia" class="media-video-wrap" :class="{ 'film-video': viewerFilmOn }">
-            <!-- live：真 video 播放；片边用 DOM/SVG 套在片窗外，不再画成静态 canvas -->
-            <FilmFrame
-              v-if="viewerFilmOn"
-              :photo="currentMedia"
-              mode="viewer"
-              live
-              :show-border="filmBorderEnabled"
-              :show-info="filmInfoEnabled"
-              :stock-id="filmStockId"
-              :frame-no="mediaIndex + 1"
-            >
-              <video
-                ref="mediaVideoRef"
-                :key="videoPlayerKey"
-                class="media-video"
-                :src="videoPlayUrl"
-                controls
-                autoplay
-                playsinline
-                @click.stop
-              />
-            </FilmFrame>
-            <video
-              v-else
-              ref="mediaVideoRef"
-              :key="videoPlayerKey"
-              class="media-video"
-              :src="videoPlayUrl"
-              controls
-              autoplay
-              playsinline
-              @click.stop
-            />
-            <div class="media-video-toolbar" @click.stop>
-              <label class="media-video-field">
-                <span>清晰度</span>
-                <select v-model="videoQuality" @change="onVideoQualityChange">
-                  <option value="480p">480p</option>
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                  <option value="original">{{ originalQualityLabel }}</option>
-                </select>
-              </label>
-              <span class="media-tool-sep" aria-hidden="true" />
-              <button
-                type="button"
-                class="media-tool-btn"
-                :class="{ active: filmBorderEnabled }"
-                title="胶片边框"
-                @click="toggleFilmBorder"
-              >
-                <el-icon :size="18"><Ticket /></el-icon>
-              </button>
-              <button
-                type="button"
-                class="media-tool-btn"
-                :class="{ active: filmInfoEnabled }"
-                title="日期地点信息"
-                @click="toggleFilmInfo"
-              >
-                <el-icon :size="18"><Calendar /></el-icon>
-              </button>
-              <el-dropdown
-                v-if="filmBorderEnabled"
-                trigger="click"
-                teleported
-                :popper-options="{ strategy: 'fixed' }"
-                popper-class="above-media-film-stock"
-                @command="handleFilmStock"
-              >
-                <button type="button" class="media-tool-btn media-tool-stock" :title="filmStockLabel">
-                  <span>{{ filmStockShort }}</span>
-                </button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item
-                      v-for="s in filmStockOptions"
-                      :key="s.id"
-                      :command="s.id"
+                >
+                  <div ref="mediaImageLayerRef" class="media-image-layer">
+                    <FilmFrame
+                      :photo="currentMedia"
+                      mode="viewer"
+                      :show-border="filmBorderEnabled"
+                      :show-info="filmInfoEnabled"
+                      :stock-id="filmStockId"
+                      :frame-no="mediaIndex + 1"
+                      @rendered="onFilmRendered"
                     >
-                      {{ s.label }}
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-              <span v-if="videoPlayHint" class="media-video-hint">{{ videoPlayHint }}</span>
-            </div>
+                      <!-- 预览图先出，大图随后替换，避免一直等原图 -->
+                      <img
+                        v-if="imageMode !== 'original' && thumbSrc(currentMedia)"
+                        class="media-image media-image-preview"
+                        :src="thumbSrc(currentMedia)"
+                        alt=""
+                        draggable="false"
+                        decoding="async"
+                        aria-hidden="true"
+                      />
+                      <img
+                        ref="mediaImageRef"
+                        class="media-image"
+                        :class="{
+                          'is-original': imageMode === 'original',
+                          'is-hires': true,
+                          'is-hires-ready': viewerHiresReady
+                        }"
+                        :src="viewerSrc(currentMedia)"
+                        :alt="currentMedia.fileName"
+                        draggable="false"
+                        decoding="async"
+                        @load="onViewerImageLoad"
+                        @click.stop
+                        @dragstart.prevent
+                      />
+                    </FilmFrame>
+                  </div>
+                  <FilmLoupe
+                    ref="filmLoupeRef"
+                    :active="loupeOn"
+                    :stage-el="mediaCanvasRef"
+                    :source-root="mediaImageLayerRef"
+                    :mag="3"
+                  />
+                </div>
+                <div v-else class="media-video-wrap" :class="{ 'film-video': viewerFilmOn }">
+                  <FilmFrame
+                    v-if="viewerFilmOn"
+                    :photo="currentMedia"
+                    mode="viewer"
+                    live
+                    :show-border="filmBorderEnabled"
+                    :show-info="filmInfoEnabled"
+                    :stock-id="filmStockId"
+                    :frame-no="mediaIndex + 1"
+                  >
+                    <video
+                      ref="mediaVideoRef"
+                      :key="videoPlayerKey"
+                      class="media-video"
+                      :src="videoPlayUrl"
+                      controls
+                      autoplay
+                      playsinline
+                      @click.stop
+                    />
+                  </FilmFrame>
+                  <video
+                    v-else
+                    ref="mediaVideoRef"
+                    :key="videoPlayerKey"
+                    class="media-video"
+                    :src="videoPlayUrl"
+                    controls
+                    autoplay
+                    playsinline
+                    @click.stop
+                  />
+                  <div class="media-video-toolbar" @click.stop>
+                    <label class="media-video-field">
+                      <span>清晰度</span>
+                      <select v-model="videoQuality" @change="onVideoQualityChange">
+                        <option value="480p">480p</option>
+                        <option value="720p">720p</option>
+                        <option value="1080p">1080p</option>
+                        <option value="original">{{ originalQualityLabel }}</option>
+                      </select>
+                    </label>
+                    <span class="media-tool-sep" aria-hidden="true" />
+                    <button
+                      type="button"
+                      class="media-tool-btn"
+                      :class="{ active: filmBorderEnabled }"
+                      title="胶片边框"
+                      @click="toggleFilmBorder"
+                    >
+                      <el-icon :size="18"><Ticket /></el-icon>
+                    </button>
+                    <button
+                      type="button"
+                      class="media-tool-btn"
+                      :class="{ active: filmInfoEnabled }"
+                      title="日期地点信息"
+                      @click="toggleFilmInfo"
+                    >
+                      <el-icon :size="18"><Calendar /></el-icon>
+                    </button>
+                    <el-dropdown
+                      v-if="filmBorderEnabled"
+                      trigger="click"
+                      teleported
+                      :popper-options="{ strategy: 'fixed' }"
+                      popper-class="above-media-film-stock"
+                      @command="handleFilmStock"
+                    >
+                      <button type="button" class="media-tool-btn media-tool-stock" :title="filmStockLabel">
+                        <span>{{ filmStockShort }}</span>
+                      </button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item
+                            v-for="s in filmStockOptions"
+                            :key="s.id"
+                            :command="s.id"
+                          >
+                            {{ s.label }}
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                    <span v-if="videoPlayHint" class="media-video-hint">{{ videoPlayHint }}</span>
+                  </div>
+                </div>
+              </div>
+            </Transition>
           </div>
 
           <div
@@ -1022,6 +1055,7 @@ import ShareAlbumDialog from '@/components/ShareAlbumDialog/index.vue'
 import FilmFrame from '@/components/FilmFrame/index.vue'
 import FilmLoupe from '@/components/FilmLoupe/index.vue'
 import { getStockPreset, presetKey, STOCK_PRESETS } from '@/utils/spektra/stocks'
+import { unlockProjectorSound, playProjectorSound } from '@/utils/projectorSound'
 
 const FILM_BORDER_KEY = 'album.filmBorder'
 const FILM_INFO_KEY = 'album.filmInfo'
@@ -1247,6 +1281,8 @@ const detailFolderPath = computed(() => {
   return path.includes('\\') ? dir.replace(/\//g, '\\') : dir
 })
 const imageMode = ref('contain') // contain | original
+/** 原图是否已加载（用于盖住模糊缩略预览） */
+const viewerHiresReady = ref(false)
 const mediaImageRef = ref()
 const mediaImageLayerRef = ref()
 const mediaCanvasRef = ref()
@@ -1434,6 +1470,30 @@ function thumbSrc(item) {
 function originalSrc(item) {
   if (!item) return ''
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
+}
+
+/**
+ * 全屏高清层：必须走 original。
+ * 注意 /media/{id} 无 original 时后端返回的是小缩略图（约 300px），会发糊。
+ * 速度靠底下 media-image-preview 先出缩略图，原图加载完再盖住。
+ */
+function viewerSrc(item) {
+  if (!item) return ''
+  return originalSrc(item)
+}
+
+function preloadViewerNeighbors(centerIdx) {
+  const list = photoList.value
+  if (!list.length) return
+  ;[centerIdx - 1, centerIdx + 1, centerIdx + 2].forEach((i) => {
+    const item = list[i]
+    if (!item || item.fileType === 2 || isPanoPhoto(item)) return
+    const url = viewerSrc(item)
+    if (!url) return
+    const img = new Image()
+    img.decoding = 'async'
+    img.src = url
+  })
 }
 
 /** 下载用：强制原图/原视频 + attachment */
@@ -2483,13 +2543,24 @@ function resetImageTransform() {
 }
 
 function openViewer(item) {
+  unlockProjectorSound()
   const idx = photoList.value.findIndex(p => p.photoId === item.photoId)
   mediaIndex.value = idx >= 0 ? idx : 0
+  viewerHiresReady.value = false
   resetImageTransform()
   videoQuality.value = '480p'
   pendingVideoSeek = null
   mediaVisible.value = true
-  nextTick(() => reloadVideoProxy())
+  nextTick(() => {
+    reloadVideoProxy()
+    preloadViewerNeighbors(mediaIndex.value)
+  })
+}
+
+function onViewerImageLoad() {
+  viewerHiresReady.value = true
+  paintImageTransform(false)
+  filmLoupeRef.value?.repaint?.()
 }
 
 function closeMedia() {
@@ -2502,14 +2573,64 @@ function closeMedia() {
   resetImageTransform()
 }
 
-function shiftMedia(step) {
+let shiftLockUntil = 0
+/** 幻灯方向：1 下一张 / -1 上一张 */
+const slideDir = ref(1)
+/** idle | close | dark | open —— 反转片机快门相位 */
+const slidePhase = ref('idle')
+let phaseTimers = []
+
+function clearPhaseTimers() {
+  phaseTimers.forEach((t) => clearTimeout(t))
+  phaseTimers = []
+}
+
+function after(ms) {
+  return new Promise((resolve) => {
+    phaseTimers.push(window.setTimeout(resolve, ms))
+  })
+}
+
+async function shiftMedia(step) {
+  const now = Date.now()
+  if (now < shiftLockUntil) return
   const next = mediaIndex.value + step
   if (next < 0 || next >= photoList.value.length) return
+  unlockProjectorSound()
+  slideDir.value = step > 0 ? 1 : -1
+  shiftLockUntil = now + 520
+  clearPhaseTimers()
+
+  // 1) 快门合上（尽量短，别让人觉得卡加载）
+  slidePhase.value = 'close'
+  playProjectorSound('close')
+  await after(90)
+
+  // 2) 黑场换片 + 预加载邻居
   mediaIndex.value = next
+  viewerHiresReady.value = false
   resetImageTransform()
   videoQuality.value = '480p'
   pendingVideoSeek = null
-  nextTick(() => reloadVideoProxy())
+  slidePhase.value = 'dark'
+  playProjectorSound('drop')
+  await nextTick()
+  reloadVideoProxy()
+  preloadViewerNeighbors(next)
+  await after(120)
+
+  // 3) 开灯
+  slidePhase.value = 'open'
+  playProjectorSound('open')
+  await after(280)
+  slidePhase.value = 'idle'
+}
+
+function onNavClick(step, e) {
+  // 点完失焦，避免方向键再触发一次「按钮激活 + window keydown」双跳
+  e?.currentTarget?.blur?.()
+  unlockProjectorSound()
+  shiftMedia(step)
 }
 
 function zoomImage(delta, animate = false) {
@@ -2851,13 +2972,25 @@ function onKeydown(e) {
       return
     }
     if (mediaVisible.value) closeMedia()
+    return
   }
   if (!mediaVisible.value) return
-  if (e.key === 'ArrowLeft') shiftMedia(-1)
-  if (e.key === 'ArrowRight') shiftMedia(1)
+  if (e.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return
+  // 忽略系统按键重复，避免连跳；并 preventDefault 避免按钮焦点二次响应
+  if (e.key === 'ArrowLeft') {
+    if (e.repeat) return
+    e.preventDefault()
+    shiftMedia(-1)
+    return
+  }
+  if (e.key === 'ArrowRight') {
+    if (e.repeat) return
+    e.preventDefault()
+    shiftMedia(1)
+    return
+  }
   // SpektraLab：L 开关 Loupe
   if ((e.key === 'l' || e.key === 'L') && currentMedia.value?.fileType !== 2 && !isPanoPhoto(currentMedia.value)) {
-    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return
     e.preventDefault()
     toggleLoupe()
   }
@@ -2909,8 +3042,12 @@ watch(
   }
 )
 
+let keydownBound = false
 onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
+  if (!keydownBound) {
+    window.addEventListener('keydown', onKeydown)
+    keydownBound = true
+  }
   window.addEventListener('scroll', onWindowBlurOrScroll, true)
   window.addEventListener('resize', onWindowBlurOrScroll)
   window.addEventListener('blur', onWindowBlurOrScroll)
@@ -2920,7 +3057,11 @@ onMounted(() => {
   })
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
+  clearPhaseTimers()
+  if (keydownBound) {
+    window.removeEventListener('keydown', onKeydown)
+    keydownBound = false
+  }
   window.removeEventListener('scroll', onWindowBlurOrScroll, true)
   window.removeEventListener('resize', onWindowBlurOrScroll)
   window.removeEventListener('blur', onWindowBlurOrScroll)
@@ -3409,10 +3550,155 @@ init()
   inset: 0;
   z-index: 1;
   transition: right 0.22s ease;
+  overflow: hidden;
 }
 
 .media-viewer.detail-open .media-stage {
   right: 360px;
+}
+
+/* —— 反转片放映机：机械快门 + 片落入窗 + 开灯 —— */
+.projector-shutter {
+  position: absolute;
+  inset: 0;
+  z-index: 14;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.shutter-blade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 52%;
+  background: #050505;
+  transition: transform 0.13s steps(2, end);
+  will-change: transform;
+}
+
+.shutter-blade.top {
+  top: 0;
+  transform: translateY(-102%);
+  box-shadow: 0 2px 0 rgba(255, 255, 255, 0.06);
+}
+
+.shutter-blade.bottom {
+  bottom: 0;
+  transform: translateY(102%);
+  box-shadow: 0 -2px 0 rgba(255, 255, 255, 0.06);
+}
+
+.media-stage.proj-phase-close .shutter-blade.top,
+.media-stage.proj-phase-dark .shutter-blade.top {
+  transform: translateY(0);
+}
+
+.media-stage.proj-phase-close .shutter-blade.bottom,
+.media-stage.proj-phase-dark .shutter-blade.bottom {
+  transform: translateY(0);
+}
+
+.media-stage.proj-phase-open .shutter-blade.top {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform: translateY(-102%);
+}
+
+.media-stage.proj-phase-open .shutter-blade.bottom {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform: translateY(102%);
+}
+
+.projector-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(255, 236, 200, 0.78) 0%, rgba(255, 248, 230, 0.22) 42%, transparent 70%);
+  mix-blend-mode: screen;
+}
+
+.media-stage.proj-phase-open .projector-flash {
+  animation: slide-lamp-on 0.42s ease-out;
+}
+
+@keyframes slide-lamp-on {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  38% { opacity: 0.45; }
+  100% { opacity: 0; }
+}
+
+/* 片窗遮罩：放映时隐约露出取景框感 */
+.projector-gate-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 2px rgba(20, 16, 12, 0.55),
+    inset 0 0 80px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.2s ease;
+}
+
+.media-stage.proj-phase-close .projector-gate-frame,
+.media-stage.proj-phase-dark .projector-gate-frame,
+.media-stage.proj-phase-open .projector-gate-frame {
+  opacity: 1;
+}
+
+.slide-viewport {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #050505;
+  overflow: hidden;
+}
+
+.slide-pane {
+  position: absolute;
+  inset: 0;
+}
+
+/* 离场：快门合上瞬间切黑 */
+.slide-gate-leave-active {
+  transition: opacity 0.1s linear, filter 0.1s linear;
+}
+
+.slide-gate-leave-to {
+  opacity: 0;
+  filter: brightness(0);
+}
+
+/* 入场：片子从片仓落到片窗，再被灯光照亮 */
+.slide-gate-enter-active {
+  transition:
+    transform 0.32s cubic-bezier(0.18, 0.9, 0.22, 1.12),
+    opacity 0.22s ease 0.06s,
+    filter 0.36s ease 0.08s;
+}
+
+.slide-gate-enter-from {
+  opacity: 0.25;
+  transform: translateY(-26%);
+  filter: brightness(0.15) contrast(1.05);
+}
+
+.dir-prev .slide-gate-enter-from {
+  transform: translateY(26%);
+}
+
+.slide-gate-enter-to {
+  opacity: 1;
+  transform: translateY(0);
+  filter: brightness(1) contrast(1);
+}
+
+.slide-gate-leave-from,
+.slide-gate-enter-to {
+  opacity: 1;
 }
 
 .media-close,
@@ -3441,12 +3727,19 @@ init()
   top: 20px;
   left: 20px;
   z-index: 3200;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+  }
 }
 
 .media-close.on-dark {
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 
   &:hover {
     background: rgba(0, 0, 0, 0.72);
@@ -3475,21 +3768,6 @@ init()
   gap: 6px;
 }
 
-.media-actions.on-dark .media-action-btn {
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
-
-  &:hover {
-    background: rgba(0, 0, 0, 0.72);
-  }
-
-  &.active {
-    background: rgba(255, 255, 255, 0.22);
-    color: #fff;
-  }
-}
-
 .media-close-x {
   margin-left: 4px;
 }
@@ -3499,22 +3777,23 @@ init()
   height: 40px;
   border: none;
   border-radius: 8px;
-  background: transparent;
-  color: #3a3a3a;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
   transition: background 0.15s ease, color 0.15s ease;
 
   &:hover,
   &.active {
-    background: rgba(0, 0, 0, 0.06);
-    color: #111;
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
   }
 
   &.is-downloading {
-    color: var(--el-color-primary);
+    color: #fff;
     cursor: wait;
   }
 
@@ -3524,6 +3803,17 @@ init()
 
   .is-loading {
     animation: media-download-spin 0.8s linear infinite;
+  }
+}
+
+.media-actions.on-dark .media-action-btn {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+
+  &:hover,
+  &.active {
+    background: rgba(0, 0, 0, 0.72);
+    color: #fff;
   }
 }
 
@@ -3591,6 +3881,7 @@ init()
 }
 
 .media-image-layer {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3618,6 +3909,28 @@ init()
     max-width: min(92vw, 2400px);
     max-height: min(86vh, 1600px);
   }
+}
+
+/* 缩略预览垫底；原图未到前可见，到了由高清层盖住 */
+.media-image.media-image-preview {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 0;
+  filter: saturate(0.98);
+}
+
+.media-image.is-hires {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.media-image.is-hires.is-hires-ready {
+  opacity: 1;
 }
 
 /* 有片边时略收一点，给齿孔留空间；背景仍为白底 */

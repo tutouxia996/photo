@@ -2,7 +2,7 @@
  * 缩略图胶片合成队列：限制并发，避免一屏几十张同时 renderFilmStrip 卡死主线程。
  */
 
-const MAX_CONCURRENT = 2
+const MAX_CONCURRENT = 3
 const queue = []
 let active = 0
 
