@@ -204,16 +204,29 @@
       >冀公网安备13082302000140号</a>
     </footer>
 
-    <!-- 与相册详情一致的白底全屏预览 -->
+    <!-- 与相册详情一致：胶片框 + 反转片换片 + 音效 -->
     <teleport to="body">
       <div v-if="viewerOpen && currentMedia" class="media-viewer" @keydown.stop>
-        <div class="media-stage">
+        <div
+          class="media-stage"
+          :class="[
+            `proj-phase-${slidePhase}`,
+            slideDir > 0 ? 'dir-next' : 'dir-prev'
+          ]"
+        >
+          <div class="projector-shutter" aria-hidden="true">
+            <span class="shutter-blade top" />
+            <span class="shutter-blade bottom" />
+          </div>
+          <div class="projector-flash" aria-hidden="true" />
+          <div class="projector-gate-frame" aria-hidden="true" />
+
           <button
             v-if="viewerIndex > 0"
             type="button"
             class="media-nav prev"
             title="上一张"
-            @click.stop="shiftMedia(-1)"
+            @click.stop.prevent="onNavClick(-1, $event)"
           >
             <el-icon :size="22"><ArrowLeft /></el-icon>
           </button>
@@ -222,41 +235,141 @@
             type="button"
             class="media-nav next"
             title="下一张"
-            @click.stop="shiftMedia(1)"
+            @click.stop.prevent="onNavClick(1, $event)"
           >
             <el-icon :size="22"><ArrowRight /></el-icon>
           </button>
 
+          <div class="slide-viewport">
+            <Transition name="slide-gate" mode="out-in">
+              <div
+                v-if="currentMedia"
+                :key="currentMedia.photoId"
+                class="slide-pane"
+              >
+                <div
+                  v-if="isPanoViewing"
+                  class="media-pano-wrap"
+                  @click.stop
+                >
+                  <PhotoSphereViewer :src="originalSrc(currentMedia)" />
+                </div>
+                <div
+                  v-else-if="currentMedia.fileType !== 2"
+                  class="media-canvas"
+                >
+                  <div class="media-image-layer">
+                    <FilmFrame
+                      :photo="currentMedia"
+                      mode="viewer"
+                      :show-border="filmBorderEnabled"
+                      :show-info="filmInfoEnabled"
+                      :stock-id="filmStockId"
+                      :frame-no="viewerIndex + 1"
+                    >
+                      <img
+                        v-if="thumbSrc(currentMedia)"
+                        class="media-image media-image-preview"
+                        :src="thumbSrc(currentMedia)"
+                        alt=""
+                        draggable="false"
+                        decoding="async"
+                        aria-hidden="true"
+                      />
+                      <img
+                        class="media-image is-hires"
+                        :class="{ 'is-hires-ready': viewerHiresReady }"
+                        :src="originalSrc(currentMedia)"
+                        :alt="currentMedia.fileName || ''"
+                        draggable="false"
+                        decoding="async"
+                        @load="viewerHiresReady = true"
+                      />
+                    </FilmFrame>
+                  </div>
+                </div>
+                <div v-else class="media-video-wrap" :class="{ 'film-video': viewerFilmOn }">
+                  <FilmFrame
+                    v-if="viewerFilmOn"
+                    :photo="currentMedia"
+                    mode="viewer"
+                    live
+                    :show-border="filmBorderEnabled"
+                    :show-info="filmInfoEnabled"
+                    :stock-id="filmStockId"
+                    :frame-no="viewerIndex + 1"
+                  >
+                    <video
+                      :key="'v-' + currentMedia.photoId"
+                      class="media-video"
+                      :src="originalSrc(currentMedia)"
+                      controls
+                      autoplay
+                      playsinline
+                      @click.stop
+                    />
+                  </FilmFrame>
+                  <video
+                    v-else
+                    :key="'v-' + currentMedia.photoId"
+                    class="media-video"
+                    :src="originalSrc(currentMedia)"
+                    controls
+                    autoplay
+                    playsinline
+                    @click.stop
+                  />
+                </div>
+              </div>
+            </Transition>
+          </div>
+
           <div
-            v-if="isPanoViewing"
-            class="media-pano-wrap"
+            v-if="currentMedia && currentMedia.fileType !== 2 && !isPanoViewing"
+            class="media-toolbar"
             @click.stop
           >
-            <PhotoSphereViewer :src="originalSrc(currentMedia)" :key="currentMedia.photoId" />
-          </div>
-          <div
-            v-else-if="currentMedia.fileType !== 2"
-            class="media-canvas"
-          >
-            <div class="media-image-layer">
-              <img
-                class="media-image"
-                :src="originalSrc(currentMedia)"
-                :alt="currentMedia.fileName || ''"
-                draggable="false"
-                decoding="async"
-              />
-            </div>
-          </div>
-          <div v-else class="media-video-wrap">
-            <video
-              :key="'v-' + currentMedia.photoId"
-              class="media-video"
-              :src="originalSrc(currentMedia)"
-              controls
-              autoplay
-              playsinline
-            />
+            <button
+              type="button"
+              class="media-tool-btn"
+              :class="{ active: filmBorderEnabled }"
+              title="胶片边框"
+              @click="toggleFilmBorder"
+            >
+              <el-icon :size="18"><Ticket /></el-icon>
+            </button>
+            <button
+              type="button"
+              class="media-tool-btn"
+              :class="{ active: filmInfoEnabled }"
+              title="日期地点信息"
+              @click="toggleFilmInfo"
+            >
+              <el-icon :size="18"><Calendar /></el-icon>
+            </button>
+            <el-dropdown
+              v-if="filmBorderEnabled"
+              trigger="click"
+              teleported
+              :popper-options="{ strategy: 'fixed' }"
+              popper-class="above-media-film-stock"
+              @command="handleFilmStock"
+            >
+              <button type="button" class="media-tool-btn media-tool-stock" :title="filmStockLabel">
+                <span>{{ filmStockShort }}</span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="s in filmStockOptions"
+                    :key="s.id"
+                    :command="s.id"
+                  >
+                    {{ s.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
 
           <div class="media-index">
@@ -295,16 +408,19 @@
 </template>
 
 <script setup name="ShareAlbumView">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { isExternal } from '@/utils/validate'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
+import FilmFrame from '@/components/FilmFrame/index.vue'
 import {
   overlaysForMapDisplay,
   TRAVEL_MODES,
   travelModeIconSvg
 } from '@/utils/photoMapCluster'
+import { getStockPreset, presetKey, STOCK_PRESETS } from '@/utils/spektra/stocks'
+import { unlockProjectorSound, playProjectorSound } from '@/utils/projectorSound'
 import {
   resolveShare,
   listSharePhotos,
@@ -312,6 +428,36 @@ import {
   listShareTracks,
   getShareTrackPoints
 } from '@/api/photos/share'
+
+const FILM_BORDER_KEY = 'album.filmBorder'
+const FILM_INFO_KEY = 'album.filmInfo'
+const FILM_STOCK_KEY = 'album.filmStockPreset'
+
+function readFilmFlag(key, fallback = true) {
+  try {
+    const v = localStorage.getItem(key)
+    if (v == null) return fallback
+    return v === '1' || v === 'true'
+  } catch (_) {
+    return fallback
+  }
+}
+
+function writeFilmFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0')
+  } catch (_) { /* ignore */ }
+}
+
+function readFilmStock() {
+  try {
+    const v = localStorage.getItem(FILM_STOCK_KEY)
+    const p = getStockPreset(v || presetKey('kodak_portra_400', '135'))
+    return presetKey(p.id, p.formatId)
+  } catch (_) {
+    return presetKey('kodak_portra_400', '135')
+  }
+}
 
 const route = useRoute()
 
@@ -345,6 +491,25 @@ const metaOpen = ref(true)
 
 const viewerOpen = ref(false)
 const viewerIndex = ref(0)
+const viewerHiresReady = ref(false)
+const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, true))
+const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, true))
+const filmStockId = ref(readFilmStock())
+const filmStockOptions = STOCK_PRESETS.map(s => ({
+  id: presetKey(s.id, s.formatId),
+  label: s.label
+}))
+const filmStockLabel = computed(() => getStockPreset(filmStockId.value).label)
+const filmStockShort = computed(() => {
+  const label = filmStockLabel.value
+  return label.length > 10 ? label.slice(0, 9) + '…' : label
+})
+const viewerFilmOn = computed(() => filmBorderEnabled.value || filmInfoEnabled.value)
+/** 1 下一张 / -1 上一张；idle | close | dark | open */
+const slideDir = ref(1)
+const slidePhase = ref('idle')
+let shiftLockUntil = 0
+let phaseTimers = []
 
 const token = computed(() => String(route.params.token || '').trim())
 const currentMedia = computed(() => photos.value[viewerIndex.value] || null)
@@ -514,29 +679,89 @@ function originalSrc(item) {
   return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
 }
 
+function toggleFilmBorder() {
+  filmBorderEnabled.value = !filmBorderEnabled.value
+  writeFilmFlag(FILM_BORDER_KEY, filmBorderEnabled.value)
+}
+
+function toggleFilmInfo() {
+  filmInfoEnabled.value = !filmInfoEnabled.value
+  writeFilmFlag(FILM_INFO_KEY, filmInfoEnabled.value)
+}
+
+function handleFilmStock(id) {
+  filmStockId.value = id
+  try {
+    localStorage.setItem(FILM_STOCK_KEY, id)
+  } catch (_) { /* ignore */ }
+}
+
+function clearPhaseTimers() {
+  phaseTimers.forEach((t) => clearTimeout(t))
+  phaseTimers = []
+}
+
+function after(ms) {
+  return new Promise((resolve) => {
+    phaseTimers.push(window.setTimeout(resolve, ms))
+  })
+}
+
 function openViewer(index) {
+  unlockProjectorSound()
   viewerIndex.value = index
+  viewerHiresReady.value = false
+  slidePhase.value = 'idle'
   viewerOpen.value = true
   ensureAllPhotosLoaded()
 }
 
 function closeViewer() {
+  clearPhaseTimers()
+  slidePhase.value = 'idle'
   viewerOpen.value = false
+  viewerHiresReady.value = false
 }
 
 async function shiftMedia(delta) {
-  const next = viewerIndex.value + delta
+  const now = Date.now()
+  if (now < shiftLockUntil) return
+
+  let next = viewerIndex.value + delta
   if (next < 0) return
-  if (next < photos.value.length) {
-    viewerIndex.value = next
-    return
-  }
-  if (delta > 0 && hasMore.value) {
+  if (next >= photos.value.length) {
+    if (!(delta > 0 && hasMore.value)) return
     await loadPhotos(false)
-    if (viewerIndex.value < photos.value.length - 1) {
-      viewerIndex.value += 1
-    }
+    next = viewerIndex.value + delta
+    if (next < 0 || next >= photos.value.length) return
   }
+
+  unlockProjectorSound()
+  slideDir.value = delta > 0 ? 1 : -1
+  shiftLockUntil = now + 520
+  clearPhaseTimers()
+
+  slidePhase.value = 'close'
+  playProjectorSound('close')
+  await after(90)
+
+  viewerIndex.value = next
+  viewerHiresReady.value = false
+  slidePhase.value = 'dark'
+  playProjectorSound('drop')
+  await nextTick()
+  await after(120)
+
+  slidePhase.value = 'open'
+  playProjectorSound('open')
+  await after(280)
+  slidePhase.value = 'idle'
+}
+
+function onNavClick(step, e) {
+  e?.currentTarget?.blur?.()
+  unlockProjectorSound()
+  shiftMedia(step)
 }
 
 function onViewerKeydown(e) {
@@ -779,6 +1004,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearPhaseTimers()
   window.removeEventListener('scroll', onWindowScroll)
   window.removeEventListener('keydown', onViewerKeydown)
 })
@@ -1284,6 +1510,147 @@ watch(
   position: absolute;
   inset: 0;
   z-index: 1;
+  overflow: hidden;
+}
+
+.projector-shutter {
+  position: absolute;
+  inset: 0;
+  z-index: 14;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.shutter-blade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 52%;
+  background: #050505;
+  transition: transform 0.13s steps(2, end);
+  will-change: transform;
+}
+
+.shutter-blade.top {
+  top: 0;
+  transform: translateY(-102%);
+  box-shadow: 0 2px 0 rgba(255, 255, 255, 0.06);
+}
+
+.shutter-blade.bottom {
+  bottom: 0;
+  transform: translateY(102%);
+  box-shadow: 0 -2px 0 rgba(255, 255, 255, 0.06);
+}
+
+.media-stage.proj-phase-close .shutter-blade.top,
+.media-stage.proj-phase-dark .shutter-blade.top {
+  transform: translateY(0);
+}
+
+.media-stage.proj-phase-close .shutter-blade.bottom,
+.media-stage.proj-phase-dark .shutter-blade.bottom {
+  transform: translateY(0);
+}
+
+.media-stage.proj-phase-open .shutter-blade.top {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform: translateY(-102%);
+}
+
+.media-stage.proj-phase-open .shutter-blade.bottom {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform: translateY(102%);
+}
+
+.projector-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(255, 236, 200, 0.78) 0%, rgba(255, 248, 230, 0.22) 42%, transparent 70%);
+  mix-blend-mode: screen;
+}
+
+.media-stage.proj-phase-open .projector-flash {
+  animation: share-slide-lamp-on 0.42s ease-out;
+}
+
+@keyframes share-slide-lamp-on {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  38% { opacity: 0.45; }
+  100% { opacity: 0; }
+}
+
+.projector-gate-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 2px rgba(20, 16, 12, 0.55),
+    inset 0 0 80px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.2s ease;
+}
+
+.media-stage.proj-phase-close .projector-gate-frame,
+.media-stage.proj-phase-dark .projector-gate-frame,
+.media-stage.proj-phase-open .projector-gate-frame {
+  opacity: 1;
+}
+
+.slide-viewport {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #050505;
+  overflow: hidden;
+}
+
+.slide-pane {
+  position: absolute;
+  inset: 0;
+}
+
+.slide-gate-leave-active {
+  transition: opacity 0.1s linear, filter 0.1s linear;
+}
+
+.slide-gate-leave-to {
+  opacity: 0;
+  filter: brightness(0);
+}
+
+.slide-gate-enter-active {
+  transition:
+    transform 0.32s cubic-bezier(0.18, 0.9, 0.22, 1.12),
+    opacity 0.22s ease 0.06s,
+    filter 0.36s ease 0.08s;
+}
+
+.slide-gate-enter-from {
+  opacity: 0.25;
+  transform: translateY(-26%);
+  filter: brightness(0.15) contrast(1.05);
+}
+
+.dir-prev .slide-gate-enter-from {
+  transform: translateY(26%);
+}
+
+.slide-gate-enter-to {
+  opacity: 1;
+  transform: translateY(0);
+  filter: brightness(1) contrast(1);
+}
+
+.slide-gate-leave-from,
+.slide-gate-enter-to {
+  opacity: 1;
 }
 
 .media-close,
@@ -1293,19 +1660,19 @@ watch(
   height: 40px;
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.06);
-  color: #333;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 2;
+  z-index: 20;
   transition: background 0.15s ease;
 }
 
 .media-close:hover,
 .media-nav:hover {
-  background: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .media-close {
@@ -1313,6 +1680,12 @@ watch(
   top: 20px;
   left: 20px;
   z-index: 3200;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+.media-close:hover {
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .media-close.on-dark {
@@ -1379,6 +1752,52 @@ watch(
   background: rgba(0, 0, 0, 0.72);
 }
 
+.media-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(8px);
+}
+
+.media-tool-btn {
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.media-tool-btn:hover,
+.media-tool-btn.active {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.media-tool-stock {
+  max-width: 120px;
+  font-size: 12px;
+}
+
+.media-tool-stock span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .media-canvas {
   position: absolute;
   inset: 0;
@@ -1387,6 +1806,7 @@ watch(
   justify-content: center;
   overflow: hidden;
   z-index: 1;
+  background: #fff;
 }
 
 .media-pano-wrap {
@@ -1401,6 +1821,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
+  max-width: min(92vw, 1400px);
+  max-height: min(86vh, 900px);
 }
 
 .media-image {
@@ -1415,6 +1837,24 @@ watch(
   -webkit-user-drag: none;
 }
 
+.media-image-preview {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 1;
+  filter: blur(0.4px);
+}
+
+.media-image.is-hires {
+  position: relative;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.media-image.is-hires-ready {
+  opacity: 1;
+}
+
 .media-video-wrap {
   position: absolute;
   inset: 0;
@@ -1422,6 +1862,11 @@ watch(
   align-items: center;
   justify-content: center;
   z-index: 1;
+  background: #fff;
+}
+
+.media-video-wrap.film-video {
+  background: #fff;
 }
 
 .media-video {
@@ -1439,7 +1884,7 @@ watch(
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%);
-  z-index: 3;
+  z-index: 20;
   padding: 6px 14px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.45);

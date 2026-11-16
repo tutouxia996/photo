@@ -52,6 +52,10 @@ public class ResourcesConfig implements WebMvcConfigurer {
                 .resourceChain(true)
                 .addResolver(new EncodedResourceResolver())
                 .addResolver(new PathResourceResolver());
+        // 放映机音效等 public/sfx（若未打进 /assets）
+        registry.addResourceHandler("/sfx/**")
+                .addResourceLocations("classpath:/static/sfx/")
+                .setCacheControl(CacheControl.maxAge(30, TimeUnit.DAYS).cachePublic());
 
         // 相册缩略图/原文件静态直出（网格用 thumb，避免每张图走 Java media 接口）
         CacheControl albumCache = CacheControl.maxAge(7, TimeUnit.DAYS).cachePublic();
