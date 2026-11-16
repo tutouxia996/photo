@@ -7,6 +7,7 @@
       {
         'is-live': isLive,
         'is-canvas': useCanvas,
+        'is-canvas-ready': useCanvas && canvasReady,
         'is-passthrough': !chromeOn,
         'has-border': showBorder,
         'has-info': showInfo
@@ -16,7 +17,7 @@
   >
     <!-- 图片：canvas 合成（可随缩放一起变） -->
     <canvas
-      v-show="useCanvas"
+      v-show="useCanvas && canvasReady"
       ref="canvasRef"
       class="film-canvas"
       :class="{ 'is-thumb': mode === 'thumb' }"
@@ -76,12 +77,12 @@
       </div>
     </div>
 
-    <!-- 无片边 / 图片 canvas 的源 slot -->
+    <!-- 无片边 / 图片 canvas 的源 slot；缩略图在合成完成前先显示原图，避免黑块 -->
     <div
       v-if="!isLive"
       ref="slotRef"
       class="film-slot"
-      :class="{ 'is-source-only': useCanvas }"
+      :class="{ 'is-source-only': useCanvas && canvasReady }"
     >
       <slot />
     </div>
@@ -97,6 +98,7 @@ import { formatFilmDate, formatFilmLocation } from '@/utils/filmCaption'
 import { COLORS, getFormat, PERF_135 } from '@/utils/spektra/formats'
 import { renderFilmStrip } from '@/utils/spektra/renderStrip'
 import { getEdgeLook, getEdgeText, getStockPreset, inkCss } from '@/utils/spektra/stocks'
+import { enqueueThumbPaint } from '@/utils/spektra/thumbQueue'
 
 const props = defineProps({
   photo: { type: Object, default: null },
@@ -116,10 +118,14 @@ const canvasRef = ref(null)
 const slotRef = ref(null)
 const gateRef = ref(null)
 const gateH = ref(0)
+/** 缩略图：合成完成前先露原图，避免整屏黑块 */
+const canvasReady = ref(false)
+const inView = ref(props.mode !== 'thumb')
 
 const chromeOn = computed(() => props.showBorder || props.showInfo)
 const isLive = computed(() => !!props.live)
 const useCanvas = computed(() => chromeOn.value && !isLive.value)
+const isThumb = computed(() => props.mode === 'thumb')
 
 const preset = computed(() => getStockPreset(props.stockId))
 const fmt = computed(() => getFormat(preset.value.formatId))
@@ -185,8 +191,10 @@ const liveCssVars = computed(() => {
 
 let mo = null
 let gateRo = null
+let io = null
 let boundMedia = null
 let renderToken = 0
+let thumbJob = null
 
 function observeGate() {
   if (gateRo) {
@@ -201,24 +209,42 @@ function observeGate() {
   gateRo.observe(gateRef.value)
 }
 
+function observeView() {
+  if (io) {
+    io.disconnect()
+    io = null
+  }
+  if (!isThumb.value || !rootRef.value || typeof IntersectionObserver === 'undefined') {
+    inView.value = true
+    return
+  }
+  io = new IntersectionObserver(
+    (entries) => {
+      const hit = entries.some((e) => e.isIntersecting)
+      inView.value = hit
+      if (hit) schedulePaint()
+    },
+    { root: null, rootMargin: '120px 0px', threshold: 0.01 }
+  )
+  io.observe(rootRef.value)
+}
+
 function mediaEl() {
   return slotRef.value?.querySelector?.('img, video') || null
 }
 
-async function paint() {
-  if (isLive.value) {
-    emit('rendered', true)
-    return
+function cancelThumbJob() {
+  if (thumbJob) {
+    thumbJob.cancel()
+    thumbJob = null
   }
-  if (!useCanvas.value) {
-    emit('rendered', false)
-    return
-  }
+}
+
+async function paintNow(token) {
   const canvas = canvasRef.value
   const media = mediaEl()
-  if (!canvas || !media) return
+  if (!canvas || !media) return false
 
-  const token = ++renderToken
   const ready = () => {
     if (media.tagName === 'VIDEO') return media.readyState >= 2 && media.videoWidth > 0
     return media.complete && media.naturalWidth > 0
@@ -233,83 +259,121 @@ async function paint() {
       }
       media.addEventListener('load', done)
       media.addEventListener('loadeddata', done)
-      setTimeout(done, 2000)
+      setTimeout(done, 2500)
     })
   }
-  if (token !== renderToken || !ready()) return
+  if (token !== renderToken || !ready()) return false
 
-  const maxLongEdge =
-    props.mode === 'thumb'
-      ? Math.min(640, Math.max(media.naturalWidth || 320, 240))
-      : Math.min(1800, Math.max(media.naturalWidth || 1200, 900))
+  // 缩略图用小边长，避免一屏几十张高分辨率 SpektraLab 合成
+  const maxLongEdge = isThumb.value
+    ? Math.min(280, Math.max(media.naturalWidth || 200, 160))
+    : Math.min(1800, Math.max(media.naturalWidth || 1200, 900))
 
   const result = renderFilmStrip(canvas, media, {
     stockId: preset.value.id,
     formatId: preset.value.formatId,
     frameNo: frameNum.value,
     showBorder: props.showBorder,
-    showInfo: props.showInfo,
-    dateText: dateBackText.value,
-    placeText: placeBackText.value,
+    // 网格缩略图关闭日期字，显著减负；全屏 viewer 仍画
+    showInfo: isThumb.value ? false : props.showInfo,
+    dateText: isThumb.value ? '' : dateBackText.value,
+    placeText: isThumb.value ? '' : placeBackText.value,
     maxLongEdge,
     holesWhite: true
   })
 
-  if (result && props.mode === 'thumb') {
+  if (!result || token !== renderToken) return false
+
+  if (isThumb.value) {
     canvas.style.width = '100%'
     canvas.style.height = '100%'
     canvas.style.objectFit = 'cover'
-  } else if (result) {
+  } else {
     canvas.style.width = 'auto'
     canvas.style.height = 'auto'
     canvas.style.maxWidth = 'min(88vw, 1120px)'
     canvas.style.maxHeight = 'min(74vh, 740px)'
   }
+  canvasReady.value = true
   emit('rendered', true)
+  return true
+}
+
+function schedulePaint() {
+  if (isLive.value) {
+    emit('rendered', true)
+    return
+  }
+  if (!useCanvas.value) {
+    canvasReady.value = false
+    emit('rendered', false)
+    return
+  }
+  // 缩略图不在视口内：保持原图，不排队合成
+  if (isThumb.value && !inView.value) return
+
+  const token = ++renderToken
+  cancelThumbJob()
+
+  const run = () => paintNow(token)
+
+  if (isThumb.value) {
+    thumbJob = enqueueThumbPaint(run)
+    thumbJob.promise.catch(() => {})
+  } else {
+    run()
+  }
 }
 
 function bindMedia() {
   const media = mediaEl()
   if (boundMedia && boundMedia !== media) {
-    boundMedia.removeEventListener('load', paint)
-    boundMedia.removeEventListener('loadeddata', paint)
+    boundMedia.removeEventListener('load', schedulePaint)
+    boundMedia.removeEventListener('loadeddata', schedulePaint)
   }
   boundMedia = media
   if (!media) return
-  media.addEventListener('load', paint)
-  media.addEventListener('loadeddata', paint)
-  paint()
+  media.addEventListener('load', schedulePaint)
+  media.addEventListener('loadeddata', schedulePaint)
+  schedulePaint()
 }
 
 onMounted(async () => {
   await nextTick()
+  observeView()
   bindMedia()
   observeGate()
-  if (rootRef.value) {
+  // viewer 才盯 src 变化；缩略图靠虚拟列表 key 重建即可，避免 MO 风暴
+  if (!isThumb.value && rootRef.value) {
     mo = new MutationObserver(() => bindMedia())
     mo.observe(rootRef.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] })
   }
 })
 
 onBeforeUnmount(() => {
+  cancelThumbJob()
+  renderToken += 1
   if (boundMedia) {
-    boundMedia.removeEventListener('load', paint)
-    boundMedia.removeEventListener('loadeddata', paint)
+    boundMedia.removeEventListener('load', schedulePaint)
+    boundMedia.removeEventListener('loadeddata', schedulePaint)
   }
   if (mo) mo.disconnect()
   if (gateRo) gateRo.disconnect()
+  if (io) io.disconnect()
 })
 
 watch(
   () => [props.photo?.photoId, props.stockId, props.showBorder, props.showInfo, props.frameNo, props.mode, props.live],
   async () => {
+    canvasReady.value = false
     await nextTick()
     observeGate()
-    paint()
+    observeView()
+    bindMedia()
   }
 )
 
-defineExpose({ repaint: paint })
+defineExpose({ repaint: schedulePaint })
 </script>
 
 <style scoped lang="scss">
@@ -365,7 +429,23 @@ defineExpose({ repaint: paint })
   pointer-events: none;
 }
 
-.film-frame.mode-thumb.is-canvas .film-slot {
+/* 缩略图：合成完成前显示原图；完成后才藏源图、露 canvas */
+.film-frame.mode-thumb .film-slot {
+  width: 100%;
+  height: 100%;
+}
+
+.film-frame.mode-thumb .film-slot :deep(img),
+.film-frame.mode-thumb .film-slot :deep(video),
+.film-frame.mode-thumb .film-slot :deep(.thumb-placeholder) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #111;
+}
+
+.film-frame.mode-thumb.is-canvas-ready .film-slot {
   position: absolute;
   left: -99999px;
   width: 2px;
