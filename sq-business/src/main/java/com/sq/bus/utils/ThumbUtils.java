@@ -35,6 +35,53 @@ public final class ThumbUtils {
     }
 
     /**
+     * 由小图文件推导中图路径：s_xxx → m_xxx；其它文件名则加 m_ 前缀。
+     */
+    public static File mediumSibling(File smallThumb) {
+        if (smallThumb == null) {
+            return null;
+        }
+        String name = smallThumb.getName();
+        File parent = smallThumb.getParentFile();
+        if (name.startsWith("s_")) {
+            return new File(parent, "m_" + name.substring(2));
+        }
+        if (name.startsWith("m_")) {
+            return smallThumb;
+        }
+        return new File(parent, "m_" + name);
+    }
+
+    /**
+     * 生成小图 + 中图（浏览档）。中图失败不抛错，小图成功即可。
+     *
+     * @return 小图是否生成成功
+     */
+    public static boolean createImageThumbs(File source, File smallTarget, int smallWidth,
+                                           File mediumTarget, int mediumWidth) {
+        if (source == null || !source.exists() || smallTarget == null || smallWidth <= 0) {
+            return false;
+        }
+        try {
+            createThumbnail(source, smallTarget, smallWidth);
+        } catch (IOException e) {
+            log.warn("生成小图失败 file={} err={}", source.getAbsolutePath(), e.toString());
+            return false;
+        }
+        if (!smallTarget.exists() || smallTarget.length() <= 0) {
+            return false;
+        }
+        if (mediumTarget != null && mediumWidth > smallWidth) {
+            try {
+                createThumbnail(source, mediumTarget, mediumWidth);
+            } catch (IOException e) {
+                log.warn("生成中图失败 file={} err={}", source.getAbsolutePath(), e.toString());
+            }
+        }
+        return true;
+    }
+
+    /**
      * 读取视频时长（秒），依赖本机 ffprobe；失败返回 null
      */
     public static Integer getVideoDurationSeconds(File source) {

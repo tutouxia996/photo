@@ -110,8 +110,20 @@ const useAliyunSyncStore = defineStore('aliyunSync', {
           const st = Number(this.progress.status)
           const rem = Number(this.progress.remaining) || 0
           const live = this.progress.running || st === 0 || this.pendingStart
-          const ms = live ? 800 : ((st === 3 || rem > 0) ? 2500 : 15000)
-          this.timer = setTimeout(tick, ms)
+          if (live) {
+            this.timer = setTimeout(tick, 800)
+            return
+          }
+          if (st === 3 || rem > 0) {
+            this.timer = setTimeout(tick, 2500)
+            return
+          }
+          // 刚结束短暂再刷几次看完成态，随后彻底停轮询（不再 15s 空转）
+          if (this.finishedAt && Date.now() - this.finishedAt < 12000) {
+            this.timer = setTimeout(tick, 2000)
+            return
+          }
+          this.stopPolling()
         })
       }
       this.timer = setTimeout(tick, 800)

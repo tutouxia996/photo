@@ -74,17 +74,18 @@
         </div>
       </div>
 
-      <!-- 单相册 / 进入某一相册后的文件网格 -->
-      <div v-show="viewMode === 'grid' && !showingAlbumList" class="share-grid-wrap">
-        <div class="share-grid">
+      <!-- 单相册 / 进入某一相册后的文件网格（虚拟窗口，避免一次堆 DOM） -->
+      <div v-show="viewMode === 'grid' && !showingAlbumList" ref="shareGridWrapRef" class="share-grid-wrap">
+        <div class="share-grid-phantom" :style="{ height: shareGridTotalHeight + 'px' }" aria-hidden="true" />
+        <div class="share-grid" :style="shareGridWindowStyle">
           <button
-            v-for="(item, index) in photos"
+            v-for="(item, i) in shareVisiblePhotos"
             :key="item.photoId"
             type="button"
             class="share-card"
-            @click="openViewer(index)"
+            @click="openViewer(shareVisibleSlice.start + i)"
           >
-            <img :src="thumbSrc(item)" :alt="item.fileName || ''" loading="lazy" />
+            <img :src="thumbSrc(item)" :alt="item.fileName || ''" loading="lazy" decoding="async" />
             <span v-if="item.fileType === 2" class="video-badge">▶</span>
             <span v-else-if="isPanoPhoto(item)" class="pano-badge" title="360 全景">360</span>
           </button>
@@ -279,7 +280,7 @@
                       <img
                         class="media-image is-hires"
                         :class="{ 'is-hires-ready': viewerHiresReady }"
-                        :src="originalSrc(currentMedia)"
+                        :src="viewerSrc(currentMedia)"
                         :alt="currentMedia.fileName || ''"
                         draggable="false"
                         decoding="async"
@@ -302,7 +303,7 @@
                     <video
                       :key="'v-' + currentMedia.photoId"
                       class="media-video"
-                      :src="originalSrc(currentMedia)"
+                      :src="shareVideoSrc(currentMedia)"
                       controls
                       autoplay
                       playsinline
@@ -313,7 +314,7 @@
                     v-else
                     :key="'v-' + currentMedia.photoId"
                     class="media-video"
-                    :src="originalSrc(currentMedia)"
+                    :src="shareVideoSrc(currentMedia)"
                     controls
                     autoplay
                     playsinline
@@ -428,6 +429,8 @@ import {
   listShareTracks,
   getShareTrackPoints
 } from '@/api/photos/share'
+import { photoMediumSrc, photoOriginalSrc } from '@/utils/photoMedia'
+import { videoPlaySrc } from '@/utils/videoProxy'
 
 const FILM_BORDER_KEY = 'album.filmBorder'
 const FILM_INFO_KEY = 'album.filmInfo'
@@ -472,8 +475,18 @@ const shareTrack = ref(false)
 const photos = ref([])
 const total = ref(0)
 const pageNum = ref(1)
-const pageSize = 200
+const pageSize = 60
 const hasMore = ref(true)
+
+/** 分享网格虚拟窗口（列宽随容器变化，行高=列宽，正方形卡片） */
+const SHARE_MIN_CELL = 160
+const SHARE_GAP = 8
+const SHARE_OVERSCAN = 2
+const shareGridWrapRef = ref(null)
+const shareGridCols = ref(4)
+const shareCellSize = ref(160)
+const shareScrollTop = ref(0)
+const shareViewHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 800)
 const viewMode = ref('grid')
 const mapReady = ref(false)
 /** 地图加载时对应的 albumId（null=全部） */
@@ -492,8 +505,8 @@ const metaOpen = ref(true)
 const viewerOpen = ref(false)
 const viewerIndex = ref(0)
 const viewerHiresReady = ref(false)
-const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, true))
-const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, true))
+const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, false))
+const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, false))
 const filmStockId = ref(readFilmStock())
 const filmStockOptions = STOCK_PRESETS.map(s => ({
   id: presetKey(s.id, s.formatId),
@@ -673,10 +686,87 @@ function albumSubtitle(item) {
   return formatCnDate(item?.startTime)
 }
 
-/** 列表缩略图用；预览必须走原图/原视频 */
 function originalSrc(item) {
   if (!item?.photoId) return ''
-  return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
+  return photoOriginalSrc(item, resolveUrl)
+}
+
+function mediumSrc(item) {
+  if (!item?.photoId) return ''
+  return photoMediumSrc(item, resolveUrl)
+}
+
+/** 分享查看器：图片用中图；全景仍用原图 */
+function viewerSrc(item) {
+  if (!item) return ''
+  if (isPanoPhoto(item)) return originalSrc(item)
+  return mediumSrc(item)
+}
+
+/** 视频优先 480p 代理（已生成则省带宽；未就绪后端回退原片） */
+function shareVideoSrc(item) {
+  if (!item?.photoId) return ''
+  return videoPlaySrc(item.photoId, '480p', 30)
+}
+
+const shareRowStride = computed(() => shareCellSize.value + SHARE_GAP)
+const shareTotalRows = computed(() => {
+  const cols = shareGridCols.value
+  if (!cols) return 0
+  return Math.ceil(photos.value.length / cols)
+})
+const shareGridTotalHeight = computed(() => {
+  const rows = shareTotalRows.value
+  if (!rows) return 0
+  return rows * shareCellSize.value + Math.max(0, rows - 1) * SHARE_GAP
+})
+const shareVisibleSlice = computed(() => {
+  const cols = shareGridCols.value
+  const stride = shareRowStride.value
+  const len = photos.value.length
+  if (!len || stride <= 0 || !cols) return { start: 0, end: 0, offsetY: 0 }
+  const startRow = Math.max(0, Math.floor(shareScrollTop.value / stride) - SHARE_OVERSCAN)
+  const endRow = Math.min(
+    shareTotalRows.value,
+    Math.ceil((shareScrollTop.value + shareViewHeight.value) / stride) + SHARE_OVERSCAN
+  )
+  return {
+    start: startRow * cols,
+    end: Math.min(len, endRow * cols),
+    offsetY: startRow * stride
+  }
+})
+const shareVisiblePhotos = computed(() =>
+  photos.value.slice(shareVisibleSlice.value.start, shareVisibleSlice.value.end)
+)
+const shareGridWindowStyle = computed(() => ({
+  transform: `translateY(${shareVisibleSlice.value.offsetY}px)`,
+  gridTemplateColumns: `repeat(${shareGridCols.value}, minmax(0, 1fr))`
+}))
+
+function updateShareGridMetrics() {
+  const el = shareGridWrapRef.value
+  const width = el?.clientWidth || window.innerWidth || 1200
+  const pad = 24
+  const usable = Math.max(SHARE_MIN_CELL, width - pad)
+  const cols = Math.max(2, Math.floor((usable + SHARE_GAP) / (SHARE_MIN_CELL + SHARE_GAP)))
+  shareGridCols.value = cols
+  shareCellSize.value = Math.max(110, (usable - (cols - 1) * SHARE_GAP) / cols)
+  shareViewHeight.value = window.innerHeight || 800
+  const wrapTop = el ? el.getBoundingClientRect().top + window.scrollY : 0
+  shareScrollTop.value = Math.max(0, window.scrollY - wrapTop)
+}
+
+function preloadShareNeighbors(centerIdx) {
+  ;[centerIdx - 1, centerIdx + 1].forEach((i) => {
+    const item = photos.value[i]
+    if (!item || item.fileType === 2 || isPanoPhoto(item)) return
+    const url = mediumSrc(item)
+    if (!url) return
+    const img = new Image()
+    img.decoding = 'async'
+    img.src = url
+  })
 }
 
 function toggleFilmBorder() {
@@ -713,7 +803,11 @@ function openViewer(index) {
   viewerHiresReady.value = false
   slidePhase.value = 'idle'
   viewerOpen.value = true
-  ensureAllPhotosLoaded()
+  preloadShareNeighbors(index)
+  // 靠近已加载末尾时预拉下一页，便于左右翻阅，不再全量灌库
+  if (index >= photos.value.length - 8 && hasMore.value) {
+    loadPhotos(false)
+  }
 }
 
 function closeViewer() {
@@ -749,6 +843,10 @@ async function shiftMedia(delta) {
   viewerHiresReady.value = false
   slidePhase.value = 'dark'
   playProjectorSound('drop')
+  preloadShareNeighbors(next)
+  if (next >= photos.value.length - 8 && hasMore.value) {
+    loadPhotos(false)
+  }
   await nextTick()
   await after(120)
 
@@ -799,7 +897,6 @@ async function loadPhotos(reset = false) {
     pageNum.value = 1
     photos.value = []
     hasMore.value = true
-    allLoadPromise = null
   }
   if (!hasMore.value || loadingMore.value) return
   const isFirst = pageNum.value === 1 && photos.value.length === 0
@@ -817,6 +914,7 @@ async function loadPhotos(reset = false) {
     hasMore.value = photos.value.length < total.value && rows.length > 0
     if (rows.length) pageNum.value += 1
     else hasMore.value = false
+    nextTick(() => updateShareGridMetrics())
   } finally {
     loadingMore.value = false
   }
@@ -831,7 +929,7 @@ async function openAlbum(item) {
   document.title = pageTitle.value + ' - 分享'
   loading.value = true
   try {
-    await loadAllPhotos()
+    await loadPhotos(true)
   } catch (e) {
     errorMsg.value = e?.message || '加载失败'
   } finally {
@@ -852,29 +950,6 @@ function backToAlbumList() {
   document.title = pageTitle.value + ' - 分享'
 }
 
-/** 自动把剩余页全部拉完，避免只看到第一页 */
-let allLoadPromise = null
-async function ensureAllPhotosLoaded() {
-  if (!hasMore.value) return
-  if (allLoadPromise) return allLoadPromise
-  allLoadPromise = (async () => {
-    let guard = 0
-    while (hasMore.value && guard < 50) {
-      guard += 1
-      await loadPhotos(false)
-    }
-  })().finally(() => {
-    allLoadPromise = null
-  })
-  return allLoadPromise
-}
-
-/** 首次进入：先拉第一页，再把剩余页全部加载完 */
-async function loadAllPhotos() {
-  await loadPhotos(true)
-  await ensureAllPhotosLoaded()
-}
-
 function loadMore() {
   if (showingAlbumList.value) return
   if (loading.value || loadingMore.value || !hasMore.value || viewMode.value !== 'grid') return
@@ -883,6 +958,9 @@ function loadMore() {
 
 function onWindowScroll() {
   if (showingAlbumList.value) return
+  if (viewMode.value === 'grid') {
+    updateShareGridMetrics()
+  }
   if (viewMode.value !== 'grid' || !hasMore.value || loading.value || loadingMore.value) return
   const remain = document.documentElement.scrollHeight - window.scrollY - window.innerHeight
   if (remain < 480) loadMore()
@@ -979,15 +1057,24 @@ async function bootstrapShare() {
   photos.value = []
   total.value = 0
   await loadMeta()
-  // 多相册列表页不预拉全部文件；单相册 / 已进入相册才加载
+  // 多相册列表页不预拉文件；单相册 / 已进入相册只拉第一页，其余滚动加载
   if (!showingAlbumList.value) {
-    await loadAllPhotos()
+    await loadPhotos(true)
   }
 }
 
+let shareResizeObserver = null
+
 onMounted(async () => {
   window.addEventListener('scroll', onWindowScroll, { passive: true })
+  window.addEventListener('resize', updateShareGridMetrics, { passive: true })
   window.addEventListener('keydown', onViewerKeydown)
+  if (typeof ResizeObserver !== 'undefined') {
+    shareResizeObserver = new ResizeObserver(() => updateShareGridMetrics())
+    nextTick(() => {
+      if (shareGridWrapRef.value) shareResizeObserver.observe(shareGridWrapRef.value)
+    })
+  }
   if (!token.value) {
     errorMsg.value = '无效的分享链接'
     loading.value = false
@@ -996,6 +1083,7 @@ onMounted(async () => {
   loading.value = true
   try {
     await bootstrapShare()
+    nextTick(() => updateShareGridMetrics())
   } catch (e) {
     errorMsg.value = e?.message || '分享不存在或已失效'
   } finally {
@@ -1006,7 +1094,10 @@ onMounted(async () => {
 onUnmounted(() => {
   clearPhaseTimers()
   window.removeEventListener('scroll', onWindowScroll)
+  window.removeEventListener('resize', updateShareGridMetrics)
   window.removeEventListener('keydown', onViewerKeydown)
+  shareResizeObserver?.disconnect()
+  shareResizeObserver = null
 })
 
 watch(
@@ -1242,17 +1333,27 @@ watch(
 }
 
 .share-grid-wrap {
+  position: relative;
   flex: 1;
   width: 100%;
   padding: 12px 12px 28px;
   box-sizing: border-box;
 }
 
-.share-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 8px;
+.share-grid-phantom {
   width: 100%;
+  pointer-events: none;
+}
+
+.share-grid {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  display: grid;
+  gap: 8px;
+  width: calc(100% - 24px);
+  will-change: transform;
 }
 
 .share-card {
@@ -1305,6 +1406,8 @@ watch(
 }
 
 .share-load-more {
+  position: relative;
+  z-index: 1;
   display: flex;
   justify-content: center;
   padding: 16px 0 8px;
@@ -1915,7 +2018,10 @@ watch(
   }
 
   .share-grid {
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    left: 8px;
+    right: 8px;
+    top: 8px;
+    width: calc(100% - 16px);
     gap: 6px;
   }
 

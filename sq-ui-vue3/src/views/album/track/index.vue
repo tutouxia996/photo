@@ -385,7 +385,7 @@
       modal-class="track-view-modal"
       destroy-on-close
       append-to-body
-      :z-index="1990"
+      :z-index="3000"
       @opened="onViewerOpened"
       @closed="stopViewerRectSync"
     >
@@ -909,15 +909,9 @@ function syncViewerRect() {
   const main = document.querySelector('.app-main')
   const modal = document.querySelector('.track-view-modal')
   if (!main || !modal) return
-  // 顶边贴标签栏底边，避免盖住「首页 / 轨迹」页签与右键菜单区域
-  const tags = document.querySelector('#tags-view-container')
-  const header = document.querySelector('.fixed-header')
+  // 顶边贴视口顶部，盖住导航+页签，避免「轨迹查看」上方露一条顶栏
   const mainRect = main.getBoundingClientRect()
-  const top = tags
-    ? Math.max(0, Math.ceil(tags.getBoundingClientRect().bottom))
-    : header
-      ? Math.max(0, Math.ceil(header.getBoundingClientRect().bottom))
-      : 84
+  const top = 0
   const left = Math.max(0, mainRect.left)
   const width = Math.max(0, Math.min(window.innerWidth, mainRect.right) - left)
   const height = Math.max(0, window.innerHeight - top)
@@ -1358,12 +1352,12 @@ loadAlbums().finally(() => getList())
   color: #909399;
 }
 
-/* 遮罩与弹窗都对齐主内容区（侧栏右侧、顶栏下方的白色区域） */
+/* 遮罩对齐主内容列：侧栏右侧、从视口顶铺满（盖住导航与页签） */
 .track-view-modal.el-overlay {
-  --track-view-top: 84px;
+  --track-view-top: 0px;
   --track-view-left: 200px;
   --track-view-width: calc(100vw - 200px);
-  --track-view-height: calc(100vh - 84px);
+  --track-view-height: 100vh;
   top: var(--track-view-top) !important;
   left: var(--track-view-left) !important;
   right: auto !important;

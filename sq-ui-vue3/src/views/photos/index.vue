@@ -391,16 +391,16 @@ function coverSrc(item) {
     if (cover.startsWith('/album/files/')) {
       return resolveUrl(cover)
     }
-    const mediaMatch = cover.match(/\/album\/photo\/media\/(\d+)/)
+    const mediaMatch = cover.match(/\/album\/photo\/(?:media|thumb)\/(\d+)/)
     if (mediaMatch) {
-      // 历史封面仍是 media 链接时保留兼容
-      return resolveUrl('/album/photo/media/' + mediaMatch[1])
+      // 历史封面若是 media 链接，改走 /thumb 避免列表打满动态媒体
+      return resolveUrl('/album/photo/thumb/' + mediaMatch[1])
     }
     return resolveUrl(cover)
   }
-  // 兼容旧数据：有照片但未写封面时，用媒体预览接口
+  // 兼容旧数据：有照片但未写封面时，用按需缩略图接口
   if (item.photoCount > 0 && item.coverPhotoId) {
-    return resolveUrl('/album/photo/media/' + item.coverPhotoId)
+    return resolveUrl('/album/photo/thumb/' + item.coverPhotoId)
   }
   return ''
 }

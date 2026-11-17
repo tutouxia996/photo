@@ -18,8 +18,10 @@ import com.sq.bus.service.IPhotoFallbackLocationService;
 import com.sq.bus.service.IPhotoDrawService;
 import com.sq.bus.service.IPhotoQualityService;
 import com.sq.bus.service.route.AmapPlaceSearchService;
+import com.sq.bus.domain.vo.PhotoMapPointVo;
 import com.sq.bus.utils.ExifParseUtils;
 import com.sq.bus.utils.PhotoFieldUtils;
+import com.sq.bus.utils.PhotoMapPointSupport;
 import com.sq.bus.utils.ThumbUtils;
 import com.sq.bus.utils.VideoMetaUtils;
 import com.sq.common.annotation.Log;
@@ -44,6 +46,7 @@ import java.net.URLConnection;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -211,14 +214,15 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 媒体访问：默认缩略图；original=true 返回原文件；
-     * download=true 强制原文件并以附件方式下载；
+     * 媒体访问：默认小缩略图；size=medium 返回浏览中图（约 800px）；
+     * original=true 返回原文件；download=true 强制原文件并以附件下载；
      * 视频浏览档 quality=480p|720p|1080p + fps=30（文件在 cache/proxy，不入库）。
      */
     @GetMapping("/media/{photoId}")
     public void media(@PathVariable Long photoId,
                       @RequestParam(value = "original", defaultValue = "false") boolean original,
                       @RequestParam(value = "download", defaultValue = "false") boolean download,
+                      @RequestParam(value = "size", required = false) String size,
                       @RequestParam(value = "quality", required = false) String quality,
                       @RequestParam(value = "fps", required = false) Integer fps,
                       HttpServletRequest request,
@@ -232,6 +236,7 @@ public class BizPhotoController extends BaseController {
         if (download) {
             original = true;
         }
+        boolean wantMedium = !original && "medium".equalsIgnoreCase(size);
         File file;
         if (!original && photo.getFileType() != null && photo.getFileType() == 2
                 && StringUtils.isNotEmpty(quality)
@@ -245,6 +250,16 @@ public class BizPhotoController extends BaseController {
                 }
             } else {
                 response.setHeader("X-Album-Video-Variant", quality);
+            }
+        } else if (wantMedium && (photo.getFileType() == null || photo.getFileType() != 2)) {
+            file = resolveOrCreateMedium(photo);
+            if (file == null) {
+                // 中图不可用时回退小图，避免前端被迫打原图
+                file = resolveMediaFile(photo, false);
+            }
+            if (file != null) {
+                response.setHeader("X-Album-Image-Variant",
+                        file.getName() != null && file.getName().startsWith("m_") ? "medium" : "small-fallback");
             }
         } else {
             file = resolveMediaFile(photo, original);
@@ -341,12 +356,18 @@ public class BizPhotoController extends BaseController {
     }
 
     /**
-     * 地图点位（默认仅权威 GPS，不含时间插值等兜底；includeEstimated=true 可包含）
+     * 地图点位（默认仅权威 GPS，不含时间插值等兜底；includeEstimated=true 可包含）。
+     * 返回瘦字段；支持 bbox / limit，避免全库 EXIF JSON 打满。
      */
     @PreAuthorize("@ss.hasAnyPermi('album:photo:list,album:photo:query,album:album:list,album:album:query')")
     @GetMapping("/mapPoints")
     public AjaxResult mapPoints(@RequestParam(required = false) Long albumId,
-                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated) {
+                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated,
+                                @RequestParam(value = "minLat", required = false) BigDecimal minLat,
+                                @RequestParam(value = "maxLat", required = false) BigDecimal maxLat,
+                                @RequestParam(value = "minLng", required = false) BigDecimal minLng,
+                                @RequestParam(value = "maxLng", required = false) BigDecimal maxLng,
+                                @RequestParam(value = "limit", required = false) Integer limit) {
         if (albumId != null) {
             AjaxResult deny = requireAlbumViewable(albumId);
             if (deny != null) {
@@ -360,13 +381,21 @@ public class BizPhotoController extends BaseController {
                 .eq(albumId != null, BizPhoto::getAlbumId, albumId)
                 .orderByAsc(BizPhoto::getShootTime)
                 .orderByAsc(BizPhoto::getPhotoId);
+        PhotoMapPointSupport.selectMapColumns(wrapper);
+        PhotoMapPointSupport.applyBbox(wrapper, minLat, maxLat, minLng, maxLng);
         if (albumId == null && !albumAccessHelper.isSuperAdmin()) {
             List<Long> albumIds = albumAccessHelper.listViewableAlbumIds();
             if (albumIds == null || albumIds.isEmpty()) {
-                return success(new ArrayList<BizPhoto>());
+                return success(new ArrayList<PhotoMapPointVo>());
             }
             wrapper.in(BizPhoto::getAlbumId, albumIds);
         }
+        // 相册内一般点不多，放宽上限；全库首页用默认 5000
+        Integer effectiveLimit = limit;
+        if (effectiveLimit == null && albumId != null) {
+            effectiveLimit = PhotoMapPointSupport.MAX_LIMIT;
+        }
+        PhotoMapPointSupport.applyLimit(wrapper, effectiveLimit);
         List<BizPhoto> list = photoService.list(wrapper);
         if (list == null) {
             list = new ArrayList<BizPhoto>();
@@ -376,15 +405,9 @@ public class BizPhotoController extends BaseController {
                 : (albumProperties.getFallbackLocation() != null
                 && albumProperties.getFallbackLocation().isIncludeInMap());
         if (!include) {
-            List<BizPhoto> authoritative = new ArrayList<BizPhoto>();
-            for (BizPhoto photo : list) {
-                if (PhotoLocationSource.isAuthoritativeGps(photo)) {
-                    authoritative.add(photo);
-                }
-            }
-            list = authoritative;
+            list = PhotoMapPointSupport.keepAuthoritative(list);
         }
-        return success(list);
+        return success(PhotoMapPointSupport.toVos(list));
     }
 
     /**
@@ -831,8 +854,12 @@ public class BizPhotoController extends BaseController {
                 return null;
             }
             File thumbFile = new File(thumbDir, "s_" + savedName);
-            ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
-            return "/album/files/thumb/" + datePath + "/s_" + savedName;
+            File mediumFile = ThumbUtils.mediumSibling(thumbFile);
+            if (ThumbUtils.createImageThumbs(dest, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                    mediumFile, albumProperties.getThumb().getMediumWidth())) {
+                return "/album/files/thumb/" + datePath + "/s_" + savedName;
+            }
+            return null;
         } catch (Exception ignored) {
             return null;
         }
@@ -1017,6 +1044,50 @@ public class BizPhotoController extends BaseController {
             }
         }
         return null;
+    }
+
+    /** 解析已有中图，或从原图按需生成 m_ 文件。 */
+    private File resolveOrCreateMedium(BizPhoto photo) {
+        File medium = resolveMediumFile(photo);
+        if (medium != null && medium.exists() && medium.isFile() && medium.length() > 0) {
+            return medium;
+        }
+        File origin = resolveMediaFile(photo, true);
+        if (origin == null) {
+            return null;
+        }
+        File target = medium;
+        if (target == null) {
+            File small = resolveMediaFile(photo, false);
+            if (small != null) {
+                target = ThumbUtils.mediumSibling(small);
+            } else {
+                File dir = new File(albumProperties.getThumbPath(), "medium");
+                target = new File(dir, "m_" + photo.getPhotoId() + ".jpg");
+            }
+        }
+        try {
+            ThumbUtils.createThumbnail(origin, target, albumProperties.getThumb().getMediumWidth());
+            if (target.exists() && target.isFile() && target.length() > 0) {
+                return target;
+            }
+        } catch (Exception e) {
+            // 中图失败由调用方回退小图
+        }
+        return null;
+    }
+
+    private File resolveMediumFile(BizPhoto photo) {
+        if (photo == null || StringUtils.isEmpty(photo.getThumbUrl())
+                || !photo.getThumbUrl().startsWith("/album/files/thumb/")) {
+            return null;
+        }
+        String rel = photo.getThumbUrl().substring("/album/files/thumb/".length());
+        if (StringUtils.isEmpty(rel) || rel.contains("..")) {
+            return null;
+        }
+        File small = new File(albumProperties.getThumbPath(), rel);
+        return ThumbUtils.mediumSibling(small);
     }
 
     private void writeFileWithRange(File file, String contentType, String rangeHeader,

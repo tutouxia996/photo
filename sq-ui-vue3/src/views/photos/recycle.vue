@@ -158,7 +158,7 @@ function thumbSrc(item) {
   if (!item) return ''
   if (item.thumbUrl) return resolveUrl(item.thumbUrl)
   if (!item.photoId) return ''
-  return resolveUrl('/album/photo/media/' + item.photoId)
+  return resolveUrl('/album/photo/thumb/' + item.photoId)
 }
 
 function formatTime(time) {

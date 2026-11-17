@@ -31,7 +31,8 @@ import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
 defineOptions({ name: 'Index' })
 
 const loading = ref(false)
-const points = ref([])
+/** 点位可能上千，用 shallowRef 避免深层响应式 */
+const points = shallowRef([])
 const mapRef = ref(null)
 /** 边界坐标很多，用 shallowRef 避免深层响应式拖垮页面 */
 const regionGeoJson = shallowRef(null)
@@ -55,7 +56,8 @@ const emptyText = computed(() => '暂无带定位的照片或视频')
 
 function loadPoints() {
   loading.value = true
-  return listPhotoMapPoints({ includeEstimated: true }).then(res => {
+  // 全库默认后端 limit=5000 + 瘦字段；首页不再一次打满 EXIF JSON
+  return listPhotoMapPoints({ includeEstimated: true, limit: 5000 }).then(res => {
     points.value = res.data || []
     nextTick(() => {
       mapRef.value?.refresh?.({ fit: true })

@@ -111,6 +111,7 @@ import {
   filterValidPoints,
   formatCount,
   fromMapLatLng,
+  hydrateMapThumbs,
   isEstimatedLocation,
   isRailTravelMode,
   isWaypointPoint,
@@ -176,6 +177,13 @@ const props = defineProps({
   selectedPhotoIds: { type: Array, default: () => [] },
   /** 框选模式：拖拽拉矩形选中路段 */
   boxSelectActive: { type: Boolean, default: false },
+  /**
+   * 自由绘制折线：按住拖动画线；可选 anchors 强制起终点对齐路段锚点
+   * anchors: { from: [lat,lng], to: [lat,lng] }
+   */
+  freehandActive: { type: Boolean, default: false },
+  freehandAnchors: { type: Object, default: null },
+  freehandColor: { type: String, default: '#F59E0B' },
   /** 框选高亮的路段下标 */
   selectedSegmentIndexes: { type: Array, default: () => [] },
   /** 已访问行政区 GeoJSON FeatureCollection（GCJ-02） */
@@ -196,6 +204,7 @@ const emit = defineEmits([
   'segment-click',
   'segment-path-change',
   'waypoint-click',
+  'waypoint-move',
   'point-click',
   'gpx-click',
   'gpx-endpoint-click',
@@ -205,6 +214,8 @@ const emit = defineEmits([
   'location-select',
   'confirm-estimated',
   'box-select',
+  'freehand-complete',
+  'freehand-cancel',
   'ready',
   'terrain-mode-change'
 ])
@@ -247,6 +258,16 @@ let boxSelectRect = null
 let boxSelectStart = null
 let boxSelectDragging = false
 let boxSelectHandlersBound = false
+/** 自由绘制 */
+const FREEHAND_MIN_METERS = 6
+const FREEHAND_MAX_POINTS = 300
+let freehandHandlersBound = false
+let freehandDrawing = false
+/** @type {import('leaflet').LatLng[]} */
+let freehandPts = []
+let freehandLine = null
+let freehandGuide = null
+let freehandAnchorMarkers = []
 /** @type {{ marker: any, metrics: any, timed: any[], duration: number, mode: string } | null} */
 let travelerActor = null
 let travelerRaf = 0
@@ -2607,12 +2628,27 @@ function setMarkerPaneVisible(visible) {
   if (travelerPane) travelerPane.style.visibility = visible ? '' : 'hidden'
 }
 
+let thumbHydrateTimer = 0
+function scheduleHydrateThumbs() {
+  if (thumbHydrateTimer) clearTimeout(thumbHydrateTimer)
+  thumbHydrateTimer = window.setTimeout(() => {
+    thumbHydrateTimer = 0
+    const root = map?.getContainer?.()
+    if (root) hydrateMapThumbs(root)
+  }, 80)
+}
+
 function onZoomStart() {
   setMarkerPaneVisible(false)
 }
 
 function onZoomEnd() {
   setMarkerPaneVisible(true)
+  scheduleHydrateThumbs()
+}
+
+function onMoveEnd() {
+  scheduleHydrateThumbs()
 }
 
 function clearPathEditMarkers() {
@@ -2665,6 +2701,66 @@ function emitSegmentPath(index, latlngs) {
   })
 }
 
+/** 增补途经点可吸附的目标：其他轨迹点 + GPX 起/终 */
+function collectWaypointSnapTargets(list, excludeIndex) {
+  const targets = []
+  const pts = Array.isArray(list) ? list : []
+  pts.forEach((p, i) => {
+    if (i === excludeIndex || !p || p.latitude == null || p.longitude == null) return
+    const ll = toMapLatLng(p)
+    targets.push({
+      latlng: L.latLng(ll[0], ll[1]),
+      name: p.description || p.fileName || `点#${p.sequence ?? i + 1}`,
+      kind: isWaypointPoint(p) ? 'waypoint' : 'track'
+    })
+  })
+  overlayList.value.forEach((item) => {
+    if (!item || item.showPath === false) return
+    const path = normalizeOverlayLatLngs(item.path)
+    if (!path || path.length < 2) return
+    const fileName = item.fileName || 'GPX'
+    const a = path[0]
+    const b = path[path.length - 1]
+    targets.push({
+      latlng: L.latLng(Number(a[0]), Number(a[1])),
+      name: `GPX《${fileName}》起点`,
+      kind: 'gpx'
+    })
+    targets.push({
+      latlng: L.latLng(Number(b[0]), Number(b[1])),
+      name: `GPX《${fileName}》终点`,
+      kind: 'gpx'
+    })
+  })
+  return targets
+}
+
+function snapLatLngToTargets(latlng, targets, maxMeters = 45) {
+  if (!latlng || !targets?.length) return null
+  let best = null
+  let bestDist = maxMeters
+  targets.forEach((t) => {
+    if (!t?.latlng) return
+    const d = latlng.distanceTo(t.latlng)
+    if (d <= bestDist) {
+      bestDist = d
+      best = t
+    }
+  })
+  return best
+}
+
+function emitWaypointMove(pointIndex, latlng, snapped) {
+  const wgs = fromMapLatLng(latlng.lat, latlng.lng)
+  emit('waypoint-move', {
+    index: pointIndex,
+    latitude: wgs.latitude,
+    longitude: wgs.longitude,
+    snappedName: snapped?.name || '',
+    snappedKind: snapped?.kind || ''
+  })
+}
+
 function bindPathEditor(list, index) {
   if (!lineLayer || !map || index < 0 || index >= list.length - 1) return
   const from = list[index]
@@ -2676,11 +2772,37 @@ function bindPathEditor(list, index) {
 
   const start = L.latLng(toMapLatLng(from))
   const end = L.latLng(toMapLatLng(to))
-  const latlngs = ref.latlngs.map((ll, i, arr) => {
-    if (i === 0) return start
-    if (i === arr.length - 1) return end
-    return L.latLng(ll[0], ll[1])
-  })
+  const fromMovable = isWaypointPoint(from)
+  const toMovable = isWaypointPoint(to)
+  /** 端点与锚点偏差过大时，丢掉旧中点硬拽，避免折线「跳飞」到途经点 */
+  const SNAP_JUMP_M = 35
+  const raw = Array.isArray(ref.latlngs) ? ref.latlngs : []
+  let latlngs
+  if (raw.length >= 2) {
+    const oldStart = L.latLng(Number(raw[0][0]), Number(raw[0][1]))
+    const oldEnd = L.latLng(Number(raw[raw.length - 1][0]), Number(raw[raw.length - 1][1]))
+    const jumpStart = oldStart.distanceTo(start)
+    const jumpEnd = oldEnd.distanceTo(end)
+    if (jumpStart > SNAP_JUMP_M || jumpEnd > SNAP_JUMP_M) {
+      latlngs = [
+        start,
+        L.latLng((start.lat + end.lat) / 2, (start.lng + end.lng) / 2),
+        end
+      ]
+    } else {
+      latlngs = raw.map((ll, i, arr) => {
+        if (i === 0) return start
+        if (i === arr.length - 1) return end
+        return L.latLng(Number(ll[0]), Number(ll[1]))
+      })
+    }
+  } else {
+    latlngs = [
+      start,
+      L.latLng((start.lat + end.lat) / 2, (start.lng + end.lng) / 2),
+      end
+    ]
+  }
   if (latlngs.length < 2) {
     latlngs.splice(0, latlngs.length, start, end)
   } else {
@@ -2699,35 +2821,62 @@ function bindPathEditor(list, index) {
   const rebuildMarkers = () => {
     clearPathEditMarkers()
     latlngs.forEach((ll, vi) => {
-      const isEnd = vi === 0 || vi === latlngs.length - 1
+      const isStart = vi === 0
+      const isEnd = vi === latlngs.length - 1
+      const isEndpoint = isStart || isEnd
+      const endpointMovable = (isStart && fromMovable) || (isEnd && toMovable)
+      const canDrag = !isEndpoint || endpointMovable
+      const tip = isEndpoint
+        ? (endpointMovable
+          ? '拖动途经点接到 GPX 起/终或其他轨迹点'
+          : '照片锚点（固定）')
+        : '拖动调整；双击删除'
       const marker = L.marker(ll, {
-        draggable: !isEnd,
+        draggable: canDrag,
         keyboard: false,
         zIndexOffset: 900,
         icon: L.divIcon({
           className: 'pmc-vertex-marker',
-          html: `<div class="pmc-vertex ${isEnd ? 'is-end' : 'is-mid'}" title="${isEnd ? '照片锚点（固定）' : '拖动调整；双击删除'}"></div>`,
+          html: `<div class="pmc-vertex ${isEndpoint ? (endpointMovable ? 'is-end is-movable' : 'is-end') : 'is-mid'}" title="${tip}"></div>`,
           iconSize: [16, 16],
           iconAnchor: [8, 8]
         })
       }).addTo(lineLayer)
       pathEditMarkers.push(marker)
 
-      if (isEnd) return
+      if (!canDrag) return
       marker.on('drag', (e) => {
         latlngs[vi] = e.target.getLatLng()
         syncLine()
       })
-      marker.on('dragend', () => {
+      marker.on('dragend', (e) => {
+        let llNow = e.target.getLatLng()
+        if (isEndpoint && endpointMovable) {
+          const pointIndex = isStart ? index : index + 1
+          const snapped = snapLatLngToTargets(
+            llNow,
+            collectWaypointSnapTargets(list, pointIndex),
+            45
+          )
+          if (snapped) {
+            llNow = snapped.latlng
+            e.target.setLatLng(llNow)
+            latlngs[vi] = llNow
+            syncLine()
+          }
+          emitWaypointMove(pointIndex, llNow, snapped)
+        }
         emitSegmentPath(index, latlngs)
       })
-      marker.on('dblclick', (e) => {
-        L.DomEvent.stop(e)
-        if (latlngs.length <= 2) return
-        latlngs.splice(vi, 1)
-        syncLine()
-        emitSegmentPath(index, latlngs)
-      })
+      if (!isEndpoint) {
+        marker.on('dblclick', (e) => {
+          L.DomEvent.stop(e)
+          if (latlngs.length <= 2) return
+          latlngs.splice(vi, 1)
+          syncLine()
+          emitSegmentPath(index, latlngs)
+        })
+      }
       marker.on('click', (e) => L.DomEvent.stop(e))
     })
   }
@@ -2842,7 +2991,7 @@ function prefersReducedMotion() {
 function shouldAnimateTravelers() {
   if (!props.showTravelers) return false
   if (!props.showPolyline && !hasGpxPathOverlay.value) return false
-  if (props.editable || props.boxSelectActive || props.pathEditIndex >= 0) return false
+  if (props.editable || props.boxSelectActive || props.freehandActive || props.pathEditIndex >= 0) return false
   if (props.locationCorrectable) return false
   if (prefersReducedMotion()) return false
   return true
@@ -3845,7 +3994,9 @@ function renderPoints({ fit = props.autoFit } = {}) {
         estimatedLayer.addLayer(marker)
         return
       }
-      const marker = createPhotoMarker(p)
+      const marker = createPhotoMarker(p, {
+        draggable: props.editable && isWaypointPoint(p) && !props.pointPickable && !props.boxSelectActive
+      })
       if (isWaypointPoint(p)) {
         if (props.pointPickable || props.editable) {
           marker.on('click', (e) => {
@@ -3857,10 +4008,25 @@ function renderPoints({ fit = props.autoFit } = {}) {
             emit('waypoint-click', { index, point: p })
           })
           marker.on('mouseover', () => {
-            if (map) map.getContainer().style.cursor = 'pointer'
+            if (map) map.getContainer().style.cursor = props.editable ? 'grab' : 'pointer'
           })
           marker.on('mouseout', () => {
             if (map) map.getContainer().style.cursor = ''
+          })
+        }
+        if (props.editable && !props.pointPickable && !props.boxSelectActive) {
+          marker.on('dragend', (e) => {
+            let ll = e.target.getLatLng()
+            const snapped = snapLatLngToTargets(
+              ll,
+              collectWaypointSnapTargets(polylineSource.value, index),
+              45
+            )
+            if (snapped) {
+              ll = snapped.latlng
+              e.target.setLatLng(ll)
+            }
+            emitWaypointMove(index, ll, snapped)
           })
         }
         if (waypointLayer) waypointLayer.addLayer(marker)
@@ -3897,7 +4063,10 @@ function renderPoints({ fit = props.autoFit } = {}) {
     })
     didFit = true
   }
-  nextTick(() => invalidateMapSize())
+  nextTick(() => {
+    invalidateMapSize()
+    scheduleHydrateThumbs()
+  })
 }
 
 function bindResizeObserver() {
@@ -3980,11 +4149,16 @@ function initMap() {
   estimatedLayer = createEstimatedClusterGroup().addTo(map)
   map.on('zoomstart', onZoomStart)
   map.on('zoomend', onZoomEnd)
+  map.on('moveend', onMoveEnd)
+  clusterGroup.on('animationend', scheduleHydrateThumbs)
+  estimatedLayer.on('animationend', scheduleHydrateThumbs)
   map.getContainer().classList.toggle('pmc-edit-cursor', !!props.editable)
   map.getContainer().classList.toggle('pmc-gpx-pick', !!props.gpxEndpointPickable)
   map.getContainer().classList.toggle('pmc-box-select', !!props.boxSelectActive)
+  map.getContainer().classList.toggle('pmc-freehand', !!props.freehandActive)
   bindResizeObserver()
   syncBoxSelectMode(!!props.boxSelectActive)
+  syncFreehandMode(!!props.freehandActive)
   emit('ready')
 }
 
@@ -4086,8 +4260,10 @@ function syncBoxSelectMode(active) {
       boxSelectHandlersBound = true
     }
   } else {
-    map.dragging.enable()
-    map.doubleClickZoom.enable()
+    if (!props.freehandActive) {
+      map.dragging.enable()
+      map.doubleClickZoom.enable()
+    }
     if (boxSelectHandlersBound) {
       map.off('mousedown', onBoxSelectMouseDown)
       map.off('mousemove', onBoxSelectMouseMove)
@@ -4096,6 +4272,221 @@ function syncBoxSelectMode(active) {
       boxSelectHandlersBound = false
     }
     clearBoxSelectRect()
+  }
+}
+
+function freehandAnchorLatLng(side) {
+  const a = props.freehandAnchors
+  if (!a) return null
+  const p = side === 'from' ? a.from : a.to
+  if (!Array.isArray(p) || p.length < 2) return null
+  const lat = Number(p[0])
+  const lng = Number(p[1])
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null
+  return L.latLng(lat, lng)
+}
+
+function clearFreehandPreview() {
+  freehandDrawing = false
+  freehandPts = []
+  if (freehandLine && map) {
+    try { map.removeLayer(freehandLine) } catch (e) { /* ignore */ }
+  }
+  freehandLine = null
+  if (freehandGuide && map) {
+    try { map.removeLayer(freehandGuide) } catch (e) { /* ignore */ }
+  }
+  freehandGuide = null
+  freehandAnchorMarkers.forEach((m) => {
+    try { map?.removeLayer(m) } catch (e) { /* ignore */ }
+  })
+  freehandAnchorMarkers = []
+}
+
+function syncFreehandLine() {
+  if (!map) return
+  if (freehandPts.length < 1) return
+  if (!freehandLine) {
+    freehandLine = L.polyline(freehandPts, {
+      color: props.freehandColor || '#F59E0B',
+      weight: 5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+      className: 'pmc-freehand-line'
+    }).addTo(map)
+  } else {
+    freehandLine.setLatLngs(freehandPts)
+  }
+}
+
+function drawFreehandGuides() {
+  if (!map || !props.freehandActive) return
+  freehandAnchorMarkers.forEach((m) => {
+    try { map.removeLayer(m) } catch (e) { /* ignore */ }
+  })
+  freehandAnchorMarkers = []
+  if (freehandGuide) {
+    try { map.removeLayer(freehandGuide) } catch (e) { /* ignore */ }
+    freehandGuide = null
+  }
+  const from = freehandAnchorLatLng('from')
+  const to = freehandAnchorLatLng('to')
+  if (from && to) {
+    freehandGuide = L.polyline([from, to], {
+      color: props.freehandColor || '#F59E0B',
+      weight: 2,
+      opacity: 0.45,
+      dashArray: '6 8',
+      interactive: false
+    }).addTo(map)
+  }
+  ;[
+    { ll: from, label: '起' },
+    { ll: to, label: '终' }
+  ].forEach(({ ll, label }) => {
+    if (!ll) return
+    const marker = L.marker(ll, {
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 950,
+      icon: L.divIcon({
+        className: 'pmc-freehand-anchor',
+        html: `<div class="pmc-freehand-anchor-dot" title="${label}"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
+      })
+    }).addTo(map)
+    freehandAnchorMarkers.push(marker)
+  })
+}
+
+function simplifyFreehandPts(pts) {
+  if (!pts || pts.length <= FREEHAND_MAX_POINTS) return pts || []
+  const out = [pts[0]]
+  const step = Math.ceil((pts.length - 2) / Math.max(1, FREEHAND_MAX_POINTS - 2))
+  for (let i = step; i < pts.length - 1; i += step) {
+    out.push(pts[i])
+  }
+  out.push(pts[pts.length - 1])
+  return out
+}
+
+function onFreehandMouseDown(e) {
+  if (!props.freehandActive || !map || !e.latlng) return
+  if (e.originalEvent && e.originalEvent.button !== 0) return
+  L.DomEvent.preventDefault(e)
+  if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent)
+  freehandDrawing = true
+  freehandPts = []
+  const start = freehandAnchorLatLng('from') || e.latlng
+  freehandPts.push(start)
+  if (start.distanceTo(e.latlng) >= FREEHAND_MIN_METERS) {
+    freehandPts.push(e.latlng)
+  }
+  syncFreehandLine()
+}
+
+function onFreehandMouseMove(e) {
+  if (!freehandDrawing || !e.latlng || !freehandPts.length) return
+  const last = freehandPts[freehandPts.length - 1]
+  if (last.distanceTo(e.latlng) < FREEHAND_MIN_METERS) return
+  if (freehandPts.length >= FREEHAND_MAX_POINTS) return
+  freehandPts.push(e.latlng)
+  syncFreehandLine()
+}
+
+function finishFreehand(latlng) {
+  if (!freehandDrawing && freehandPts.length < 2) {
+    clearFreehandPreview()
+    drawFreehandGuides()
+    return
+  }
+  freehandDrawing = false
+  if (latlng && freehandPts.length) {
+    const last = freehandPts[freehandPts.length - 1]
+    if (!last || last.distanceTo(latlng) >= FREEHAND_MIN_METERS * 0.4) {
+      freehandPts.push(latlng)
+    }
+  }
+  const start = freehandAnchorLatLng('from')
+  const end = freehandAnchorLatLng('to')
+  if (start && freehandPts.length) freehandPts[0] = start
+  if (end) {
+    const last = freehandPts[freehandPts.length - 1]
+    if (!last || last.distanceTo(end) > 1) freehandPts.push(end)
+    else freehandPts[freehandPts.length - 1] = end
+  }
+  const pts = simplifyFreehandPts(freehandPts)
+  if (pts.length < 2) {
+    clearFreehandPreview()
+    drawFreehandGuides()
+    emit('freehand-cancel')
+    return
+  }
+  const path = pts.map((ll) => [ll.lat, ll.lng])
+  clearFreehandPreview()
+  emit('freehand-complete', { path })
+}
+
+function onFreehandMouseUp(e) {
+  if (!props.freehandActive) return
+  if (!freehandDrawing) return
+  let ll = e?.latlng || null
+  // document mouseup 没有 latlng，从屏幕坐标反查
+  if (!ll && map && e && e.clientX != null && e.clientY != null) {
+    try {
+      const rect = map.getContainer().getBoundingClientRect()
+      const pt = L.point(e.clientX - rect.left, e.clientY - rect.top)
+      ll = map.containerPointToLatLng(pt)
+    } catch (err) {
+      ll = null
+    }
+  }
+  finishFreehand(ll)
+}
+
+function onFreehandKeyDown(e) {
+  if (!props.freehandActive) return
+  if (e.key !== 'Escape') return
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+  clearFreehandPreview()
+  emit('freehand-cancel')
+}
+
+function syncFreehandMode(active) {
+  if (!map) return
+  const container = map.getContainer()
+  container.classList.toggle('pmc-freehand', !!active)
+  if (active) {
+    if (props.boxSelectActive) syncBoxSelectMode(false)
+    map.dragging.disable()
+    map.doubleClickZoom.disable()
+    if (!freehandHandlersBound) {
+      map.on('mousedown', onFreehandMouseDown)
+      map.on('mousemove', onFreehandMouseMove)
+      map.on('mouseup', onFreehandMouseUp)
+      L.DomEvent.on(document, 'mouseup', onFreehandMouseUp)
+      L.DomEvent.on(document, 'keydown', onFreehandKeyDown)
+      freehandHandlersBound = true
+    }
+    drawFreehandGuides()
+  } else {
+    if (!props.boxSelectActive) {
+      map.dragging.enable()
+      map.doubleClickZoom.enable()
+    }
+    if (freehandHandlersBound) {
+      map.off('mousedown', onFreehandMouseDown)
+      map.off('mousemove', onFreehandMouseMove)
+      map.off('mouseup', onFreehandMouseUp)
+      L.DomEvent.off(document, 'mouseup', onFreehandMouseUp)
+      L.DomEvent.off(document, 'keydown', onFreehandKeyDown)
+      freehandHandlersBound = false
+    }
+    clearFreehandPreview()
   }
 }
 
@@ -4137,7 +4528,9 @@ watch(
     props.showTravelers,
     props.showModeLegend
   ],
-  () => refresh({ fit: props.autoFit && !props.editable && !props.boxSelectActive }),
+  () => refresh({
+    fit: props.autoFit && !props.editable && !props.boxSelectActive && !props.freehandActive
+  }),
   { deep: true }
 )
 
@@ -4170,6 +4563,22 @@ watch(() => props.boxSelectActive, (val) => {
   }
   syncBoxSelectMode(!!val)
 }, { immediate: true })
+
+watch(() => props.freehandActive, (val) => {
+  if (terrainMode.value) {
+    syncFreehandMode(false)
+    return
+  }
+  syncFreehandMode(!!val)
+}, { immediate: true })
+
+watch(
+  () => props.freehandAnchors,
+  () => {
+    if (props.freehandActive && !freehandDrawing) drawFreehandGuides()
+  },
+  { deep: true }
+)
 
 /** 3D 模式下数据变化时重绘只读覆盖物 */
 watch(
@@ -4205,6 +4614,7 @@ onBeforeUnmount(() => {
   closeViewMenu()
   unbindViewMenuOutsideClose()
   syncBoxSelectMode(false)
+  syncFreehandMode(false)
   stopTravelers()
   stopTerrainTraveler()
   stopTerrainFlowAnim()
@@ -4216,10 +4626,15 @@ onBeforeUnmount(() => {
   }
   unbindLeafletWheelZoom()
   unbindLeafletViewControls()
+  if (thumbHydrateTimer) {
+    clearTimeout(thumbHydrateTimer)
+    thumbHydrateTimer = 0
+  }
   if (map) {
     try { map.off('rotate', syncMapHeading) } catch (e) { /* ignore */ }
     map.off('zoomstart', onZoomStart)
     map.off('zoomend', onZoomEnd)
+    map.off('moveend', onMoveEnd)
     map.remove()
     map = null
     baseLayer = null
@@ -4514,8 +4929,23 @@ defineExpose({
   pointer-events: none;
 }
 
-:deep(.pmc-box-select) {
+:deep(.pmc-box-select),
+:deep(.pmc-freehand) {
   cursor: crosshair !important;
+}
+
+:deep(.pmc-freehand-anchor) {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+:deep(.pmc-freehand-anchor-dot) {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 
 .pmc-br-stack {

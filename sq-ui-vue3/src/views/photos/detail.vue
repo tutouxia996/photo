@@ -1048,6 +1048,7 @@ import { isExternal } from '@/utils/validate'
 import { getAlbum, updateAlbum, listAlbum, addAlbum } from '@/api/photos/album'
 import { listPhoto, uploadPhoto, delPhoto, updatePhoto, listDrawPresets, drawPhoto, drawPhotoBatch, getVideoProxyStatus, ensureVideoProxy } from '@/api/photos/photo'
 import { videoPlaySrc } from '@/utils/videoProxy'
+import { photoMediumSrc, photoOriginalSrc } from '@/utils/photoMedia'
 import usePhotoScoreStore from '@/store/modules/photoScore'
 import useAlbumDownloadStore from '@/store/modules/albumDownload'
 import PhotoSphereViewer from '@/components/PhotoSphereViewer/index.vue'
@@ -1122,8 +1123,9 @@ const originFilter = ref('original')
 const shootTimeOrder = ref('desc')
 const sizeMode = ref('small')
 /** 胶片边 / 日期地点 / 片种：网格与全屏 viewer 共用，记 localStorage */
-const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, true))
-const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, true))
+/** 网格默认关胶片边框，避免一屏多 canvas 合成拖垮滚动 */
+const filmBorderEnabled = ref(readFilmFlag(FILM_BORDER_KEY, false))
+const filmInfoEnabled = ref(readFilmFlag(FILM_INFO_KEY, false))
 const filmStockId = ref(readFilmStock())
 const filmStockOptions = STOCK_PRESETS.map(s => ({
   id: presetKey(s.id, s.formatId),
@@ -1469,26 +1471,31 @@ function thumbSrc(item) {
 
 function originalSrc(item) {
   if (!item) return ''
-  return resolveUrl('/album/photo/media/' + item.photoId + '?original=true')
+  return photoOriginalSrc(item, resolveUrl)
+}
+
+function mediumSrc(item) {
+  if (!item) return ''
+  return photoMediumSrc(item, resolveUrl)
 }
 
 /**
- * 全屏高清层：必须走 original。
- * 注意 /media/{id} 无 original 时后端返回的是小缩略图（约 300px），会发糊。
- * 速度靠底下 media-image-preview 先出缩略图，原图加载完再盖住。
+ * 浏览层走 medium（约 800px）；1:1 像素模式才拉原图。
+ * 底下仍有 media-image-preview 小图先出。
  */
 function viewerSrc(item) {
   if (!item) return ''
-  return originalSrc(item)
+  if (imageMode.value === 'original') return originalSrc(item)
+  return mediumSrc(item)
 }
 
 function preloadViewerNeighbors(centerIdx) {
   const list = photoList.value
   if (!list.length) return
-  ;[centerIdx - 1, centerIdx + 1, centerIdx + 2].forEach((i) => {
+  ;[centerIdx - 1, centerIdx + 1].forEach((i) => {
     const item = list[i]
     if (!item || item.fileType === 2 || isPanoPhoto(item)) return
-    const url = viewerSrc(item)
+    const url = mediumSrc(item)
     if (!url) return
     const img = new Image()
     img.decoding = 'async'
@@ -2325,8 +2332,8 @@ function onItemCtxSetCover() {
   const item = ctxTargetPhoto.value
   closeCtxMenu()
   if (!item) return
-  // 优先静态缩略图路径，列表封面不再经 media 接口
-  const coverUrl = item.thumbUrl || `/album/photo/media/${item.photoId}`
+  // 优先静态缩略图路径；无则写 /thumb，列表封面不走 media
+  const coverUrl = item.thumbUrl || `/album/photo/thumb/${item.photoId}`
   updateAlbum({
     albumId: album.value.albumId,
     albumName: album.value.albumName,
@@ -2651,6 +2658,7 @@ function toggleImageMode() {
   if (imageMode.value === 'contain') {
     imageMode.value = 'original'
     imageTransform.scale = 1
+    viewerHiresReady.value = false
   } else {
     imageMode.value = 'contain'
     imageTransform.scale = 1
@@ -2719,9 +2727,14 @@ function resetAddToState() {
 
 function albumCoverSrc(item) {
   if (!item) return ''
-  if (item.coverUrl) return resolveUrl(item.coverUrl)
+  if (item.coverUrl) {
+    const cover = String(item.coverUrl)
+    const mediaMatch = cover.match(/\/album\/photo\/(?:media|thumb)\/(\d+)/)
+    if (mediaMatch) return resolveUrl('/album/photo/thumb/' + mediaMatch[1])
+    return resolveUrl(cover)
+  }
   if (item.photoCount > 0 && item.coverPhotoId) {
-    return resolveUrl('/album/photo/media/' + item.coverPhotoId)
+    return resolveUrl('/album/photo/thumb/' + item.coverPhotoId)
   }
   return ''
 }

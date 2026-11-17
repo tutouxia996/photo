@@ -511,6 +511,12 @@ function pointThumbUrl(point) {
   return u && String(u).trim() ? String(u).trim() : ''
 }
 
+const MAP_THUMB_PLACEHOLDER =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44"><rect fill="#cbd5e1" width="44" height="44" rx="6"/></svg>'
+  )
+
 export function mediaSrc(point, original = false) {
   if (original) {
     if (point?.photoId) {
@@ -524,14 +530,36 @@ export function mediaSrc(point, original = false) {
     return ''
   }
   const thumb = pointThumbUrl(point)
-  if (Number(point?.fileType) === 2 && !thumb && point?.photoId) {
+  if (thumb) return resolveUrl(thumb)
+  // 无静态封面时走 /thumb（可按需截帧），避免 /media 默认小图接口被 marker 打满
+  if (point?.photoId) {
     return resolveUrl('/album/photo/thumb/' + point.photoId)
   }
-  if (thumb) return resolveUrl(thumb)
-  if (point?.photoId) {
-    return resolveUrl('/album/photo/media/' + point.photoId)
-  }
   return ''
+}
+
+/**
+ * 仅把地图容器可视区内的 marker 缩略图换成真实 src（聚合外/屏外先占位）。
+ */
+export function hydrateMapThumbs(rootEl) {
+  if (!rootEl || typeof rootEl.querySelectorAll !== 'function') return 0
+  const imgs = rootEl.querySelectorAll('img.pmc-lazy-thumb[data-src]')
+  if (!imgs.length) return 0
+  const rootRect = rootEl.getBoundingClientRect()
+  const pad = 48
+  let n = 0
+  imgs.forEach((img) => {
+    const r = img.getBoundingClientRect()
+    if (r.bottom < rootRect.top - pad || r.top > rootRect.bottom + pad) return
+    if (r.right < rootRect.left - pad || r.left > rootRect.right + pad) return
+    const src = img.getAttribute('data-src')
+    if (!src) return
+    img.removeAttribute('data-src')
+    img.src = src
+    img.classList.remove('pmc-lazy-thumb')
+    n += 1
+  })
+  return n
 }
 
 export function escapeHtml(str) {
@@ -569,10 +597,10 @@ export function createThumbDivIcon(point, count = 1, options = {}) {
       : '')
   const pick = selected ? '<span class="pmc-ai-pick" title="已选入 AI 识别">✓</span>' : ''
   const video = isVideo && count <= 1 ? '<span class="pmc-video">▶</span>' : ''
-  // Leaflet DivIcon 在 transform/overflow 容器里，native lazy 常不触发加载 → 一直灰底
+  // 先占位，由 hydrateMapThumbs 按可视区再挂真实缩略图（避免一次拉齐全部 marker 图）
   const fallbackText = isVideo ? '视频' : '图'
   const img = thumb
-    ? `<img src="${escapeHtml(thumb)}" decoding="async" alt="" onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('span'),{className:'pmc-fallback',textContent:'${fallbackText}'}))" />`
+    ? `<img class="pmc-lazy-thumb" src="${MAP_THUMB_PLACEHOLDER}" data-src="${escapeHtml(thumb)}" decoding="async" alt="" onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('span'),{className:'pmc-fallback',textContent:'${fallbackText}'}))" />`
     : `<span class="pmc-fallback">${fallbackText}</span>`
   const classes = [
     'pmc-marker',
@@ -601,7 +629,7 @@ export function createClusterGroup() {
     showCoverageOnHover: false,
     zoomToBoundsOnClick: true,
     spiderfyOnMaxZoom: true,
-    disableClusteringAtZoom: 16,
+    disableClusteringAtZoom: 17,
     maxClusterRadius: zoom => clusterRadiusForZoom(zoom),
     animate: true,
     animateAddingMarkers: false,
@@ -928,8 +956,8 @@ export function createPhotoMarker(point, options = {}) {
   const waypoint = isWaypointPoint(point)
   const estimated = isEstimatedLocation(point)
   const selected = !!options.selected
-  // locationCorrectable / estimated 微调：由调用方传入 draggable
-  const draggable = !!(options.draggable && !waypoint && !options.aiPickMode)
+  // 估计点/纠正点/自定义途经点：由调用方传入 draggable（途经点可拖去接 GPX/邻点）
+  const draggable = !!(options.draggable && !options.aiPickMode)
   const markerOpts = {
     icon: waypoint
       ? createWaypointDivIcon(point)

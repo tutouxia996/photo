@@ -3,7 +3,6 @@ package com.sq.admin.portal.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.sq.bus.config.AlbumProperties;
 import com.sq.bus.constants.AlbumDeleted;
-import com.sq.bus.constants.PhotoLocationSource;
 import com.sq.bus.domain.BizAlbum;
 import com.sq.bus.domain.BizPhoto;
 import com.sq.bus.domain.BizTrack;
@@ -12,6 +11,7 @@ import com.sq.bus.service.IBizAlbumService;
 import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
+import com.sq.bus.utils.PhotoMapPointSupport;
 import com.sq.common.core.controller.BaseController;
 import com.sq.common.core.domain.AjaxResult;
 import com.sq.common.core.page.TableDataInfo;
@@ -20,6 +20,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -117,7 +118,12 @@ public class PortalAlbumController extends BaseController {
     public AjaxResult mapPoints(@RequestParam(required = false) Long albumId,
                                 @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date startTime,
                                 @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") Date endTime,
-                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated) {
+                                @RequestParam(value = "includeEstimated", required = false) Boolean includeEstimated,
+                                @RequestParam(value = "minLat", required = false) BigDecimal minLat,
+                                @RequestParam(value = "maxLat", required = false) BigDecimal maxLat,
+                                @RequestParam(value = "minLng", required = false) BigDecimal minLng,
+                                @RequestParam(value = "maxLng", required = false) BigDecimal maxLng,
+                                @RequestParam(value = "limit", required = false) Integer limit) {
         LambdaQueryWrapper<BizPhoto> wrapper = new LambdaQueryWrapper<BizPhoto>()
                 .eq(BizPhoto::getDeleted, AlbumDeleted.NORMAL)
                 .isNotNull(BizPhoto::getLatitude)
@@ -126,6 +132,8 @@ public class PortalAlbumController extends BaseController {
                 .ge(startTime != null, BizPhoto::getShootTime, startTime)
                 .le(endTime != null, BizPhoto::getShootTime, endTime)
                 .orderByAsc(BizPhoto::getShootTime);
+        PhotoMapPointSupport.selectMapColumns(wrapper);
+        PhotoMapPointSupport.applyBbox(wrapper, minLat, maxLat, minLng, maxLng);
         if (albumId != null) {
             BizAlbum album = albumService.getById(albumId);
             if (album == null || album.getIsPublic() == null || album.getIsPublic() != 1
@@ -146,6 +154,11 @@ public class PortalAlbumController extends BaseController {
             }
             wrapper.in(BizPhoto::getAlbumId, ids);
         }
+        Integer effectiveLimit = limit;
+        if (effectiveLimit == null && albumId != null) {
+            effectiveLimit = PhotoMapPointSupport.MAX_LIMIT;
+        }
+        PhotoMapPointSupport.applyLimit(wrapper, effectiveLimit);
         List<BizPhoto> list = photoService.list(wrapper);
         if (list == null) {
             list = new ArrayList<BizPhoto>();
@@ -155,15 +168,9 @@ public class PortalAlbumController extends BaseController {
                 : (albumProperties.getFallbackLocation() != null
                 && albumProperties.getFallbackLocation().isIncludeInMap());
         if (!include) {
-            List<BizPhoto> authoritative = new ArrayList<BizPhoto>();
-            for (BizPhoto photo : list) {
-                if (PhotoLocationSource.isAuthoritativeGps(photo)) {
-                    authoritative.add(photo);
-                }
-            }
-            list = authoritative;
+            list = PhotoMapPointSupport.keepAuthoritative(list);
         }
-        return success(list);
+        return success(PhotoMapPointSupport.toVos(list));
     }
 
     /**

@@ -452,7 +452,7 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         String relativeName = file.getName();
         String fileUrl = "/album/files/scan/" + scanPath.getPathId() + "/" + relativeName;
 
-        // 缩略图（图片用 Thumbnailator；视频优先 ffmpeg 截帧）
+        // 缩略图（图片：小图+中图；视频：ffmpeg 截帧）
         String thumbUrl = null;
         File thumbDir = new File(albumProperties.getThumbPath(), String.valueOf(scanPath.getPathId()));
         String thumbName = fileType == 2
@@ -461,8 +461,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         File thumbFile = new File(thumbDir, thumbName);
         try {
             if (fileType == 1) {
-                ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
-                if (thumbFile.exists()) {
+                if (ThumbUtils.createImageThumbs(file, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                        ThumbUtils.mediumSibling(thumbFile), albumProperties.getThumb().getMediumWidth())) {
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             } else if (fileType == 2) {
@@ -510,8 +510,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         File thumbFile = new File(thumbDir, thumbName);
         try {
             if (fileType == 1) {
-                ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
-                if (thumbFile.exists()) {
+                if (ThumbUtils.createImageThumbs(file, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                        ThumbUtils.mediumSibling(thumbFile), albumProperties.getThumb().getMediumWidth())) {
                     thumbUrl = "/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName;
                 }
             } else if (fileType == 2) {
@@ -636,8 +636,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
             String thumbName = "s_" + relativeName;
             File thumbFile = new File(thumbDir, thumbName);
             try {
-                ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
-                if (thumbFile.exists() && thumbFile.isFile() && thumbFile.length() > 0) {
+                if (ThumbUtils.createImageThumbs(file, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                        ThumbUtils.mediumSibling(thumbFile), albumProperties.getThumb().getMediumWidth())) {
                     photo.setThumbUrl("/album/files/thumb/" + scanPath.getPathId() + "/" + thumbName);
                     dirty = true;
                 } else {
@@ -1200,8 +1200,8 @@ public class BizScanPathServiceImpl extends ServiceImpl<BizScanPathMapper, BizSc
         String thumbName = "s_" + file.getName();
         File thumbFile = new File(thumbDir, thumbName);
         try {
-            ThumbUtils.createThumbnail(file, thumbFile, albumProperties.getThumb().getSmallWidth());
-            if (thumbFile.exists() && thumbFile.length() > 0) {
+            if (ThumbUtils.createImageThumbs(file, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                    ThumbUtils.mediumSibling(thumbFile), albumProperties.getThumb().getMediumWidth())) {
                 String rel = (pathId != null ? String.valueOf(pathId) : uploadThumbDateDir()) + "/" + thumbName;
                 String thumbUrl = "/album/files/thumb/" + rel;
                 photo.setThumbUrl(thumbUrl);

@@ -7,18 +7,20 @@
       :polyline-color="track?.trackColor || '#3B82F6'"
       :segment-by-travel-mode="true"
       :show-direction="trackLineVisible && !editing && !customOpen && !mergeOpen && !boxSelectMode && !correcting"
-      :editable="editable && editing && !customOpen && !mergeOpen && !boxSelectMode && !correcting"
-      :active-segment-index="editing && !customOpen && !mergeOpen && !boxSelectMode ? activeIndex : -1"
-      :path-edit-index="editing && !customOpen && !mergeOpen && !boxSelectMode ? activeIndex : -1"
-      :segment-labels="editing || correcting ? 'none' : 'hover'"
+      :editable="editable && editing && !customOpen && !mergeOpen && !boxSelectMode && !freehandActive && !correcting"
+      :active-segment-index="editing && !customOpen && !mergeOpen && !boxSelectMode && !freehandActive ? activeIndex : -1"
+      :path-edit-index="editing && !customOpen && !mergeOpen && !boxSelectMode && !freehandActive ? activeIndex : -1"
+      :segment-labels="editing || correcting || freehandActive ? 'none' : 'hover'"
       :preview-path="customPreviewPath"
       :overlay-paths="mapGpxOverlays"
       :show-travelers="trackLineVisible"
       :visible-travel-modes="visibleTravelModes"
-      :gpx-endpoint-pickable="editing && customOpen && customTab === 'place'"
-      :point-pickable="editing && customOpen && customTab === 'place'"
+      :gpx-endpoint-pickable="editing && customOpen && customTab === 'place' && !freehandActive"
+      :point-pickable="editing && customOpen && customTab === 'place' && !freehandActive"
       :location-correctable="correcting"
-      :box-select-active="editing && boxSelectMode"
+      :box-select-active="editing && boxSelectMode && !freehandActive"
+      :freehand-active="freehandActive"
+      :freehand-anchors="freehandAnchors"
       :selected-segment-indexes="selectedSegmentIndexes"
       :show-media-markers="!tracksOnly"
       :show-mode-legend="false"
@@ -27,10 +29,13 @@
       @segment-click="onSegmentClick"
       @segment-path-change="onSegmentPathChange"
       @waypoint-click="onWaypointClick"
+      @waypoint-move="onWaypointMove"
       @point-click="onTrackPointPick"
       @gpx-click="onGpxClick"
       @gpx-endpoint-click="onGpxEndpointClick"
       @box-select="onBoxSelect"
+      @freehand-complete="onFreehandComplete"
+      @freehand-cancel="onFreehandCancel"
       @location-select="onCorrectSelect"
       @location-drag-end="onCorrectDragEnd"
       @terrain-mode-change="onTerrainModeChange"
@@ -117,7 +122,8 @@
             </div>
             <p v-if="correcting" class="edit-tip">纠正模式：拖动照片/视频缩略图到岸边正确位置，右侧保存后会写成手工坐标并同步轨迹；相邻路段需再点「贴合路网」。</p>
             <p v-else-if="editing && boxSelectMode" class="edit-tip">在地图上按住拖拽拉框，选中橙色高亮路段后可批量改出行方式并贴合路网。蓝虚线表示尚未贴合。</p>
-            <p v-else-if="editing" class="edit-tip">点线路改走向；可用「框选」批量修改。点橙色途经点可改说明或删除自定义路段。增补时可选用 GPX 起/终或照片点做连接（不改 GPX 折线）。</p>
+            <p v-else-if="editing && freehandActive" class="edit-tip">自由绘制中：按住拖动画线，松开完成；Esc 或「取消手绘」退出。起终点会自动对齐锚点。</p>
+            <p v-else-if="editing" class="edit-tip">点增补路段后，拖橙色途经点/端点接到 GPX 起终或其他点；中间点改走向。也可用「自由绘制」或「框选」。</p>
             <p v-else-if="hasGpxPathOverlay" class="edit-tip">彩色 GPX 线路按出行方式着色（与照片轨一致）；点击线路可查看详情并修改出行方式。</p>
           </div>
         </div>
@@ -301,10 +307,14 @@
           remote
           clearable
           reserve-keyword
+          teleported
+          popper-class="track-amap-place-popper"
           placeholder="搜索起点（如：北京南站）"
           :remote-method="q => searchPlace(q, 'from')"
           :loading="customFromSearching"
+          :disabled="freehandActive"
           style="width: 100%"
+          @focus="onPlaceSearchFocus"
           @change="onPickCustomPlace('from')"
         >
           <el-option
@@ -328,10 +338,14 @@
           remote
           clearable
           reserve-keyword
+          teleported
+          popper-class="track-amap-place-popper"
           placeholder="搜索终点"
           :remote-method="q => searchPlace(q, 'to')"
           :loading="customToSearching"
+          :disabled="freehandActive"
           style="width: 100%"
+          @focus="onPlaceSearchFocus"
           @change="onPickCustomPlace('to')"
         >
           <el-option
@@ -389,10 +403,14 @@
               remote
               clearable
               reserve-keyword
+              teleported
+              popper-class="track-amap-place-popper"
               placeholder="高德搜索：清河站"
               :remote-method="q => searchTrainStation(q, 'from')"
               :loading="trainFromSearching"
+              :disabled="freehandActive"
               style="width: 100%"
+              @focus="onPlaceSearchFocus"
               @change="onPickTrainStation('from')"
             >
               <el-option
@@ -416,10 +434,14 @@
               remote
               clearable
               reserve-keyword
+              teleported
+              popper-class="track-amap-place-popper"
               placeholder="高德搜索：八达岭长城站"
               :remote-method="q => searchTrainStation(q, 'to')"
               :loading="trainToSearching"
+              :disabled="freehandActive"
               style="width: 100%"
+              @focus="onPlaceSearchFocus"
               @change="onPickTrainStation('to')"
             >
               <el-option
@@ -526,8 +548,13 @@
 
       <p v-if="customHint" class="route-hint">{{ customHint }}</p>
       <div class="seg-panel-ft">
-        <el-button :loading="customPlanning" @click="previewCustomSegment">预览线路</el-button>
-        <el-button type="primary" :loading="customSaving" :disabled="!customPreviewPath?.length" @click="submitCustomSegment">添加到轨迹</el-button>
+        <el-button :loading="customPlanning" :disabled="freehandActive" @click="previewCustomSegment">预览线路</el-button>
+        <el-button
+          :type="freehandActive && freehandTarget === 'custom' ? 'warning' : 'default'"
+          :disabled="customPlanning || customSaving"
+          @click="toggleCustomFreehand"
+        >{{ freehandActive && freehandTarget === 'custom' ? '取消手绘' : '自由绘制' }}</el-button>
+        <el-button type="primary" :loading="customSaving" :disabled="!customPreviewPath?.length || freehandActive" @click="submitCustomSegment">添加到轨迹</el-button>
       </div>
     </aside>
 
@@ -536,7 +563,7 @@
         <div class="seg-panel-title">途经点 #{{ waypointPoint?.sequence ?? (waypointIndex + 1) }}</div>
         <button type="button" class="seg-close" @click="closeWaypointPanel">×</button>
       </div>
-      <p class="path-tip">自定义增补的途经点（无照片）。可改名称说明，或删除本点 / 整段。</p>
+      <p class="path-tip">自定义增补的途经点（无照片）。可在地图上拖动接到 GPX 起/终或其他轨迹点；也可改名称或删除。</p>
       <div class="seg-label">名称 / 说明</div>
       <el-input
         v-model="waypointDesc"
@@ -595,7 +622,7 @@
     <aside v-if="editing && !customOpen && !mergeOpen && !boxSelectMode && waypointIndex < 0 && activeIndex >= 0" class="seg-panel">
       <div class="seg-panel-hd">
         <div class="seg-panel-title">路段编辑 #{{ activeIndex + 1 }}</div>
-        <button type="button" class="seg-close" @click="activeIndex = -1">×</button>
+        <button type="button" class="seg-close" @click="closeSegmentPanel">×</button>
       </div>
       <div class="seg-route">
         <div class="seg-end">
@@ -611,11 +638,20 @@
 
       <div class="seg-label">线路调整</div>
       <div class="path-actions">
-        <el-button type="primary" size="small" :loading="planning" @click="snapSegment">贴合路网</el-button>
-        <el-button size="small" :disabled="planning" @click="straightenSegment">改为直线</el-button>
+        <el-button type="primary" size="small" :loading="planning" :disabled="freehandActive" @click="snapSegment">贴合路网</el-button>
+        <el-button size="small" :disabled="planning || freehandActive" @click="straightenSegment">改为直线</el-button>
+        <el-button
+          size="small"
+          :type="freehandActive && freehandTarget === 'segment' ? 'warning' : 'default'"
+          :disabled="planning"
+          @click="toggleSegmentFreehand"
+        >{{ freehandActive && freehandTarget === 'segment' ? '取消手绘' : '自由绘制' }}</el-button>
       </div>
-      <p class="path-tip">
-        地图上拖动橙色圆点自定义走向；照片锚点（灰点）固定。双击绿色线路可增加拐点。
+      <p v-if="freehandActive && freehandTarget === 'segment'" class="path-tip">
+        按住鼠标在地图上画线，松开完成；起终点自动对齐本段锚点。Esc 取消。
+      </p>
+      <p v-else class="path-tip">
+        橙色端点/途经点可拖到 GPX 起终或其他点上吸附连接；中间橙点改走向。照片锚点（灰）固定。路网贴合不上再用「自由绘制」。
       </p>
 
       <div class="seg-label">出行方式</div>
@@ -769,6 +805,10 @@ const travelModes = TRAVEL_MODES
 
 /** 框选批量 */
 const boxSelectMode = ref(false)
+/** 自由绘制：segment=路段编辑 / custom=增补路段 */
+const freehandActive = ref(false)
+const freehandTarget = ref('')
+const freehandAnchors = ref(null)
 const selectedSegmentIndexes = ref([])
 const batchMode = ref('walk')
 const batchPlanning = ref(false)
@@ -1260,9 +1300,18 @@ function placeKey(item) {
   return item?.id || `${item?.name},${item?.lng},${item?.lat}`
 }
 
+function onPlaceSearchFocus() {
+  // 手绘占用地图指针事件时，先退出，避免下拉/输入被打断
+  if (freehandActive.value) {
+    stopFreehand()
+    customHint.value = '已退出自由绘制，可继续高德搜索'
+  }
+}
+
 function searchPlace(query, which) {
   const q = (query || '').trim()
   if (!q) return
+  if (freehandActive.value) stopFreehand()
   clearTimeout(placeSearchTimer)
   placeSearchTimer = setTimeout(async () => {
     if (which === 'from') customFromSearching.value = true
@@ -1272,9 +1321,13 @@ function searchPlace(query, which) {
       const list = res.data || []
       if (which === 'from') customFromOptions.value = list
       else customToOptions.value = list
+      if (!list.length) {
+        customHint.value = `未找到「${q}」，可换关键词或检查高德 Web Key`
+      }
     } catch (e) {
       if (which === 'from') customFromOptions.value = []
       else customToOptions.value = []
+      customHint.value = e?.message || e?.msg || '高德搜索失败，请检查 album.map.webKey / 网络'
     } finally {
       if (which === 'from') customFromSearching.value = false
       else customToSearching.value = false
@@ -1309,6 +1362,7 @@ function toggleCustomPanel() {
   if (customOpen.value) {
     closeCustomPanel()
   } else {
+    stopFreehand()
     exitBoxSelect(false)
     customOpen.value = true
     activeIndex.value = -1
@@ -1317,12 +1371,19 @@ function toggleCustomPanel() {
     closeGpxPanel()
     customHint.value = gpxAnchorOptions.value.length || trackPointAnchorOptions.value.length
       ? '可选：搜索地点 / GPX 起终 / 现有轨迹点；默认不自动接邻点'
-      : '搜索并选择起点、终点后预览，再添加到轨迹'
+      : '搜索并选择起点、终点后预览，再自由绘制或预览路网'
     loadTrainApiStatus()
   }
 }
 
+function closeSegmentPanel() {
+  if (freehandTarget.value === 'segment') stopFreehand()
+  activeIndex.value = -1
+  routeHint.value = ''
+}
+
 function closeCustomPanel() {
+  if (freehandTarget.value === 'custom') stopFreehand()
   customOpen.value = false
   customPreviewPath.value = null
   customHint.value = ''
@@ -1363,6 +1424,7 @@ function switchTrainTab() {
 function searchTrainStation(query, which) {
   const q = (query || '').trim()
   if (!q) return
+  if (freehandActive.value) stopFreehand()
   clearTimeout(placeSearchTimer)
   placeSearchTimer = setTimeout(async () => {
     if (which === 'from') trainFromSearching.value = true
@@ -1373,9 +1435,13 @@ function searchTrainStation(query, which) {
       const list = res.data || []
       if (which === 'from') trainFromOptions.value = list
       else trainToOptions.value = list
+      if (!list.length) {
+        customHint.value = `未找到车站「${kw}」，可换官方站名或检查高德 Web Key`
+      }
     } catch (e) {
       if (which === 'from') trainFromOptions.value = []
       else trainToOptions.value = []
+      customHint.value = e?.message || e?.msg || '高德搜站失败，请检查 album.map.webKey / 网络'
     } finally {
       if (which === 'from') trainFromSearching.value = false
       else trainToSearching.value = false
@@ -1886,12 +1952,13 @@ function startEdit() {
   exitCorrectMode()
   closeMergePanel()
   clearPendingMerge()
+  stopFreehand()
   draftPoints.value = clonePoints(props.points)
   editing.value = true
   activeIndex.value = -1
   draftMode.value = ''
   draftDesc.value = ''
-  routeHint.value = '点击地图上的一段线路开始编辑；或点「框选」批量修改'
+  routeHint.value = '点击地图上的一段线路开始编辑；路网贴合不上可用「自由绘制」'
   customOpen.value = false
   customPreviewPath.value = null
   exitBoxSelect(false)
@@ -2032,11 +2099,103 @@ function cancelEdit() {
   draftMode.value = ''
   draftDesc.value = ''
   routeHint.value = ''
+  stopFreehand()
   closeCustomPanel()
   closeMergePanel()
   clearPendingMerge()
   closeWaypointPanel()
   exitBoxSelect(false)
+}
+
+function stopFreehand() {
+  freehandActive.value = false
+  freehandTarget.value = ''
+  freehandAnchors.value = null
+}
+
+function buildFreehandAnchors(from, to) {
+  if (!from || !to) return null
+  return {
+    from: toMapLatLng(from),
+    to: toMapLatLng(to)
+  }
+}
+
+function ensureExitTerrainForFreehand() {
+  if (clusterMapRef.value?.terrainMode) {
+    clusterMapRef.value?.exitTerrainMode?.()
+  }
+}
+
+function toggleSegmentFreehand() {
+  if (!editing.value || activeIndex.value < 0) return
+  if (freehandActive.value && freehandTarget.value === 'segment') {
+    stopFreehand()
+    routeHint.value = '已取消自由绘制'
+    return
+  }
+  const from = draftPoints.value[activeIndex.value]
+  const to = draftPoints.value[activeIndex.value + 1]
+  if (!from || !to) {
+    routeHint.value = '当前路段无效'
+    return
+  }
+  ensureExitTerrainForFreehand()
+  exitBoxSelect(false)
+  freehandTarget.value = 'segment'
+  freehandAnchors.value = buildFreehandAnchors(from, to)
+  freehandActive.value = true
+  routeHint.value = '按住拖动画线，松开完成；Esc 取消'
+}
+
+function toggleCustomFreehand() {
+  if (!editing.value || !customOpen.value) return
+  if (freehandActive.value && freehandTarget.value === 'custom') {
+    stopFreehand()
+    customHint.value = '已取消自由绘制'
+    return
+  }
+  if (!customFrom.value || !customTo.value) {
+    customHint.value = '请先选定起点和终点，再自由绘制'
+    return
+  }
+  ensureExitTerrainForFreehand()
+  freehandTarget.value = 'custom'
+  freehandAnchors.value = {
+    from: [Number(customFrom.value.lat), Number(customFrom.value.lng)],
+    to: [Number(customTo.value.lat), Number(customTo.value.lng)]
+  }
+  freehandActive.value = true
+  customHint.value = '按住拖动画线连接起终点，松开完成；Esc 取消'
+}
+
+function onFreehandComplete({ path }) {
+  const target = freehandTarget.value
+  stopFreehand()
+  if (!Array.isArray(path) || path.length < 2) {
+    if (target === 'custom') customHint.value = '手绘点数太少，请重试'
+    else routeHint.value = '手绘点数太少，请重试'
+    return
+  }
+  if (target === 'custom') {
+    customPreviewPath.value = path
+    customHint.value = `已手绘 ${path.length} 个点，可「添加到轨迹」`
+    return
+  }
+  if (target === 'segment' && activeIndex.value >= 0) {
+    const p = draftPoints.value[activeIndex.value]
+    if (!p) return
+    p.routePath = JSON.stringify(path)
+    draftPoints.value = [...draftPoints.value]
+    routeHint.value = `已手绘 ${path.length} 个点，记得「保存全部」`
+  }
+}
+
+function onFreehandCancel() {
+  const target = freehandTarget.value
+  stopFreehand()
+  if (target === 'custom') customHint.value = '已取消自由绘制'
+  else if (target === 'segment') routeHint.value = '已取消自由绘制'
 }
 
 function toggleBoxSelect() {
@@ -2045,6 +2204,7 @@ function toggleBoxSelect() {
     exitBoxSelect()
     return
   }
+  stopFreehand()
   customOpen.value = false
   activeIndex.value = -1
   waypointIndex.value = -1
@@ -2184,10 +2344,34 @@ async function applyBatchSnap() {
   }
 }
 
+/** 折线点与锚点偏差过大（米）：点击编辑时勿硬拽旧中点，否则会「跳飞」 */
+const PATH_SNAP_JUMP_M = 35
+
+function mapPointMeters(a, b) {
+  if (!a || !b || a.length < 2 || b.length < 2) return Infinity
+  const lat1 = Number(a[0])
+  const lng1 = Number(a[1])
+  const lat2 = Number(b[0])
+  const lng2 = Number(b[1])
+  if ([lat1, lng1, lat2, lng2].some(Number.isNaN)) return Infinity
+  const mid = ((lat1 + lat2) / 2) * Math.PI / 180
+  const dx = (lng2 - lng1) * Math.cos(mid) * 111320
+  const dy = (lat2 - lat1) * 110540
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+function straightEditPath(fromPt, toPt) {
+  const a = toMapLatLng(fromPt)
+  const b = toMapLatLng(toPt)
+  return [a, [(Number(a[0]) + Number(b[0])) / 2, (Number(a[1]) + Number(b[1])) / 2], b]
+}
+
 function ensureDragHandle(index) {
   const p = draftPoints.value[index]
   const next = draftPoints.value[index + 1]
-  if (!p || !next) return
+  if (!p || !next) return { jumped: false }
+  const start = toMapLatLng(p)
+  const end = toMapLatLng(next)
   let path = null
   if (p.routePath) {
     try {
@@ -2197,16 +2381,35 @@ function ensureDragHandle(index) {
     }
   }
   if (!Array.isArray(path) || path.length < 2) {
-    path = [toMapLatLng(p), toMapLatLng(next)]
+    p.routePath = JSON.stringify(straightEditPath(p, next))
+    draftPoints.value = [...draftPoints.value]
+    return { jumped: false }
   }
-  // 仅有两端时插入中点，方便直接拖动改线
-  if (path.length === 2) {
-    const a = path[0]
-    const b = path[1]
-    path = [a, [(Number(a[0]) + Number(b[0])) / 2, (Number(a[1]) + Number(b[1])) / 2], b]
-    p.routePath = JSON.stringify(path)
+  const d0 = mapPointMeters(path[0], start)
+  const d1 = mapPointMeters(path[path.length - 1], end)
+  // 折线画在 GPX「起/终」附近，但锚点其实是橙色途经点：硬对齐会整段跳走
+  if (d0 > PATH_SNAP_JUMP_M || d1 > PATH_SNAP_JUMP_M) {
+    p.routePath = JSON.stringify(straightEditPath(p, next))
+    draftPoints.value = [...draftPoints.value]
+    return { jumped: true, d0, d1 }
+  }
+  // 小偏差：只把两端轻轻贴到锚点，保留中间拐点
+  const nextPath = path.map((pt) => [Number(pt[0]), Number(pt[1])])
+  nextPath[0] = start
+  nextPath[nextPath.length - 1] = end
+  if (nextPath.length === 2) {
+    const a = nextPath[0]
+    const b = nextPath[1]
+    nextPath.splice(1, 0, [(Number(a[0]) + Number(b[0])) / 2, (Number(a[1]) + Number(b[1])) / 2])
+  }
+  const same = nextPath.length === path.length
+    && nextPath.every((pt, i) => Math.abs(pt[0] - Number(path[i][0])) < 1e-8
+      && Math.abs(pt[1] - Number(path[i][1])) < 1e-8)
+  if (!same) {
+    p.routePath = JSON.stringify(nextPath)
     draftPoints.value = [...draftPoints.value]
   }
+  return { jumped: false }
 }
 
 function onSegmentClick({ index }) {
@@ -2214,11 +2417,13 @@ function onSegmentClick({ index }) {
   if (!props.editable || !editing.value) return
   waypointIndex.value = -1
   activeIndex.value = index
-  ensureDragHandle(index)
+  const snap = ensureDragHandle(index)
   const p = draftPoints.value[index]
   draftMode.value = p?.travelMode || ''
   draftDesc.value = p?.description || ''
-  routeHint.value = '可拖动橙色拐点改线，或点「贴合路网」按出行方式重算'
+  routeHint.value = snap?.jumped
+    ? '折线端点与途经点不一致（常因对着 GPX 起/终画的线），已改回锚点之间的可编辑折线；可用自由绘制重画'
+    : '可拖动橙色拐点改线；贴合不上时点「自由绘制」'
 }
 
 function onWaypointClick({ index }) {
@@ -2320,6 +2525,42 @@ function onSegmentPathChange({ index, path }) {
   p.routePath = JSON.stringify(path)
   routeHint.value = `已手动调整（${path.length} 个点），记得保存`
   draftPoints.value = [...draftPoints.value]
+}
+
+/** 拖动途经点后：更新坐标，并把相邻折线接到新位置（可吸附 GPX/邻点） */
+function onWaypointMove({ index, latitude, longitude, snappedName }) {
+  if (!editing.value || index < 0) return
+  const list = draftPoints.value
+  const p = list[index]
+  if (!p || !isWaypointPoint(p)) return
+  p.latitude = latitude
+  p.longitude = longitude
+  if (snappedName) {
+    p.description = snappedName
+    if (waypointIndex.value === index) waypointDesc.value = snappedName
+  }
+  // 前一段：终点被拖动 → 折线接到新坐标
+  if (index > 0 && list[index - 1]) {
+    const prev = list[index - 1]
+    prev.routePath = JSON.stringify(straightEditPath(prev, p))
+  }
+  // 本点到下一点
+  if (index < list.length - 1 && list[index + 1]) {
+    p.routePath = JSON.stringify(straightEditPath(p, list[index + 1]))
+  } else {
+    p.routePath = ''
+  }
+  draftPoints.value = [...list]
+  if (activeIndex.value === index || activeIndex.value === index - 1) {
+    routeHint.value = snappedName
+      ? `已吸附到「${snappedName}」，相邻折线已重接；记得保存`
+      : '途经点已移动，相邻折线已重接；可再贴合路网或自由绘制，记得保存'
+  }
+  if (waypointIndex.value === index) {
+    waypointHint.value = snappedName
+      ? `已吸附到「${snappedName}」，记得保存全部`
+      : '位置已更新，记得点「保存全部」写回路段'
+  }
 }
 
 function applyDescription() {
@@ -2449,13 +2690,21 @@ async function saveEdit() {
   }
 
   saving.value = true
-  const payload = draftPoints.value.map(p => ({
-    pointId: p.pointId,
-    travelMode: p.travelMode ?? '',
-    description: p.description ?? '',
-    routePath: p.routePath ?? '',
-    sequence: p.sequence
-  }))
+  const payload = draftPoints.value.map(p => {
+    const row = {
+      pointId: p.pointId,
+      travelMode: p.travelMode ?? '',
+      description: p.description ?? '',
+      routePath: p.routePath ?? '',
+      sequence: p.sequence
+    }
+    // 途经点拖动后的新坐标一并落库
+    if (isWaypointPoint(p) && p.latitude != null && p.longitude != null) {
+      row.latitude = p.latitude
+      row.longitude = p.longitude
+    }
+    return row
+  })
   try {
     await updateTrackPoints(payload)
     proxy?.$modal?.msgSuccess?.('轨迹路段已保存')
@@ -2712,7 +2961,8 @@ defineExpose({
 
 .seg-panel {
   position: absolute;
-  z-index: 1200;
+  /* 高于地图工具条(500)，低于轨迹全屏弹窗内下拉(5000) */
+  z-index: 3200;
   pointer-events: auto;
   top: 72px;
   right: 16px;
@@ -3009,5 +3259,12 @@ defineExpose({
 .merge-sub {
   color: #909399;
   font-size: 11px;
+}
+</style>
+
+<!-- 轨迹查看弹窗 z-index=3000，远程下拉必须更高，否则选项在弹窗后面点不到 -->
+<style>
+.track-amap-place-popper {
+  z-index: 5000 !important;
 }
 </style>

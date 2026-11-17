@@ -23,7 +23,9 @@ public final class PhotoStorageCleanup {
             return;
         }
         deleteQuietly(resolveOriginFile(photo));
-        deleteQuietly(resolveThumbFile(photo, albumProperties));
+        File thumb = resolveThumbFile(photo, albumProperties);
+        deleteQuietly(thumb);
+        deleteQuietly(ThumbUtils.mediumSibling(thumb));
         deleteProxyDir(photo, albumProperties);
     }
 

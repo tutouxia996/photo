@@ -256,8 +256,11 @@ public class PhotoDrawServiceImpl implements IPhotoDrawService {
             File thumbDir = new File(albumProperties.getThumbPath(), datePath);
             String thumbName = "s_" + savedName;
             File thumbFile = new File(thumbDir, thumbName);
-            ThumbUtils.createThumbnail(dest, thumbFile, albumProperties.getThumb().getSmallWidth());
-            return "/album/files/thumb/" + datePath + "/" + thumbName;
+            if (ThumbUtils.createImageThumbs(dest, thumbFile, albumProperties.getThumb().getSmallWidth(),
+                    ThumbUtils.mediumSibling(thumbFile), albumProperties.getThumb().getMediumWidth())) {
+                return "/album/files/thumb/" + datePath + "/" + thumbName;
+            }
+            return null;
         } catch (Exception e) {
             log.warn("draw thumb failed: {}", e.getMessage());
             return null;

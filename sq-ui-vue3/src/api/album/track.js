@@ -72,7 +72,10 @@ export function searchTrackPlace(params) {
   return request({
     url: '/album/track/place/search',
     method: 'get',
-    params
+    params,
+    // 远程下拉连打时不要全局 loading，否则会抢焦点、关掉下拉
+    headers: { repeatSubmit: false },
+    showActionLoading: false
   })
 }
 

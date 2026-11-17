@@ -420,6 +420,14 @@ public class BizTrackController extends BaseController {
             if (item.getSequence() != null) {
                 db.setSequence(item.getSequence());
             }
+            // 无照片途经点允许拖动改坐标（接 GPX/邻点）；照片点坐标仍由媒体纠正接口改
+            boolean isWaypoint = db.getPhotoId() == null || db.getPhotoId() == 0L;
+            boolean movedWaypoint = false;
+            if (isWaypoint && item.getLatitude() != null && item.getLongitude() != null) {
+                db.setLatitude(item.getLatitude());
+                db.setLongitude(item.getLongitude());
+                movedWaypoint = true;
+            }
             boolean hasClientPath = item.getRoutePath() != null && !item.getRoutePath().trim().isEmpty();
             if (modeChanged && !hasClientPath) {
                 // 出行方式变了且未带新折线 → 按新方式重规划（清空方式时会把折线置空）
@@ -440,6 +448,10 @@ public class BizTrackController extends BaseController {
                     .set(BizTrackPoint::getRoutePath, db.getRoutePath());
             if (item.getSequence() != null) {
                 uw.set(BizTrackPoint::getSequence, item.getSequence());
+            }
+            if (movedWaypoint) {
+                uw.set(BizTrackPoint::getLatitude, db.getLatitude())
+                        .set(BizTrackPoint::getLongitude, db.getLongitude());
             }
             trackPointService.update(uw);
         }

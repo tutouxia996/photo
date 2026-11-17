@@ -409,6 +409,18 @@
   cursor: default;
 }
 
+.pmc-vertex.is-end.is-movable {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  background: #f59e0b;
+  cursor: grab;
+}
+
+.pmc-vertex.is-end.is-movable:active {
+  cursor: grabbing;
+}
+
 .leaflet-div-icon.pmc-dir-marker,
 .leaflet-div-icon.pmc-end-marker {
   background: transparent !important;

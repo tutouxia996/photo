@@ -251,15 +251,12 @@ function resolveUrl(url) {
   return import.meta.env.VITE_APP_BASE_API + url
 }
 
-/** 优先静态 thumbUrl；视频无封面时用按需截帧接口 */
+/** 优先静态 thumbUrl；缺失时走 /thumb（可按需截帧），不回退 /media */
 function thumbSrc(item) {
   if (!item) return ''
   if (item.thumbUrl) return resolveUrl(item.thumbUrl)
-  if (Number(item.fileType) === 2 && item.photoId) {
-    return resolveUrl('/album/photo/thumb/' + item.photoId)
-  }
   if (!item.photoId) return ''
-  return resolveUrl('/album/photo/media/' + item.photoId)
+  return resolveUrl('/album/photo/thumb/' + item.photoId)
 }
 
 function originalSrc(item) {

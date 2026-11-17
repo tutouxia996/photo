@@ -14,12 +14,14 @@ import com.sq.bus.service.IBizPhotoService;
 import com.sq.bus.service.IBizTrackGpxFileService;
 import com.sq.bus.service.IBizTrackPointService;
 import com.sq.bus.service.IBizTrackService;
+import com.sq.bus.utils.PhotoMapPointSupport;
 import com.sq.common.core.controller.BaseController;
 import com.sq.common.core.domain.AjaxResult;
 import com.sq.common.core.page.TableDataInfo;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -128,7 +130,12 @@ public class PublicShareController extends BaseController {
      */
     @GetMapping("/{token}/mapPoints")
     public AjaxResult mapPoints(@PathVariable("token") String token,
-                                @RequestParam(value = "albumId", required = false) Long albumId) {
+                                @RequestParam(value = "albumId", required = false) Long albumId,
+                                @RequestParam(value = "minLat", required = false) BigDecimal minLat,
+                                @RequestParam(value = "maxLat", required = false) BigDecimal maxLat,
+                                @RequestParam(value = "minLng", required = false) BigDecimal minLng,
+                                @RequestParam(value = "maxLng", required = false) BigDecimal maxLng,
+                                @RequestParam(value = "limit", required = false) Integer limit) {
         BizAlbumShare share = shareService.getValidByToken(token);
         if (share == null) {
             return error("分享不存在或已失效");
@@ -137,8 +144,12 @@ public class PublicShareController extends BaseController {
         LambdaQueryWrapper<BizPhoto> wrapper = shareService.buildPhotoQuery(share, filter);
         wrapper.isNotNull(BizPhoto::getLatitude).isNotNull(BizPhoto::getLongitude)
                 .orderByAsc(BizPhoto::getShootTime);
+        PhotoMapPointSupport.selectMapColumns(wrapper);
+        PhotoMapPointSupport.applyBbox(wrapper, minLat, maxLat, minLng, maxLng);
+        Integer effectiveLimit = limit != null ? limit : PhotoMapPointSupport.MAX_LIMIT;
+        PhotoMapPointSupport.applyLimit(wrapper, effectiveLimit);
         List<BizPhoto> list = photoService.list(wrapper);
-        return success(shareService.sanitizePhotos(list));
+        return success(PhotoMapPointSupport.toVos(list));
     }
 
     /**
