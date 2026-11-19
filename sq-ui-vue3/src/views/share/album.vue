@@ -696,11 +696,10 @@ function mediumSrc(item) {
   return photoMediumSrc(item, resolveUrl)
 }
 
-/** 分享查看器：图片用中图；全景仍用原图 */
+/** 分享查看器：高清层走原图；小图预览仍先出。邻片预取用 medium */
 function viewerSrc(item) {
   if (!item) return ''
-  if (isPanoPhoto(item)) return originalSrc(item)
-  return mediumSrc(item)
+  return originalSrc(item)
 }
 
 /** 视频优先 480p 代理（已生成则省带宽；未就绪后端回退原片） */

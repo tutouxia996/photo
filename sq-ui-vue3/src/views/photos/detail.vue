@@ -1480,13 +1480,12 @@ function mediumSrc(item) {
 }
 
 /**
- * 浏览层走 medium（约 800px）；1:1 像素模式才拉原图。
- * 底下仍有 media-image-preview 小图先出。
+ * 查看器高清层走原图（清晰）；底下 media-image-preview 小图先出保首屏速度。
+ * 邻片预取仍用 medium，避免左右切换时连打原图。
  */
 function viewerSrc(item) {
   if (!item) return ''
-  if (imageMode.value === 'original') return originalSrc(item)
-  return mediumSrc(item)
+  return originalSrc(item)
 }
 
 function preloadViewerNeighbors(centerIdx) {

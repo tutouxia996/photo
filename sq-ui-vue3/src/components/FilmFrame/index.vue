@@ -232,12 +232,18 @@ function observeView() {
 function mediaEl() {
   const root = slotRef.value
   if (!root) return null
+  // 优先用已解码且像素最宽的图，避免片边长期锁在 300px 预览上
+  const imgs = Array.from(root.querySelectorAll?.('img.media-image') || [])
+  let best = null
+  for (const img of imgs) {
+    if (!img.complete || !(img.naturalWidth > 0)) continue
+    if (!best || img.naturalWidth > best.naturalWidth) best = img
+  }
+  if (best) return best
   const hires = root.querySelector?.('img.media-image.is-hires')
-  // 高清已就绪才用；否则先用缩略预览合成，避免干等
-  if (hires && hires.complete && hires.naturalWidth > 0) return hires
-  const preview = root.querySelector?.('img.media-image-preview')
-  if (preview && (preview.complete ? preview.naturalWidth > 0 : true)) return preview
   if (hires) return hires
+  const preview = root.querySelector?.('img.media-image-preview')
+  if (preview) return preview
   return root.querySelector?.('img, video') || null
 }
 
@@ -254,10 +260,43 @@ function cancelThumbJob() {
   }
 }
 
+async function waitMediaReady(el, token, ms = 2500) {
+  if (!el) return false
+  const ok = () => {
+    if (token !== renderToken) return false
+    if (el.tagName === 'VIDEO') return el.readyState >= 2 && el.videoWidth > 0
+    return el.complete && el.naturalWidth > 0
+  }
+  if (ok()) return true
+  await new Promise((resolve) => {
+    const done = () => {
+      el.removeEventListener('load', done)
+      el.removeEventListener('loadeddata', done)
+      resolve()
+    }
+    el.addEventListener('load', done)
+    el.addEventListener('loadeddata', done)
+    setTimeout(done, ms)
+  })
+  return ok()
+}
+
 async function paintNow(token) {
   const canvas = canvasRef.value
+  if (!canvas) return false
+
+  // 全屏：先尽量等一下高清层，避免片边用 300px 预览合成后长期不升级
+  if (!isThumb.value) {
+    const root = slotRef.value
+    const hires = root?.querySelector?.('img.media-image.is-hires')
+    if (hires && !(hires.complete && hires.naturalWidth > 0)) {
+      await waitMediaReady(hires, token, 1800)
+      if (token !== renderToken) return false
+    }
+  }
+
   const media = mediaEl()
-  if (!canvas || !media) return false
+  if (!media) return false
 
   // 记录当前 src，避免切图瞬间用上一张的位图合成片边
   const srcAtStart = media.currentSrc || media.src || ''
@@ -271,23 +310,21 @@ async function paintNow(token) {
   }
 
   if (!ready()) {
-    await new Promise((resolve) => {
-      const done = () => {
-        media.removeEventListener('load', done)
-        media.removeEventListener('loadeddata', done)
-        resolve()
-      }
-      media.addEventListener('load', done)
-      media.addEventListener('loadeddata', done)
-      setTimeout(done, 2500)
-    })
+    await waitMediaReady(media, token, 2500)
   }
   if (token !== renderToken || !ready()) return false
 
-  // 缩略图小边；全屏用更高边长，避免片边合成发糊
+  // 缩略图小边；全屏按源图像素拉满（上限 2400），避免用小图硬拉到大画布发糊
+  const nw = media.naturalWidth || media.videoWidth || 0
   const maxLongEdge = isThumb.value
-    ? Math.min(220, Math.max(media.naturalWidth || 160, 120))
-    : Math.min(1600, Math.max(media.naturalWidth || 1000, 900))
+    ? Math.min(220, Math.max(nw || 160, 120))
+    : Math.min(2400, Math.max(nw || 1200, 1200))
+
+  // 已用更高清源合成过则跳过同级/更糊的重绘
+  if (!isThumb.value && canvasReady.value && canvas.dataset.filmNw) {
+    const prev = Number(canvas.dataset.filmNw) || 0
+    if (prev > 0 && nw > 0 && nw < prev * 0.85) return true
+  }
 
   const result = renderFilmStrip(canvas, media, {
     stockId: preset.value.id,
@@ -316,6 +353,7 @@ async function paintNow(token) {
     canvas.style.maxWidth = 'min(88vw, 1120px)'
     canvas.style.maxHeight = 'min(74vh, 740px)'
   }
+  if (nw > 0) canvas.dataset.filmNw = String(nw)
   canvasReady.value = true
   emit('rendered', true)
   return true
@@ -395,6 +433,7 @@ watch(
   () => [props.photo?.photoId, props.stockId, props.showBorder, props.showInfo, props.frameNo, props.mode, props.live],
   async () => {
     canvasReady.value = false
+    if (canvasRef.value?.dataset) delete canvasRef.value.dataset.filmNw
     await nextTick()
     observeGate()
     observeView()
