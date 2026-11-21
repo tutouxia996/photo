@@ -1063,6 +1063,38 @@ export function createEngine({ bookCanvas, leafCanvas }) {
         VH
       }
     },
+    /** book space → canvas pixel */
+    fromBook(bx, by) {
+      return {
+        x: cams.cx + (bx - cams.x) * cams.k,
+        y: cams.cy + (by - cams.y) * cams.k
+      }
+    },
+    /** 强制下一帧重新上传某张 face 纹理（同 canvas 原地重绘后调用） */
+    invalidateFace(key) {
+      if (glR && key && glR.tex[key]) glR.tex[key].img = null
+    },
+    /** 左右页在 canvas 上的像素矩形（用于 HTML 覆盖层对齐） */
+    pageRects(pageW, pageH) {
+      const tl = this.fromBook(-pageW, 0)
+      const br = this.fromBook(pageW, pageH)
+      const mid = this.fromBook(0, 0)
+      const midB = this.fromBook(0, pageH)
+      return {
+        left: {
+          x: tl.x,
+          y: tl.y,
+          w: mid.x - tl.x,
+          h: midB.y - tl.y
+        },
+        right: {
+          x: mid.x,
+          y: mid.y,
+          w: br.x - mid.x,
+          h: br.y - mid.y
+        }
+      }
+    },
     render({
       units,
       faces,
@@ -1251,18 +1283,18 @@ export function createEngine({ bookCanvas, leafCanvas }) {
         if (nL > 0) drawPageBlock(-1, nL)
       }
 
-      // gutter valley
+      // gutter valley（压淡，避免书写时中间像多了一条竖线）
       if (restL != null && restL < last && restR != null && restR > 0) {
-        const gr = g.createLinearGradient(0, 0, 34, 0)
-        gr.addColorStop(0, 'rgba(90,70,40,0.16)')
+        const gr = g.createLinearGradient(0, 0, 22, 0)
+        gr.addColorStop(0, 'rgba(90,70,40,0.06)')
         gr.addColorStop(1, 'rgba(90,70,40,0)')
         g.fillStyle = gr
-        g.fillRect(0, 0, 34, H)
-        const gl2 = g.createLinearGradient(0, 0, -34, 0)
-        gl2.addColorStop(0, 'rgba(90,70,40,0.16)')
+        g.fillRect(0, 0, 22, H)
+        const gl2 = g.createLinearGradient(0, 0, -22, 0)
+        gl2.addColorStop(0, 'rgba(90,70,40,0.06)')
         gl2.addColorStop(1, 'rgba(90,70,40,0)')
         g.fillStyle = gl2
-        g.fillRect(-34, 0, 34, H)
+        g.fillRect(-22, 0, 22, H)
       }
 
       const moving = units.filter(u => u.mode !== 'rest')
