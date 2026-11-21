@@ -1,0 +1,191 @@
+﻿/* ===== paint3d.js ===== */
+  /* ===================================================================
+     volume. a flat fill with a line round it is a paper cut-out; these
+     build a thing out of many small strokes that know which way they
+     face, so the light lands on them properly.
+     light comes from the upper left and slightly front: (-.62,-.55,.56)
+     =================================================================== */
+  var L3=[-.62,-.55,.56];
+  function nrm(v){var m=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/m,v[1]/m,v[2]/m];}
+  function shadeOf(C,lam,o){
+    o=o||{};
+    var amb=o.amb==null?.30:o.amb;
+    var k=clamp(lam,-1,1);
+    if(k>0) return mixC(C, [255,250,238], Math.pow(k,1.5)*(o.hi==null?.44:o.hi));
+    return mixC(C, [26,22,34], Math.min(.62,(-k)*(o.deep==null?.58:o.deep)+ (1-amb)*.06));
+  }
+  function flush(jobs,draw,per){
+    per=per||18;
+    for(var i=0;i<jobs.length;i+=per){
+      (function(chunk){ emit(function(c){ draw(c,chunk); }); })(jobs.slice(i,i+per));
+    }
+  }
+
+  /* ---- an upright cylinder: a mug, a pot, a tin ---- */
+  function cyl(cx,cy,rx,ry,h,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var N=o.n||110,r=gRnd(o.seed||11),jobs=[],i;
+    var taper=o.taper==null?1:o.taper;            /* bottom radius / top radius */
+    for(i=0;i<N;i++){
+      var t=-1+2*(i+.5)/N, dep=Math.sqrt(Math.max(0,1-t*t));
+      var lam=t*L3[0]+dep*L3[2];
+      var col2=shadeOf(C,lam,o);
+      /* light bouncing back off the surface it stands on */
+      if(t>.55)col2=mixC(col2,lite(C,.5),(t-.55)/.45*.34);
+      var x=cx+t*rx, xb=cx+t*rx*taper;
+      var yT=cy+ry*dep, yB=cy+h+ry*taper*dep;
+      jobs.push([x,yT,xb,yB,(rx*2/N)*(o.w||2.9),col2,
+                 (o.a==null?1:o.a)*(.86+r()*.14)]);
+    }
+    flush(jobs,function(c,ch){
+      c.save();c.lineCap="butt";
+      for(var z=0;z<ch.length;z++){
+        var j=ch[z];
+        c.strokeStyle=rgbStr(j[5],j[6]);c.lineWidth=j[4];
+        c.beginPath();c.moveTo(j[0],j[1]);c.lineTo(j[2],j[3]);c.stroke();
+      }
+      c.restore();
+    },20);
+    /* the opening, seen from slightly above */
+    if(o.top!==false){
+      var inner=o.inner?(typeof o.inner==="string"?hexToRgb(o.inner):o.inner):dark(C,.44);
+      emit(function(c){
+        c.save();
+        c.fillStyle=rgbStr(dark(C,.1),1);
+        c.beginPath();c.ellipse(cx,cy,rx,ry,0,0,6.2832);c.fill();
+        c.fillStyle=rgbStr(inner,1);
+        c.beginPath();c.ellipse(cx,cy,rx*.84,ry*.8,0,0,6.2832);c.fill();
+        c.restore();
+      });
+      var rim=[];
+      for(i=0;i<52;i++){
+        var a=i/52*6.2832;
+        var lam2=Math.cos(a)*L3[0]+Math.sin(a)*.2+L3[2]*.5;
+        rim.push([cx+Math.cos(a)*rx,cy+Math.sin(a)*ry,shadeOf(C,lam2,o)]);
+      }
+      flush(rim,function(c,ch){
+        c.save();c.lineCap="round";
+        for(var z=0;z<ch.length;z++){
+          c.strokeStyle=rgbStr(ch[z][2],.95);c.lineWidth=2.3;
+          c.beginPath();c.moveTo(ch[z][0],ch[z][1]);
+          c.lineTo(ch[z][0]+.9,ch[z][1]+.6);c.stroke();
+        }
+        c.restore();
+      },13);
+    }
+    if(o.ink!==false){
+      emit(function(c){
+        c.save();c.strokeStyle=rgbStr(dark(C,.6),o.ia==null?.55:o.ia);
+        c.lineWidth=o.w2||1.7;c.lineJoin="round";
+        c.beginPath();
+        c.moveTo(cx-rx,cy);
+        c.lineTo(cx-rx*taper,cy+h);
+        c.ellipse(cx,cy+h,rx*taper,ry*taper,0,Math.PI,0,true);
+        c.lineTo(cx+rx,cy);
+        c.stroke();c.restore();
+      });
+    }
+  }
+
+  /* ---- a sphere, or a soft round thing ---- */
+  function sph(cx,cy,r0,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var r=gRnd(o.seed||7),jobs=[],i,rings=o.rings||16;
+    for(var ri=0;ri<rings;ri++){
+      var rr=r0*(ri+.5)/rings, n=Math.max(6,Math.round(rr*1.5));
+      for(i=0;i<n;i++){
+        var a=i/n*6.2832+ri*.4;
+        var dx=Math.cos(a)*rr/r0, dy=Math.sin(a)*rr/r0;
+        var dz=Math.sqrt(Math.max(0,1-dx*dx-dy*dy));
+        var lam=dx*L3[0]+dy*L3[1]+dz*L3[2];
+        jobs.push([cx+dx*r0+(r()-.5),cy+dy*r0+(r()-.5),
+                   r0/rings*1.25,shadeOf(C,lam,o),(o.a==null?1:o.a)*(.7+r()*.3)]);
+      }
+    }
+    flush(jobs,function(c,ch){
+      c.save();
+      for(var z=0;z<ch.length;z++){
+        c.fillStyle=rgbStr(ch[z][3],ch[z][4]);
+        c.beginPath();c.arc(ch[z][0],ch[z][1],ch[z][2],0,6.2832);c.fill();
+      }
+      c.restore();
+    },26);
+  }
+
+  /* ---- a box seen in three-quarter: front, top and one side ---- */
+  function slab(x,y,w,h,dx,dy,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var F=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];
+    var T=[[x,y],[x+w,y],[x+w+dx,y+dy],[x+dx,y+dy]];
+    var S=[[x+w,y],[x+w+dx,y+dy],[x+w+dx,y+dy+h],[x+w,y+h]];
+    /* top catches the most light, the side the least */
+    paintFace(T,shadeOf(C,.82,o),{seed:(o.seed||3)+1,brush:o.brush||7,grain:o.grain});
+    paintFace(S,shadeOf(C,-.55,o),{seed:(o.seed||3)+2,brush:o.brush||7,grain:o.grain});
+    paintFace(F,shadeOf(C,.22,o),{seed:(o.seed||3)+3,brush:o.brush||8,grain:o.grain});
+    formShade(F,shadeOf(C,.22,o),{seed:(o.seed||3)+9,depth:o.depth||11,n:o.n||90,deep:.3});
+    if(o.ink!==false){
+      var ic=o.ic||dark(C,.62);
+      [F,T,S].forEach(function(P,i){
+        inkLine(P.concat([P[0]]),{w:o.w||1.7,a:o.ia==null?.55:o.ia,col:ic,
+          seed:(o.seed||3)+20+i,breaks:0});
+      });
+    }
+    return {F:F,T:T,S:S};
+  }
+  function paintFace(poly,col,o){
+    o=o||{};
+    field(poly,col,{brush:o.brush||8,seed:o.seed||3,sharp:true,dense:.36});
+    if(o.grain)grain(poly,o.grain,dark(col,.32),{a:.14,seed:(o.seed||3)+41,r:1});
+  }
+
+  /* ---- a truncated cone: lampshade, plant pot, cup ---- */
+  function cone(cx,cyTop,rTop,rBot,h,ry,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var N=o.n||96,r=gRnd(o.seed||13),jobs=[],i;
+    for(i=0;i<N;i++){
+      var t=-1+2*(i+.5)/N, dep=Math.sqrt(Math.max(0,1-t*t));
+      var lam=t*L3[0]+dep*L3[2];
+      var col2=shadeOf(C,lam,o);
+      if(t>.6)col2=mixC(col2,lite(C,.45),(t-.6)/.4*.3);
+      jobs.push([cx+t*rTop,cyTop+ry*dep*(rTop/Math.max(rTop,rBot)),
+                 cx+t*rBot,cyTop+h+ry*dep*(rBot/Math.max(rTop,rBot)),
+                 (Math.max(rTop,rBot)*2/N)*3.0,col2,(o.a==null?1:o.a)]);
+    }
+    flush(jobs,function(c,ch){
+      c.save();c.lineCap="butt";
+      for(var z=0;z<ch.length;z++){
+        var j=ch[z];
+        c.strokeStyle=rgbStr(j[5],j[6]);c.lineWidth=j[4];
+        c.beginPath();c.moveTo(j[0],j[1]);c.lineTo(j[2],j[3]);c.stroke();
+      }
+      c.restore();
+    },20);
+    if(o.ink!==false)
+      emit(function(c){
+        c.save();c.strokeStyle=rgbStr(dark(C,.6),o.ia==null?.5:o.ia);
+        c.lineWidth=o.w||1.8;c.lineJoin="round";
+        c.beginPath();
+        c.moveTo(cx-rTop,cyTop);c.lineTo(cx-rBot,cyTop+h);
+        c.moveTo(cx+rTop,cyTop);c.lineTo(cx+rBot,cyTop+h);
+        c.stroke();c.restore();
+      });
+  }
+
+  /* ---- a lit plane: a wall, a floor, anything catching a wash ---- */
+  function plane(poly,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    field(poly,C,{brush:o.brush||13,seed:o.seed||5,sharp:o.sharp!==false,dense:.34,a:o.a});
+    if(o.wash){
+      var W=typeof o.wash==="string"?hexToRgb(o.wash):o.wash;
+      field(poly,W,{brush:(o.brush||13)*1.4,seed:(o.seed||5)+11,sharp:o.sharp!==false,
+        dense:.7,a:o.wa==null?.28:o.wa});
+    }
+    if(o.grain)grain(poly,o.grain,dark(C,.34),{a:.12,seed:(o.seed||5)+21,r:1.1});
+  }
+
+

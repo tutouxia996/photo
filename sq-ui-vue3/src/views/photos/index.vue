@@ -37,6 +37,10 @@
           <el-icon><Location /></el-icon>
           <span>照片地图</span>
         </button>
+        <button type="button" class="tool-btn" @click="openDiary">
+          <el-icon><Notebook /></el-icon>
+          <span>日记本</span>
+        </button>
         <button type="button" class="tool-btn" @click="openRecycle">
           <el-icon><Delete /></el-icon>
           <span>回收站</span>
@@ -605,6 +609,10 @@ function submitEdit() {
 
 function openRecycle() {
   proxy.$tab.navigatePage({ path: '/photos/recycle' })
+}
+
+function openDiary() {
+  proxy.$tab.navigatePage({ path: '/diary/index' })
 }
 
 function openPhotoMap() {

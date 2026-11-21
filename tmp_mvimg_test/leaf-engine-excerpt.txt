@@ -1,0 +1,260 @@
+﻿/* ---------- a leaf turning on the spine ----------
+     the leaf is sliced into strips across its width; each strip has its own
+     angle phi(d), so the leaf can curl (the free edge leads as it is lifted and
+     lags as it falls) and flop at the end. the strips are projected with a
+     little perspective (the lifted part is nearer the lens) and drawn from the
+     two faces: the front where it faces up, the back (mirrored, as in a real
+     book) where it does not. */
+  var V_HC=3600;                                     /* how high the lens is, in page units */
+  function vLeafPts(W,phi,N){
+    var X=[0],Z=[0],PH=[],d=W/N;
+    for(var i=0;i<N;i++){var p=Math.max(0,Math.min(Math.PI,phi((i+.5)/N)));PH.push(p);X.push(X[i]+Math.cos(p)*d);Z.push(Z[i]+Math.sin(p)*d);}
+    return {X:X,Z:Z,PH:PH,d:d};
+  }
+  function vProj(cam,x,y,z){var f=V_HC/(V_HC-z);return [cam.x+(x-cam.x)*f,cam.y+(y-cam.y)*f,f];}
+  var V_LAYER=null;
+  function vDrawLeaf(g,cam,front,back,W,y0,H,phi,o){
+    o=o||{};var N=o.N||120,L=vLeafPts(W,phi,N),sx=front.width/W,order=[];
+    /* the leaf is painted on its own layer, then lit as a whole, so the strips never show */
+    if(!V_LAYER)V_LAYER=vCanvas(V_W,V_H);
+    var lc=V_LAYER.getContext("2d"),T=g.getTransform();
+    lc.setTransform(1,0,0,1,0,0);lc.clearRect(0,0,V_W,V_H);lc.setTransform(T);
+    for(var i=0;i<N;i++)order.push(i);
+    order.sort(function(a,b){return (L.Z[a]+L.Z[a+1])-(L.Z[b]+L.Z[b+1]);});
+    var light=[-.34,.94],stops=[];
+    order.forEach(function(i){
+      var p=L.PH[i],up=Math.cos(p)>=0,A=vProj(cam,L.X[i],0,L.Z[i]),B=vProj(cam,L.X[i+1],0,L.Z[i+1]);
+      var fm=(A[2]+B[2])/2,top=cam.y+(y0-cam.y)*fm,bot=cam.y+(y0+H-cam.y)*fm;
+      var x0=Math.min(A[0],B[0]),x1=Math.max(A[0],B[0]),dw=x1-x0+.6;
+      var src=up?front:back,u=up?i*L.d:W-(i+1)*L.d;
+      if(dw>.05)lc.drawImage(src,u*sx,0,L.d*sx,src.height,x0-.3,top,dw,bot-top);
+      var n=up?[-Math.sin(p),Math.cos(p)]:[Math.sin(p),-Math.cos(p)],lam=Math.max(0,n[0]*light[0]+n[1]*light[1]);
+      stops.push([(x0+x1)/2,(1-(.78+.22*lam))*(o.shade==null?1:o.shade),lam]);
+    });
+    stops.sort(function(a,b){return a[0]-b[0];});
+    var X0=stops[0][0],X1=stops[stops.length-1][0];
+    if(X1-X0>.5){
+      var gr=lc.createLinearGradient(X0,0,X1,0),last=-1;
+      var gh=lc.createLinearGradient(X0,0,X1,0),lastH=-1;
+      stops.forEach(function(st){var t=(st[0]-X0)/(X1-X0);if(t<=last)return;last=t;gr.addColorStop(t,"rgba(70,54,32,"+Math.min(.5,st[1]).toFixed(3)+")");
+        gh.addColorStop(t,"rgba(255,252,240,"+Math.max(0,(st[2]-.93)*1.6).toFixed(3)+")");});
+      lc.globalCompositeOperation="source-atop";lc.fillStyle=gr;lc.fillRect(X0-60,y0-200,X1-X0+120,H+400);
+      lc.fillStyle=gh;lc.fillRect(X0-60,y0-200,X1-X0+120,H+400);lc.globalCompositeOperation="source-over";
+    }else{
+      lc.globalCompositeOperation="source-atop";lc.fillStyle="rgba(70,54,32,"+Math.min(.5,stops[0][1]).toFixed(3)+")";lc.fillRect(X0-60,y0-200,120,H+400);lc.globalCompositeOperation="source-over";
+    }
+    g.save();g.setTransform(1,0,0,1,0,0);g.drawImage(V_LAYER,0,0);g.restore();
+    /* the paper's edge: a hairline round the leaf, heavier for a cover board */
+    var E=vProj(cam,L.X[N],0,L.Z[N]);
+    g.save();g.strokeStyle=o.edge||"rgba(110,92,62,.28)";g.lineWidth=o.edgeW||.6;g.lineJoin="round";
+    g.beginPath();
+    for(i=0;i<=N;i++){var q=vProj(cam,L.X[i],0,L.Z[i]),yy=cam.y+(y0-cam.y)*q[2];if(i)g.lineTo(q[0],yy);else g.moveTo(q[0],yy);}
+    g.lineTo(E[0],cam.y+(y0+H-cam.y)*E[2]);
+    for(i=N;i>=0;i--){var q2=vProj(cam,L.X[i],0,L.Z[i]);g.lineTo(q2[0],cam.y+(y0+H-cam.y)*q2[2]);}
+    g.stroke();g.restore();
+    return {edgeX:L.X[N],edgeZ:L.Z[N]};
+  }
+  /* the shadow a lifted leaf throws on whatever is under it: it falls just past the
+     leaf's edge as the lens sees it, wider and softer the higher the edge is */
+  function vLeafShadow(g,cam,W,y0,H,edgeX,edgeZ,th){
+    if(edgeZ<.5)return;
+    var k=Math.sin(Math.min(Math.PI,Math.max(0,th))),hi=Math.min(1,edgeZ/W),a=.3*Math.min(1,k*1.4+.2)*(1-.55*hi),s=12+edgeZ*.2;
+    var px=vProj(cam,edgeX,0,edgeZ)[0],dir=edgeX>=0?1:-1;
+    g.save();g.beginPath();g.rect(-V_CW,V_CY,V_CW*2,V_CH);g.clip();g.filter="blur("+(3+edgeZ*.012).toFixed(1)+"px)";
+    var x0=px-dir*6,x1=px+dir*s,gr=g.createLinearGradient(x0,0,x1,0);
+    gr.addColorStop(0,"rgba(60,45,25,"+a.toFixed(3)+")");gr.addColorStop(.35,"rgba(60,45,25,"+(a*.55).toFixed(3)+")");gr.addColorStop(1,"rgba(60,45,25,0)");
+    g.fillStyle=gr;
+    var L=Math.min(x0,x1),R=Math.max(x0,x1);
+    g.fillRect(L,y0+2,R-L,H-4);
+    /* and under the leaf, near the spine, where it is lifted most */
+    var reach=Math.min(Math.abs(px),110)*dir,gs=g.createLinearGradient(0,0,reach,0);
+    gs.addColorStop(0,"rgba(60,45,25,"+(.13*k).toFixed(3)+")");gs.addColorStop(1,"rgba(60,45,25,0)");
+    g.fillStyle=gs;g.fillRect(Math.min(0,reach),y0,Math.abs(reach),H);
+    g.restore();
+  }
+
+  /* ---------- a leaf of Tomoe River, turned ----------
+     52 gsm: thin, light, a little glossy, translucent. the leaf is a mesh, arc
+     length from the spine across, rows down the page, and every row has its
+     own cross-section. while it is lifted the curl is tight at the fore-edge
+     and long and lazy towards the spine, and it sags; each row follows the
+     one above it a moment late, so the free bottom corner droops and lags;
+     past vertical the spine side leads and the fore-edge trails; when it lands
+     a small ripple runs out to the fore-edge, the corner bounces once, and the
+     paper near the spine keeps a memory of the curl for a moment. the leaf is
+     drawn with WebGL on its own canvas: light per pixel, a sheen that moves
+     with the curl, the page behind it ghosting through, a hairline for an edge. */
+  var V_TR={tau:.08,up:1.15,dn:.7,p:2.5,q:1.8,settle:.8,NU:128,NV:32};
+  /* slow off the lift, fastest just past vertical, still moving when it lands */
+  function vTurnE(u){u=clamp(u,0,1);return u*u*(2.2-1.2*u);}
+  function vBump(u,a,b){if(u<=a||u>=b)return 0;var s=Math.sin(Math.PI*(u-a)/(b-a));return s*s;}
+  /* one row of the leaf, as positions along it: uv is this row's turn (0..1), then seconds of settling */
+  function vRow(uv,v,dur,W,amp,X,Z){
+    var NU=V_TR.NU,ds=1/NU,i;
+    if(uv<1){
+      var th=Math.PI*vTurnE(uv),p=V_TR.p,q=V_TR.q;
+      var du=amp*V_TR.up*vBump(uv,0,.56)*(1-.3*v),dd=amp*V_TR.dn*vBump(uv,.38,1)*(1+.4*v);
+      var al=th-du/(p+1)+dd/(q+1);
+      X[0]=0;Z[0]=0;
+      for(i=0;i<NU;i++){var s=(i+.5)*ds,ph=clamp(al+du*Math.pow(s,p)-dd*Math.pow(s,q),0,Math.PI);
+        X[i+1]=X[i]+Math.cos(ph)*ds*W;Z[i+1]=Z[i]+Math.sin(ph)*ds*W;}
+      return;
+    }
+    var ts=(uv-1)*dur,a=amp;
+    var mem=12*a*Math.sin(Math.PI/2*Math.min(ts/.08,1))*Math.exp(-ts/.34);
+    var rip=18*a*(1-Math.exp(-ts/.03))*Math.exp(-ts/.17);
+    var cor=22*a*(.45+.55*v)*Math.exp(-ts/.12)*Math.abs(Math.sin(Math.PI*ts/.14));
+    for(i=0;i<=NU;i++){var s2=i*ds;
+      var zm=s2<.32?mem*(s2/.32)*Math.pow(1-s2/.32,2)*6.75:0;
+      var zr=rip*Math.pow(Math.max(0,Math.sin(2*Math.PI*(ts*3.1-s2*1.15))),1.5)*s2;
+      var zc=cor*Math.pow(s2,4);
+      X[i]=-s2*W;Z[i]=zm+zr+zc;}
+  }
+  var VG=null;
+  var V_VS="#version 300 es\n"+
+    "in vec3 aP;in vec3 aN;in vec2 aUV;in float aF;uniform vec3 uCam;uniform vec2 uView;uniform float uHC;\n"+
+    "out vec3 vP;out vec3 vN;out vec2 vUV;out float vF;out vec2 vS;\n"+
+    "void main(){float f=uHC/(uHC-aP.z);vec2 w=uCam.xy+(aP.xy-uCam.xy)*f;vec2 s=(w-uCam.xy)*uCam.z+uView*.5;\n"+
+    "vS=s;vP=aP;vN=aN;vUV=aUV;vF=aF;gl_Position=vec4(s.x/uView.x*2.-1.,1.-s.y/uView.y*2.,-aP.z/4000.,1.);}";
+  var V_FS="#version 300 es\nprecision highp float;\n"+
+    "in vec3 vP;in vec3 vN;in vec2 vUV;in float vF;in vec2 vS;\n"+
+    "uniform sampler2D uFront;uniform sampler2D uBack;uniform sampler2D uBg;\n"+
+    "uniform vec3 uEye;uniform vec3 uL;uniform vec2 uView;uniform float uLift,uTrans,uShow,uSpec,uShin,uGlow,uEdge;\n"+
+    "out vec4 o;const vec3 PAPER=vec3(.984,.969,.937);\n"+
+    "float lum(vec3 c){return dot(c,vec3(.299,.587,.114));}\n"+
+    "void main(){\n"+
+    " vec3 V=normalize(uEye-vP),N=normalize(vN);bool recto=dot(N,V)>=0.;vec3 Nv=recto?N:-N;\n"+
+    " vec3 cF=texture(uFront,vUV).rgb,cB=texture(uBack,vec2(1.-vUV.x,vUV.y)).rgb;\n"+
+    " vec3 face=recto?cF:cB,rev=recto?cB:cF;\n"+
+    /* the ink on the other side, seen through the sheet, mirrored */
+    " float h=max(vP.z,0.),air=smoothstep(0.,170.,h);\n"+
+    " face*=1.-uShow*uLift*air*vF*clamp(1.-lum(rev)/lum(PAPER),0.,1.);\n"+
+    /* shading relative to a page lying flat, so a leaf at rest is the page; the shade side stays warm */
+    " float ndl=dot(Nv,uL),sh=(.86+.14*max(ndl,0.))/(.86+.14*uL.z);\n"+
+    " vec3 col=face*sh*mix(vec3(.985,.965,.93),vec3(1.),smoothstep(.86,1.,sh));\n"+
+    /* the lamp through the sheet, when it is lit from behind */
+    " col+=vec3(1.,.9,.74)*uGlow*uLift*max(-ndl,0.);\n"+
+    /* a soft sheen where the curl turns to the lamp */
+    " vec3 H=normalize(uL+V);float sp=pow(max(dot(Nv,H),0.),uShin),sp0=pow(normalize(uL+vec3(0.,0.,1.)).z,uShin);\n"+
+    " col+=vec3(1.,.98,.93)*uSpec*uLift*max(sp-sp0,0.);\n"+
+    /* the page behind, ghosting through: sharp where the leaf lies close, diffuse where it stands */
+    " vec3 bg=textureLod(uBg,vS/uView,clamp(1.5+log2(1.+h*.08),0.,6.)).rgb;\n"+
+    " float T=uTrans*uLift*air*vF*mix(.35,1.,abs(dot(Nv,V)))*exp(-h/600.);\n"+
+    " col*=mix(vec3(1.),clamp(bg/PAPER,0.,1.1),T);\n"+
+    /* the edge: a hairline, pale, with a darker one outside it */
+    " float ex=(1.-vUV.x)/max(fwidth(vUV.x),1e-6),ey=min(vUV.y,1.-vUV.y)/max(fwidth(vUV.y),1e-6),e=min(ex,ey);\n"+
+    " float dk=1.-smoothstep(0.,1.,e),pl=smoothstep(.6,1.3,e)*(1.-smoothstep(1.4,2.5,e));\n"+
+    " col=mix(col,col*.8,dk*uEdge*uLift);col=mix(col,min(col+.05,vec3(1.)),pl*uEdge*uLift);\n"+
+    " o=vec4(col,1.);}";
+  function vGL(){
+    if(VG!==null)return VG;
+    VG=false;
+    var cv=vCanvas(V_W,V_H),gl=cv.getContext("webgl2",{antialias:true,alpha:true,premultipliedAlpha:true,preserveDrawingBuffer:true});
+    if(!gl){console.log("VIDEO: no webgl2, the leaves turn as slices");return VG;}
+    function sh(t,src){var q=gl.createShader(t);gl.shaderSource(q,src);gl.compileShader(q);
+      if(!gl.getShaderParameter(q,gl.COMPILE_STATUS))throw new Error("leaf shader: "+gl.getShaderInfoLog(q));return q;}
+    var pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,V_VS));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,V_FS));gl.linkProgram(pr);
+    if(!gl.getProgramParameter(pr,gl.LINK_STATUS))throw new Error("leaf program: "+gl.getProgramInfoLog(pr));
+    gl.useProgram(pr);
+    var NU=V_TR.NU,NV=V_TR.NV,nv=(NU+1)*(NV+1),i,j,k;
+    var UV=new Float32Array(nv*2),IX=new Uint16Array(NU*NV*6);
+    for(j=0,k=0;j<=NV;j++)for(i=0;i<=NU;i++,k++){UV[k*2]=i/NU;UV[k*2+1]=j/NV;}
+    for(j=0,k=0;j<NV;j++)for(i=0;i<NU;i++){var a=j*(NU+1)+i,b=a+1,c=a+NU+1,d=c+1;IX[k++]=a;IX[k++]=c;IX[k++]=b;IX[k++]=b;IX[k++]=c;IX[k++]=d;}
+    function buf(name,size,data,usage){var b=gl.createBuffer(),l=gl.getAttribLocation(pr,name);gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,data,usage);
+      gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,size,gl.FLOAT,false,0,0);return b;}
+    var R={cv:cv,gl:gl,pr:pr,nv:nv,nidx:IX.length,P:new Float32Array(nv*3),N:new Float32Array(nv*3),F:new Float32Array(nv),X:new Float32Array(NU+1),Z:new Float32Array(NU+1)};
+    R.bP=buf("aP",3,R.P,gl.DYNAMIC_DRAW);R.bN=buf("aN",3,R.N,gl.DYNAMIC_DRAW);buf("aUV",2,UV,gl.STATIC_DRAW);R.bF=buf("aF",1,R.F,gl.DYNAMIC_DRAW);
+    var bi=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,bi);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,IX,gl.STATIC_DRAW);
+    var ani=gl.getExtension("EXT_texture_filter_anisotropic");
+    R.tex=[0,1,2].map(function(n){var t=gl.createTexture();gl.activeTexture(gl.TEXTURE0+n);gl.bindTexture(gl.TEXTURE_2D,t);
+      if(ani)gl.texParameterf(gl.TEXTURE_2D,ani.TEXTURE_MAX_ANISOTROPY_EXT,Math.min(16,gl.getParameter(ani.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);return t;});
+    gl.uniform1i(gl.getUniformLocation(pr,"uFront"),0);gl.uniform1i(gl.getUniformLocation(pr,"uBack"),1);gl.uniform1i(gl.getUniformLocation(pr,"uBg"),2);
+    R.U={};["uCam","uView","uHC","uEye","uL","uLift","uTrans","uShow","uSpec","uShin","uGlow","uEdge"].forEach(function(n){R.U[n]=gl.getUniformLocation(pr,n);});
+    gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LESS);
+    VG=R;return R;
+  }
+  /* the lamp: up and to the left of the desk */
+  var V_LAMP=(function(){var l=[-.34,-.42,1],n=Math.hypot(l[0],l[1],l[2]);return [l[0]/n,l[1]/n,l[2]/n];})();
+  /* the mesh of a leaf at turn u (the top row's progress; lower rows follow a moment late) */
+  function vLeafMesh(R,G,u,dur,amp){
+    var NU=V_TR.NU,NV=V_TR.NV,P=R.P,N=R.N,F=R.F,i,j,k,W=G.W,zmax=0;
+    for(j=0;j<=NV;j++){var v=j/NV;vRow(u-V_TR.tau*v,v,dur,W,amp,R.X,R.Z);
+      for(i=0;i<=NU;i++){k=(j*(NU+1)+i)*3;P[k]=R.X[i];P[k+1]=G.y0+v*G.H;P[k+2]=R.Z[i];if(R.Z[i]>zmax)zmax=R.Z[i];}}
+    for(j=0;j<=NV;j++)for(i=0;i<=NU;i++){
+      var a=(j*(NU+1)+Math.max(0,i-1))*3,b=(j*(NU+1)+Math.min(NU,i+1))*3,c=(Math.max(0,j-1)*(NU+1)+i)*3,d=(Math.min(NV,j+1)*(NU+1)+i)*3;
+      var ux=P[b]-P[a],uy=P[b+1]-P[a+1],uz=P[b+2]-P[a+2],vx=P[d]-P[c],vy=P[d+1]-P[c+1],vz=P[d+2]-P[c+2];
+      var nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx,nl=Math.hypot(nx,ny,nz)||1;k=(j*(NU+1)+i)*3;
+      N[k]=nx/nl;N[k+1]=ny/nl;N[k+2]=nz/nl;
+      /* how flat the sheet is here: the turn of its direction over a short run */
+      var i0=Math.max(0,i-2),i1=Math.min(NU,i+2),m=(i0+i1)>>1,p0=(j*(NU+1)+i0)*3,pm=(j*(NU+1)+m)*3,p1=(j*(NU+1)+i1)*3;
+      var a0=Math.atan2(P[pm+2]-P[p0+2],P[pm]-P[p0]),a1=Math.atan2(P[p1+2]-P[pm+2],P[p1]-P[pm]),da=Math.abs(a1-a0);if(da>Math.PI)da=2*Math.PI-da;
+      var kap=da/(Math.max(1,i1-i0)/2/NU);F[j*(NU+1)+i]=Math.exp(-kap*.3);
+    }
+    return zmax;
+  }
+  /* how much of the leaf is in the air: nothing at rest, so a leaf at rest is exactly the page */
+  function vLift(u,dur){
+    var a=vSmooth(u/.05),b=1-vSmooth((u-1-V_TR.tau)*dur/V_TR.settle);
+    return Math.max(0,Math.min(a,b));
+  }
+  function vGLUpload(gl,unit,img){
+    gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,VG.tex[unit]);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);gl.generateMipmap(gl.TEXTURE_2D);
+  }
+  /* the shadow the leaf throws on the pages under it, along the lamp, soft, and warm; and the warm light
+     that comes through a standing leaf onto the page by the fold */
+  function vGLShadow(g,cam,R,G,lift,zmax,side){
+    var NU=V_TR.NU,NV=V_TR.NV,P=R.P,L=[-.16,-.2,1],pts=[],i,j;
+    function at(i,j){var k=(j*(NU+1)+i)*3,z=P[k+2];return [P[k]-L[0]*z,P[k+1]-L[1]*z];}
+    for(i=0;i<=NU;i+=2)pts.push(at(i,0));
+    for(j=0;j<=NV;j++)pts.push(at(NU,j));
+    for(i=NU;i>=0;i-=2)pts.push(at(i,NV));
+    var hi=clamp(zmax/G.W,0,1),a=lift*(.3-.12*hi),bl=(2+zmax*.035)*cam.k;
+    g.save();
+    g.beginPath();g.rect(-PW,G.y0,PW*2,G.H);g.clip();
+    g.filter="blur("+bl.toFixed(1)+"px)";g.fillStyle="rgba(84,62,36,"+a.toFixed(3)+")";
+    g.beginPath();pts.forEach(function(q,n){if(n)g.lineTo(q[0],q[1]);else g.moveTo(q[0],q[1]);});g.closePath();g.fill();
+    g.filter="none";
+    /* warm light by the fold, on whichever side the leaf stands over */
+    var st=Math.sin(clamp(Math.PI*zmax/G.W,0,Math.PI)),dir=side,w=150;
+    if(st>.05){var gr=g.createLinearGradient(0,0,dir*w,0);gr.addColorStop(0,"rgba(255,226,180,"+(.16*st*lift).toFixed(3)+")");gr.addColorStop(1,"rgba(255,226,180,0)");
+      g.globalCompositeOperation="multiply";g.fillStyle=gr;g.fillRect(Math.min(0,dir*w),G.y0,w,G.H);}
+    g.restore();
+  }
+  function vGLLeaf(g,cam,front,back,G,u,dur,amp){
+    var R=vGL();if(!R)return false;
+    var gl=R.gl,lift=vLift(u,dur),zmax=vLeafMesh(R,G,u,dur,amp);
+    /* which side the leaf is over, for its shadow: the middle of its middle row */
+    var mk=((V_TR.NV>>1)*(V_TR.NU+1)+(V_TR.NU>>1))*3,side=R.P[mk]>=0?1:-1;
+    vGLShadow(g,cam,R,G,lift,zmax,side);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bP);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.P);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bN);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.N);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bF);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.F);
+    vGLUpload(gl,0,front);vGLUpload(gl,1,back);vGLUpload(gl,2,g.canvas);
+    var U=R.U;
+    gl.uniform3f(U.uCam,cam.x,cam.y,cam.k);gl.uniform2f(U.uView,V_W,V_H);gl.uniform1f(U.uHC,V_HC);
+    gl.uniform3f(U.uEye,cam.x,cam.y,V_HC);gl.uniform3f(U.uL,V_LAMP[0],V_LAMP[1],V_LAMP[2]);
+    gl.uniform1f(U.uLift,lift);gl.uniform1f(U.uTrans,.12*amp);gl.uniform1f(U.uShow,.08*amp);gl.uniform1f(U.uSpec,.24);gl.uniform1f(U.uShin,34);
+    gl.uniform1f(U.uGlow,.3*amp);gl.uniform1f(U.uEdge,1);
+    gl.viewport(0,0,V_W,V_H);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.drawElements(gl.TRIANGLES,R.nidx,gl.UNSIGNED_SHORT,0);
+    g.save();g.setTransform(1,0,0,1,0,0);g.drawImage(R.cv,0,0);g.restore();
+    return true;
+  }
+
+  /* a board's shadow, thrown along the same lamp as a leaf's, onto the half of the book it lies over */
+  function vBoardShadow(g,cam,W,y0,H,phi,th,half){
+    var L=vLeafPts(W,phi,40),Ls=[-.16,-.2],pts=[],i,zmax=0;
+    for(i=0;i<=40;i++){pts.push([L.X[i]-Ls[0]*L.Z[i],y0-Ls[1]*L.Z[i]]);zmax=Math.max(zmax,L.Z[i]);}
+    for(i=40;i>=0;i--)pts.push([L.X[i]-Ls[0]*L.Z[i],y0+H-Ls[1]*L.Z[i]]);
+    if(zmax<.5)return;
+    var a=.26*(1-.45*Math.min(1,zmax/W)),bl=(2+zmax*.035)*cam.k;
+    g.save();g.beginPath();g.rect(half>0?0:-V_CW,V_CY,V_CW,V_CH);g.clip();
+    g.filter="blur("+bl.toFixed(1)+"px)";g.fillStyle="rgba(84,62,36,"+a.toFixed(3)+")";
+    g.beginPath();pts.forEach(function(q,n){if(n)g.lineTo(q[0],q[1]);else g.moveTo(q[0],q[1]);});g.closePath();g.fill();
+    g.restore();
+  }
+
+  

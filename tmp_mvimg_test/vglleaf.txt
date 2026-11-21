@@ -1,0 +1,78 @@
+﻿function vGLLeaf(g,cam,front,back,G,u,dur,amp){
+    var R=vGL();if(!R)return false;
+    var gl=R.gl,lift=vLift(u,dur),zmax=vLeafMesh(R,G,u,dur,amp);
+    /* which side the leaf is over, for its shadow: the middle of its middle row */
+    var mk=((V_TR.NV>>1)*(V_TR.NU+1)+(V_TR.NU>>1))*3,side=R.P[mk]>=0?1:-1;
+    vGLShadow(g,cam,R,G,lift,zmax,side);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bP);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.P);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bN);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.N);
+    gl.bindBuffer(gl.ARRAY_BUFFER,R.bF);gl.bufferSubData(gl.ARRAY_BUFFER,0,R.F);
+    vGLUpload(gl,0,front);vGLUpload(gl,1,back);vGLUpload(gl,2,g.canvas);
+    var U=R.U;
+    gl.uniform3f(U.uCam,cam.x,cam.y,cam.k);gl.uniform2f(U.uView,V_W,V_H);gl.uniform1f(U.uHC,V_HC);
+    gl.uniform3f(U.uEye,cam.x,cam.y,V_HC);gl.uniform3f(U.uL,V_LAMP[0],V_LAMP[1],V_LAMP[2]);
+    gl.uniform1f(U.uLift,lift);gl.uniform1f(U.uTrans,.12*amp);gl.uniform1f(U.uShow,.08*amp);gl.uniform1f(U.uSpec,.24);gl.uniform1f(U.uShin,34);
+    gl.uniform1f(U.uGlow,.3*amp);gl.uniform1f(U.uEdge,1);
+    gl.viewport(0,0,V_W,V_H);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.drawElements(gl.TRIANGLES,R.nidx,gl.UNSIGNED_SHORT,0);
+    g.save();g.setTransform(1,0,0,1,0,0);g.drawImage(R.cv,0,0);g.restore();
+    return true;
+  }
+
+  /* a board's shadow, thrown along the same lamp as a leaf's, onto the half of the book it lies over */
+  function vBoardShadow(g,cam,W,y0,H,phi,th,half){
+    var L=vLeafPts(W,phi,40),Ls=[-.16,-.2],pts=[],i,zmax=0;
+    for(i=0;i<=40;i++){pts.push([L.X[i]-Ls[0]*L.Z[i],y0-Ls[1]*L.Z[i]]);zmax=Math.max(zmax,L.Z[i]);}
+    for(i=40;i>=0;i--)pts.push([L.X[i]-Ls[0]*L.Z[i],y0+H-Ls[1]*L.Z[i]]);
+    if(zmax<.5)return;
+    var a=.26*(1-.45*Math.min(1,zmax/W)),bl=(2+zmax*.035)*cam.k;
+    g.save();g.beginPath();g.rect(half>0?0:-V_CW,V_CY,V_CW,V_CH);g.clip();
+    g.filter="blur("+bl.toFixed(1)+"px)";g.fillStyle="rgba(84,62,36,"+a.toFixed(3)+")";
+    g.beginPath();pts.forEach(function(q,n){if(n)g.lineTo(q[0],q[1]);else g.moveTo(q[0],q[1]);});g.closePath();g.fill();
+    g.restore();
+  }
+
+  /* ---------- the leaves and when they turn ---------- */
+  /* 0 the front cover, 1..4 the page leaves, 5 the back cover */
+  function vLeafState(i,v){
+    var L=V_LEAVES[i],t0=L[2],dur=L[3],board=L[4]!=="leaf";
+    if(!board){
+      var uu=(v-t0)/dur,end=1+V_TR.tau+V_TR.settle/dur;
+      if(uu<=0)return {th:0,c:0,moving:false,u:0,dur:dur};
+      if(uu>=end)return {th:Math.PI,c:0,moving:false,u:end,dur:dur};
+      return {th:Math.PI*vTurnE(uu-V_TR.tau/2),c:0,moving:true,u:uu,dur:dur};
+    }
+    if(v<=t0)return {th:0,c:0,moving:false};
+    var u=(v-t0)/dur;
+    if(u<1){
+      var th=Math.PI*vSmooth(u);
+      /* the free edge leads while it is lifted, then lags while it falls */
+      var C=board?.2:.62,c=C*Math.sin(Math.PI*(u-.14)/1.0);
+      if(u<.14)c=-C*.55*Math.sin(Math.PI*u/.14);
+      return {th:th,c:c,moving:true};
+    }
+    var tt=v-(t0+dur),B=board?.05:.15;
+    if(tt<V_T.settle){var b=B*Math.exp(-7.5*tt)*Math.abs(Math.sin(13*tt+.3));return {th:Math.PI,c:b,moving:true};}
+    return {th:Math.PI,c:0,moving:false};
+  }
+  function vPhi(st){var th=st.th,c=st.c;return function(t){return th-c*Math.pow(t,1.7);};}
+
+  /* the camera: centred on the closed book, then on the spine, then on the shut book */
+  function vCam(v){
+    var closedF={x:262,y:374,k:1.19},open={x:0,y:372,k:1.17},closedB={x:-262,y:374,k:1.19};
+    var o1=V_T.open+V_T.openDur+.5,c1=V_T.close+V_T.closeDur+.5,a,b,u;
+    if(v<V_T.open){u=v/V_T.open;return {x:closedF.x,y:closedF.y,k:closedF.k*(1+.012*u)};}
+    if(v<o1){u=vEase((v-V_T.open)/(o1-V_T.open));a={x:closedF.x,y:closedF.y,k:closedF.k*1.012};b=open;}
+    else if(v<V_T.close){var w=clamp((v-o1)/(V_T.close-o1),0,1);return {x:open.x,y:open.y,k:open.k*(1+.022*vSmooth(w))};}
+    else if(v<c1){u=vEase((v-V_T.close)/(c1-V_T.close));a={x:open.x,y:open.y,k:open.k*1.022};b=closedB;}
+    else{u=clamp((v-c1)/2,0,1);return {x:closedB.x,y:closedB.y,k:closedB.k*(1+.01*u)};}
+    return {x:lerp(a.x,b.x,u),y:lerp(a.y,b.y,u),k:lerp(a.k,b.k,u)};
+  }
+
+  function videoMain(){
+    var st=document.createElement("style");
+    st.textContent="html,body{margin:0;padding:0;background:#EFECE6;overflow:hidden}.wrap{display:none!important}";
+    document.head.appendChild(st);
+    var cv=vCanvas(V_W,V_H);cv.id="film";cv.style.cssText="position:fixed;left:0;top:0;width:"+V_W+"px;height:"+V_H+"px";
+    document.body.appendChild(cv);
+ 

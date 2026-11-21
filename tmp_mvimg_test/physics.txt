@@ -1,0 +1,52 @@
+﻿var A_G={paper:24,board:17},A_C={paper:.9,board:.5};
+  function aSpring(x,v,target,wn,z,dt){var a=wn*wn*(target-x)-2*z*wn*v;v+=a*dt;x+=v*dt;return [x,v];}
+  /* the same, safe for any step: a long frame is taken in short steps, so a spring can never run away */
+  function aSpringS(x,v,target,wn,z,dt){var n=Math.max(1,Math.ceil(dt*wn*4)),h=dt/n,q=[x,v];for(var i=0;i<n;i++)q=aSpring(q[0],q[1],target,wn,z,h);return q;}
+  function aLiftF(th){return Math.min(1,Math.sin(th)/.22);}
+  function aStep(U,dt,now){
+    var b=aBoard(U),th=U.th,lf=aLiftF(th),q,deT=0,twT=0;
+    if(U.mode==="drag"||U.mode==="auto"||U.mode==="peek"){
+      /* a board is heavier in the hand than a leaf */
+      q=aSpring(U.th,U.om,U.tt,b?11:30,1,dt);U.th=q[0];U.om=q[1];
+      if(U.th<0){U.th=0;U.om=Math.max(0,U.om);}if(U.th>A_PI){U.th=A_PI;U.om=Math.min(0,U.om);}
+      /* held: the free part sags between the spine and the hand, and trails the hand when it is quick */
+      deT=clamp(.55*Math.cos(th)*lf+.085*U.om,-1.2,1.3);
+      twT=clamp(.05*U.om+.62*Math.cos(th)*lf,-.9,.9);
+      if(U.mode==="peek")deT=Math.max(deT,.4*lf);
+    }else if(U.mode==="free"){
+      var G=b?A_G.board:A_G.paper,c=b?A_C.board:A_C.paper;
+      U.om+=(-G*Math.cos(U.th)-c*U.om)*dt;U.th+=U.om*dt;
+      deT=clamp(-.07*U.om-.25*Math.cos(th)*lf,-1.1,1.1);
+      twT=clamp(.05*U.om+.14*Math.cos(th)*lf,-.5,.5);
+      if(U.th>=A_PI||U.th<=0)aLand(U,U.th>=A_PI?1:0,now);
+    }else if(U.mode==="settle"){
+      if(now-U.st.t0>(A_RM?.25:.95)&&Math.abs(U.de)<.004&&Math.abs(U.tw)<.004){U.mode="rest";U.st=null;U.de=U.tw=U.dv=U.tv=0;}
+    }
+    if(b){deT=0;twT=0;}                              /* a hard cover does not bend */
+    q=aSpring(U.de,U.dv,deT,b?20:13,A_RM?1:(b?.8:.5),dt);U.de=q[0];U.dv=q[1];
+    q=aSpring(U.tw,U.tv,twT,11,A_RM?1:.6,dt);U.tw=q[0];U.tv=q[1];
+    if(U.mode==="rest"){U.de=U.tw=U.dv=U.tv=0;}
+  }
+  var A_SAY=["The journal is closed, front cover up.","The cover is open.","Saturday 19 and Sunday 20.","Monday 21 and Tuesday 22: the whale shark.","Wednesday 23 and Thursday 24.","The journal is closed, back cover up. Read again turns it over."];
+  var A_FOLLOW=null;
+  /* the music follows the book: 0 shut, 1 Sat/Sun (and the open cover), 2 the whale, 3 Wed/Thu, 4 the back cover */
+  var A_MUSIC=!A_TEST&&window.JournalMusic?window.JournalMusic:null,A_SCENE=[0,1,1,2,3,4];
+  function aMusic(){if(A_MUSIC)A_MUSIC.setScene(A_SCENE[aPos()]);}
+  function aAnnounce(){var el=document.getElementById("live");if(el)el.textContent=A_SAY[aPos()]||"";aMusic();}
+  function aLand(U,side,now){
+    var imp=Math.abs(U.om),i=AU.indexOf(U),came=U.side!==side;
+    U.th=side?A_PI:0;U.om=0;U.goal=side;U.side=side;U.mode="settle";
+    U.st={t0:now,amp:A_RM?0:clamp(imp/8,.25,1),side:side};
+    if(navigator.vibrate&&!A_TEST)try{navigator.vibrate(5);}catch(e){}
+    if(A_MUSIC)A_MUSIC.paper(clamp(imp/8,0,1),"land",aBoard(U));
+    if(side===1&&i>=1&&i<=3)aSpread(i);
+    if(i===0&&side===1)A_HINT.turned=true;
+    /* the board opens, then the thin first leaf turns on its own; turning that leaf back brings the board down after it */
+    if(came&&i===0&&side===1&&AU[1].goal===0)A_FOLLOW={at:now+.18,U:AU[1],fwd:true};
+    if(came&&i===1&&side===0&&AU[0].goal===1)A_FOLLOW={at:now+.05,U:AU[0],fwd:false};
+    aAnnounce();
+  }
+  /* let go: keep the hand's speed; a flick carries it over; past the middle falls over; else back */
+  function aRelease(U){
+    var G=aBoard(U)?A_G.board:A_G.paper,need=2*G*(1-Math.sin(U.th))*1.3;
+    if(Math.abs(U.

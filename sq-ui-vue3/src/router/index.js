@@ -123,6 +123,19 @@ export const constantRoutes = [
         meta: { title: '照片地图', activeMenu: '/photos/index', noCache: true, noTagsView: true }
       }
     ]
+  },
+  {
+    path: '/diary',
+    component: Layout,
+    redirect: '/diary/index',
+    children: [
+      {
+        path: 'index',
+        component: () => import('@/views/diary/index'),
+        name: 'AlbumDiary',
+        meta: { title: '日记本', icon: 'documentation' }
+      }
+    ]
   }
 ]
 

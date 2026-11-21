@@ -1,0 +1,133 @@
+﻿/* ===== journal.js ===== */
+  /* ===================================================================
+     旅の手帳: a traveller with no memory, no body where he goes,
+     and a body in a place he will never see.
+
+     nothing on these pages is typeset. every letter, every numeral and
+     every rule is drawn with a pen or a brush. the page begins blank
+     and fills itself in as the day passes; once a thing is drawn it
+     stays drawn, and the living things keep moving on top of it.
+     =================================================================== */
+  var PAPER="#FBF9F1",INK="#26221C",RULE="#DCD5C2",DOTC="#D3CBB6",
+      PENCIL="#A79E88",VERM="#D8412A";
+  var PW=520,PH=740;
+  var M=26,HEADT=22,HEADB=78,TODOY=104,BODY_TOP=92,BODY_BOT=624,BOT=716;
+  var TL=46,SECRET=222,H0=0,H1=21;
+  function hourY(h){return BODY_TOP+14+((h-H0)/(H1-H0))*(BODY_BOT-BODY_TOP-30);}
+  function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function ease(t){return t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
+  function hourOf(t){return t*24;}
+
+  /* ---------- the recorder: every mark can be replayed in order ------- */
+  var REC=null;
+  function emit(fn){ if(REC)REC.push(fn); else fn(RECCTX); }
+  var RECCTX=null;
+  function Rec(){this.ops=[];}
+  Rec.prototype.push=function(f){this.ops.push(f);};
+  Rec.prototype.count=function(){return this.ops.length;};
+  Rec.prototype.playRange=function(c,a,b){
+    for(var i=a;i<b&&i<this.ops.length;i++)this.ops[i](c);
+  };
+  function record(fn){
+    var r=new Rec(),prev=REC;REC=r;
+    fn();
+    REC=prev;return r;
+  }
+
+  /* ---------- marks ---------- */
+  function hexToRgb(h){h=h.replace("#","");
+    if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+  function rgbStr(c,a){return "rgba("+(c[0]|0)+","+(c[1]|0)+","+(c[2]|0)+","+(a==null?1:a).toFixed(3)+")";}
+  function mixC(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+  function lite(c,t){return mixC(c,[255,252,244],t);}
+  function dark(c,t){return mixC(c,[22,18,26],t);}
+  function rng(seed){return gRnd(seed);}
+  function smooth(pts,close){
+    if(pts.length<2)return"";var p=pts.slice(),d,i;
+    if(close){p.unshift(pts[pts.length-1]);p.push(pts[0],pts[1]);}
+    else{p.unshift(pts[0]);p.push(pts[pts.length-1]);}
+    d="M"+p[1][0].toFixed(2)+" "+p[1][1].toFixed(2);
+    for(i=1;i<p.length-2;i++){var a=p[i-1],b=p[i],c=p[i+1],e=p[i+2];
+      d+="C"+(b[0]+(c[0]-a[0])/6).toFixed(2)+" "+(b[1]+(c[1]-a[1])/6).toFixed(2)+","+
+         (c[0]-(e[0]-b[0])/6).toFixed(2)+" "+(c[1]-(e[1]-b[1])/6).toFixed(2)+","+
+         c[0].toFixed(2)+" "+c[1].toFixed(2);}
+    return d+(close?"Z":"");
+  }
+  function gRnd(seed){var s=seed>>>0;return function(){s=(s*1664525+1013904223)>>>0;return s/4294967296;};}
+  function bez(c,pts,close){
+    var p=pts.slice(),i;
+    if(close){p.unshift(pts[pts.length-1]);p.push(pts[0],pts[1]);}
+    else{p.unshift(pts[0]);p.push(pts[pts.length-1]);}
+    c.moveTo(p[1][0],p[1][1]);
+    for(i=1;i<p.length-2;i++){
+      var a=p[i-1],b=p[i],d=p[i+1],e=p[i+2];
+      c.bezierCurveTo(b[0]+(d[0]-a[0])/6,b[1]+(d[1]-a[1])/6,
+                      d[0]-(e[0]-b[0])/6,d[1]-(e[1]-b[1])/6,d[0],d[1]);
+    }
+    if(close)c.closePath();
+  }
+  function dab(x,y,rx,ry,ang,col,a){
+    emit(function(c){
+      c.save();c.translate(x,y);if(ang)c.rotate(ang);c.scale(1,ry/rx);
+      c.fillStyle=rgbStr(col,a);c.beginPath();c.arc(0,0,rx,0,6.2832);c.fill();c.restore();
+    });
+  }
+  /* a loaded gouache stroke */
+  function brush(pts,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var r=gRnd(o.seed||((pts[0][0]*13+pts[0][1]*7)|0)+1);
+    var w=o.w||14,a=o.a==null?1:o.a;
+    var path=[],i,k;
+    for(i=0;i<pts.length-1;i++){
+      var A=pts[i],B=pts[i+1];
+      var d=Math.hypot(B[0]-A[0],B[1]-A[1]),n=Math.max(2,Math.round(d/(w*.16)));
+      for(k=0;k<n;k++){var u=k/n;path.push([A[0]+(B[0]-A[0])*u,A[1]+(B[1]-A[1])*u]);}
+    }
+    path.push(pts[pts.length-1]);
+    var L=path.length;
+    for(i=0;i<L;i++){
+      var t=i/(L-1);
+      var pr=o.flat?1:.26+Math.sin(Math.pow(t,o.bias||.85)*Math.PI)*.74;
+      var p=path[i];
+      var ang=i<L-1?Math.atan2(path[i+1][1]-p[1],path[i+1][0]-p[0]):0;
+      if(o.dry&&r()<o.dry)continue;
+      var cc=r()<.3?lite(C,.05+r()*.1):(r()<.22?dark(C,.06):C);
+      dab(p[0]+(r()-.5)*w*.07,p[1]+(r()-.5)*w*.07,
+          w*pr*.5*(.93+r()*.14),w*pr*.5*(o.squash==null?.84:o.squash),ang,cc,a);
+    }
+    if(o.chalk!==false)for(i=0;i<L;i+=3){
+      if(r()>.36)continue;var q=path[i];
+      dab(q[0]+(r()-.5)*w*.9,q[1]+(r()-.5)*w*.7,
+        .5+r()*1.4,.5+r()*1.2,0,lite(C,.24+r()*.2),a*(.35+r()*.4));
+    }
+  }
+  /* a scrubbed field of gouache. the dabs of one brush pass are emitted as a
+     single op, so the paint can be laid far more densely than the recorder
+     would otherwise stand. */
+  function field(poly,col,o){
+    o=o||{};
+    var C=typeof col==="string"?hexToRgb(col):col;
+    var r=gRnd(o.seed||7),sharp=!!o.sharp;
+    var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    poly.forEach(function(p){minx=Math.min(minx,p[0]);maxx=Math.max(maxx,p[0]);
+      miny=Math.min(miny,p[1]);maxy=Math.max(maxy,p[1]);});
+    var w=o.brush||16,step=w*(o.dense||.40),dir=1,first=true;
+    for(var y=miny-w;y<maxy+w;y+=step){
+      var xs=dir>0?minx-w:maxx+w,xe=dir>0?maxx+w:minx-w,pass=[];
+      for(var x=xs;dir>0?x<xe:x>xe;x+=dir*step){
+        var cc=r()<.5?lite(C,.04+r()*.12):dark(C,.03+r()*.10);
+        pass.push([x+(r()-.5)*step*1.2, y+(r()-.5)*step, w*(.5+r()*.45),
+                   w*(.3+r()*.32),(r()-.5)*.7,cc,
+                   (o.a==null?1:o.a)*(first?1:(.42+r()*.58))]);
+      }
+      (function(pass){
+        emit(function(c){
+          c.save();c.beginPath();
+          if(sharp){c.moveTo(poly[0][0],poly[0][1]);
+            for(var q=1;q<poly.length;q++)c.lineTo(poly[q][0],poly[q][1]);c.closePath();}
+          else bez(c,poly,true);
+          c.clip();
+          for(var 
