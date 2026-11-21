@@ -132,6 +132,17 @@
                 @change="onTracksOnlyChange"
               />
             </div>
+            <el-button
+              v-if="canExportTrackVideo"
+              size="small"
+              type="primary"
+              plain
+              class="export-track-btn"
+              :loading="exportingVideo"
+              :disabled="correctMode || aiPickMode || exportingVideo"
+              title="导出轨迹 MP4，可选择帧率、二维/3D 与底图样式"
+              @click="openExportTrackDialog"
+            >导出轨迹视频</el-button>
           </div>
         </template>
         <template #meta>
@@ -287,6 +298,12 @@
         </div>
       </aside>
     </div>
+
+    <TrackVideoExportDialog
+      ref="exportDialogRef"
+      v-model="exportDialogOpen"
+      @confirm="onExportTrackConfirm"
+    />
   </div>
 </template>
 
@@ -304,6 +321,7 @@ import {
 } from '@/api/photos/photo'
 import { searchTrackPlace, listTrack, getTrack } from '@/api/album/track'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
+import TrackVideoExportDialog from '@/components/TrackVideoExportDialog/index.vue'
 import {
   estimatedSourceLabel,
   isEstimatedLocation,
@@ -327,6 +345,9 @@ const albumName = ref('')
 const albumCanEdit = ref(false)
 const mapRef = ref(null)
 const saving = ref(false)
+const exportingVideo = ref(false)
+const exportDialogOpen = ref(false)
+const exportDialogRef = ref(null)
 const aiLoading = ref(false)
 const confirmAllLoading = ref(false)
 const aiPickMode = ref(false)
@@ -375,6 +396,16 @@ const trackLineActive = computed(() =>
   && trackDataReady.value
   && trackPoints.value.length > 1
 )
+/** 有照片轨或 GPX 即可导出（不必等 trackLineActive 的照片点数条件） */
+const canExportTrackVideo = computed(() => {
+  if (!showTrackLine.value || !trackDataReady.value) return false
+  if (trackPoints.value.length > 1) return true
+  return (mapGpxOverlays.value || []).some((o) => {
+    if (o?.showPath === false) return false
+    const path = o?.path || o?.points
+    return Array.isArray(path) && path.length > 1
+  })
+})
 /** 关轨迹线时仍保留 GPX 匹配坐标，估点/漂移点不回到错误位置 */
 const mapGpxOverlays = computed(() =>
   overlaysForMapDisplay(trackGpxOverlays.value, !!showTrackLine.value && trackDataReady.value)
@@ -945,6 +976,39 @@ function onTerrainModeChange(on) {
   exitAiPickMode()
 }
 
+function openExportTrackDialog() {
+  if (exportingVideo.value || correctMode.value || aiPickMode.value) return
+  if (!canExportTrackVideo.value) {
+    proxy?.$modal?.msgWarning?.('请先开启「显示轨迹」并确保已有轨迹或 GPX')
+    return
+  }
+  if (!mapRef.value?.exportTrackVideo) {
+    proxy?.$modal?.msgError?.('地图尚未就绪')
+    return
+  }
+  exportDialogOpen.value = true
+}
+
+async function onExportTrackConfirm(opts) {
+  const map = mapRef.value
+  exportDialogRef.value?.finish?.()
+  if (!map?.exportTrackVideo) {
+    proxy?.$modal?.msgError?.('地图尚未就绪')
+    return
+  }
+  exportingVideo.value = true
+  try {
+    await map.exportTrackVideo({
+      fileName: trackName.value || albumName.value || '轨迹动画',
+      fps: opts?.fps,
+      viewMode: opts?.viewMode,
+      style: opts?.style
+    })
+  } finally {
+    exportingVideo.value = false
+  }
+}
+
 function clearAiSelection() {
   aiSelectedIds.value = []
 }
@@ -1270,6 +1334,11 @@ watch(() => route.query.albumId, (val) => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.export-track-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .track-toggle {

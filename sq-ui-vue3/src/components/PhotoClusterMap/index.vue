@@ -1,5 +1,8 @@
 <template>
-  <div class="photo-cluster-map" :class="{ 'is-editable': editable, 'is-terrain': terrainMode }">
+  <div
+    class="photo-cluster-map"
+    :class="{ 'is-editable': editable, 'is-terrain': terrainMode, 'is-exporting': exportState.active }"
+  >
     <div class="map-toolbar-left">
       <slot name="meta" />
     </div>
@@ -57,6 +60,23 @@
     </div>
     <div ref="amapEl" class="map-canvas map-canvas--amap" :class="{ 'is-hidden': !terrainMode }" />
     <div v-if="!hasPoints" class="map-empty">{{ emptyText }}</div>
+    <div v-if="exportState.active" class="pmc-export-overlay">
+      <div class="pmc-export-card">
+        <div class="pmc-export-title">{{ exportState.phase }}</div>
+        <div class="pmc-export-bar">
+          <div class="pmc-export-bar-fill" :style="{ width: `${Math.round(exportState.progress * 100)}%` }" />
+        </div>
+        <div class="pmc-export-meta">
+          <span>{{ Math.round(exportState.progress * 100) }}%</span>
+        </div>
+        <button type="button" class="pmc-export-cancel" :disabled="exportState.finishing" @click="cancelTrackVideoExport">
+          取消导出
+        </button>
+      </div>
+    </div>
+    <div v-if="exportState.active" class="pmc-export-distance" aria-hidden="true">
+      {{ formatExportKm(exportState.distance) }}
+    </div>
     <div class="pmc-br-stack">
       <button
         type="button"
@@ -97,6 +117,22 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import L from '@/utils/leafletRotate'
 import { loadAmap } from '@/utils/amapLoader'
+import {
+  FOLLOW_CAM_PITCH,
+  FOLLOW_CAM_ZOOM,
+  downloadBlob,
+  extensionForMime,
+  formatExportKm,
+  buildExportTrailCache,
+  chordHeading,
+  pickAmapRecordCanvas,
+  pickRecorderMime,
+  planExportTimeline,
+  sanitizeFileName,
+  sliceExportTrailPrefix,
+  startSmoothMapRecorder,
+  travelerIconDataUrl
+} from '@/utils/trackVideoExport'
 import {
   MAP_STYLES,
   STYLE_LAYERS,
@@ -307,6 +343,30 @@ const TERRAIN_CLUSTER_MAX_ZOOM = 16
 let terrainTraveler = null
 let terrainTravelerRaf = 0
 let terrainTravelerStartedAt = 0
+
+/** 轨迹 MP4 导出（3D 卫星跟随镜头） */
+const exportState = ref({
+  active: false,
+  finishing: false,
+  phase: '',
+  progress: 0,
+  distance: 0
+})
+let exportToken = 0
+let exportRaf = 0
+let exportRecorder = null
+/** @type {{ mode: string, line: any, glow: any, frozen?: boolean, lastIdx?: number }[]} */
+let exportTrailSegs = []
+/** @type {ReturnType<typeof buildExportTrailCache>} */
+let exportTrailCache = []
+let exportStartMarker = null
+let exportLabelsLayer = null
+let exportLabelMarker = null
+let exportHudMarker = null
+let exportRestore = null
+let exportMapCanvas = null
+/** 录制时实时路程，供平滑录制器叠 HUD */
+let exportLiveDist = 0
 /** 3D 轨迹方向流动虚线（对齐 Leaflet pmc-flow-dash） */
 /** @type {any[]} */
 let terrainFlowLines = []
@@ -646,6 +706,7 @@ function applyAmapLayers(styleKey) {
 }
 
 function scheduleTerrainOverlayRedraw() {
+  if (exportState.value.active) return
   if (amapStyleRedrawTimer) {
     clearTimeout(amapStyleRedrawTimer)
     amapStyleRedrawTimer = 0
@@ -653,6 +714,7 @@ function scheduleTerrainOverlayRedraw() {
   // 等底图切换完成后再画，避免同一帧加入被盖住/丢弃
   amapStyleRedrawTimer = setTimeout(() => {
     amapStyleRedrawTimer = 0
+    if (exportState.value.active) return
     if (terrainMode.value && amap) renderTerrainOverlays()
   }, 50)
 }
@@ -2523,6 +2585,8 @@ async function enterTerrainMode() {
     // 等地形就绪后再画，height:0 贴地才稳
     whenAmapReady(() => {
       if (token !== terrainEnterToken || !terrainMode.value) return
+      // 导出跟拍需要干净画面，禁止此时把全量轨迹/途经点画回去
+      if (exportState.value.active) return
       renderTerrainOverlays()
     })
   } catch (e) {
@@ -4597,6 +4661,7 @@ watch(
     props.showRegionHighlight
   ],
   () => {
+    if (exportState.value.active) return
     if (terrainMode.value && amap) renderTerrainOverlays()
   },
   { deep: true }
@@ -4611,6 +4676,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   terrainEnterToken += 1
+  exportToken += 1
+  if (exportRecorder) {
+    try { exportRecorder.cancel() } catch (e) { /* ignore */ }
+    exportRecorder = null
+  }
+  clearExportOverlays()
   closeViewMenu()
   unbindViewMenuOutsideClose()
   syncBoxSelectMode(false)
@@ -4651,11 +4722,496 @@ onBeforeUnmount(() => {
   mapHeading.value = 0
 })
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function clearExportOverlays() {
+  if (exportRaf) {
+    cancelAnimationFrame(exportRaf)
+    exportRaf = 0
+  }
+  if (amap && window.AMap) {
+    const remove = (item) => {
+      if (!item) return
+      try { amap.remove(item) } catch (e) {
+        try { item.setMap?.(null) } catch (e2) { /* ignore */ }
+      }
+    }
+    if (exportLabelsLayer && exportLabelMarker) {
+      try { exportLabelsLayer.remove(exportLabelMarker) } catch (e) { /* ignore */ }
+    }
+    exportTrailSegs.forEach((seg) => {
+      remove(seg?.line)
+      remove(seg?.glow)
+    })
+    remove(exportStartMarker)
+    remove(exportLabelsLayer)
+    // LabelsLayer 失败时降级为普通 Marker
+    if (exportLabelMarker && !exportLabelsLayer) remove(exportLabelMarker)
+    remove(exportHudMarker)
+  }
+  exportTrailSegs = []
+  // 注意：不要在清视觉对象时丢掉 exportTrailCache，否则录制中尾迹会整段消失
+  exportStartMarker = null
+  exportLabelsLayer = null
+  exportLabelMarker = null
+  exportHudMarker = null
+  exportMapCanvas = null
+}
+
+function cleanupExportSession(token) {
+  if (token != null && token !== exportToken) return
+  if (exportRecorder) {
+    try { exportRecorder.cancel() } catch (e) { /* ignore */ }
+    exportRecorder = null
+  }
+  clearExportOverlays()
+  exportTrailCache = []
+  exportLiveDist = 0
+  // 恢复常规 3D 轨迹动画与交互
+  if (terrainMode.value && amap) {
+    try {
+      amap.setStatus?.({
+        dragEnable: true,
+        zoomEnable: true
+      })
+    } catch (e) { /* ignore */ }
+    bindTerrainViewControls()
+    bindTerrainWheelZoom()
+    renderTerrainOverlays()
+  }
+  if (exportRestore) {
+    const { styleKey, wasTerrain } = exportRestore
+    exportRestore = null
+    const wantStyle = styleKey || currentStyle.value
+    if (!wasTerrain && terrainMode.value) {
+      currentStyle.value = wantStyle
+      exitTerrainMode()
+      if (map) applyBaseLayers(wantStyle)
+    } else if (wantStyle !== currentStyle.value) {
+      currentStyle.value = wantStyle
+      if (terrainMode.value && amap) applyAmapLayers(wantStyle)
+      else if (map) applyBaseLayers(wantStyle)
+    }
+  }
+  exportState.value = {
+    active: false,
+    finishing: false,
+    phase: '',
+    progress: 0,
+    distance: 0
+  }
+}
+
+function cancelTrackVideoExport() {
+  if (!exportState.value.active || exportState.value.finishing) return
+  exportToken += 1
+  exportState.value.phase = '已取消'
+  cleanupExportSession()
+  ElMessage.info('已取消导出轨迹视频')
+}
+
+function buildExportJourney() {
+  const matched = terrainMode.value
+    ? terrainGpxMatchedIdSet()
+    : (() => {
+        const set = new Set()
+        overlayList.value.forEach((item) => {
+          ;(item?.matchedPhotos || []).forEach((p) => {
+            if (p?.photoId != null) set.add(String(p.photoId))
+          })
+        })
+        return set
+      })()
+  return buildJourney(collectJourneyLegs(polylineSource.value, matched))
+}
+
+function ensureExportTravelerLayer(AMap, position, mode) {
+  const iconUrl = travelerIconDataUrl(mode, 64)
+  const iconOpts = {
+    type: 'image',
+    image: iconUrl,
+    size: [40, 40],
+    anchor: 'center'
+  }
+  try {
+    if (typeof AMap.LabelsLayer === 'function' && typeof AMap.LabelMarker === 'function') {
+      if (!exportLabelsLayer) {
+        exportLabelsLayer = new AMap.LabelsLayer({
+          zooms: [3, 22],
+          zIndex: 220,
+          collision: false,
+          allowCollision: false
+        })
+        amap.add(exportLabelsLayer)
+      }
+      if (!exportLabelMarker) {
+        exportLabelMarker = new AMap.LabelMarker({
+          position,
+          zIndex: 220,
+          rank: 999,
+          icon: iconOpts
+        })
+        exportLabelsLayer.add(exportLabelMarker)
+      } else {
+        exportLabelMarker.setPosition?.(position)
+        try {
+          exportLabelMarker.setIcon?.(iconOpts)
+        } catch (e) {
+          /* 部分版本无 setIcon：位置仍更新即可 */
+        }
+      }
+      return
+    }
+  } catch (e) {
+    console.warn('[PhotoClusterMap] LabelsLayer traveler failed, fallback marker', e)
+  }
+  // 降级：DOM Marker（画面上可见；WebGL 录制可能不含 DOM 图标）
+  if (!exportLabelMarker || exportLabelsLayer) {
+    if (exportLabelsLayer) {
+      try { amap.remove(exportLabelsLayer) } catch (e) { /* ignore */ }
+      exportLabelsLayer = null
+      exportLabelMarker = null
+    }
+    exportLabelMarker = new AMap.Marker({
+      position,
+      content: terrainTravelerContent(mode),
+      offset: new AMap.Pixel(-18, -18),
+      height: 0,
+      zIndex: 220,
+      bubble: false
+    })
+    amap.add(exportLabelMarker)
+    return
+  }
+  exportLabelMarker.setPosition(position)
+  if (typeof exportLabelMarker.setContent === 'function') {
+    exportLabelMarker.setContent(terrainTravelerContent(mode))
+  }
+}
+
+function buildExportTrailPolylineOpts(path, color, weight, opacity, zIndex) {
+  return {
+    path,
+    strokeColor: color,
+    strokeWeight: weight,
+    strokeOpacity: opacity,
+    lineJoin: 'round',
+    lineCap: 'round',
+    geodesic: false,
+    zIndex,
+    bubble: false,
+    cursor: 'default'
+  }
+}
+
+/**
+ * 用预计算缓存画尾迹：cached.path 已是 AMap [lng,lat]；完成段冻结不再 setPath。
+ */
+function updateExportTrail(AMap, dist) {
+  if (!amap || !AMap || !exportTrailCache.length || !(dist > 0.5)) return
+  for (let i = 0; i < exportTrailCache.length; i++) {
+    const cached = exportTrailCache[i]
+    if (dist <= cached.start + 0.2) break
+    let seg = exportTrailSegs[i]
+    if (seg?.frozen) continue
+
+    const done = dist >= cached.end - 0.35
+    const path = done ? cached.path : sliceExportTrailPrefix(cached, dist)
+    if (!path || path.length < 2) continue
+
+    // 点数几乎没变时跳过 setPath
+    if (seg && !done && seg.lastIdx != null && path.length <= seg.lastIdx + 1) continue
+
+    const color = travelModeColor(cached.mode, '#3B82F6')
+    if (!seg) {
+      const glow = new AMap.Polyline(buildExportTrailPolylineOpts(path, color, 12, 0.22, 110))
+      const line = new AMap.Polyline(buildExportTrailPolylineOpts(path, color, 6, 0.96, 112))
+      try {
+        amap.add([glow, line])
+      } catch (e) {
+        try { glow.setMap(amap); line.setMap(amap) } catch (e2) { /* ignore */ }
+      }
+      seg = { mode: cached.mode, glow, line, frozen: false, lastIdx: path.length }
+      exportTrailSegs[i] = seg
+    } else {
+      try {
+        seg.line.setPath(path)
+        if (done || !seg.lastIdx || path.length - seg.lastIdx >= 3) {
+          seg.glow.setPath(path)
+        }
+        seg.lastIdx = path.length
+      } catch (e) { /* ignore */ }
+    }
+    if (done) {
+      try {
+        seg.line.setPath(cached.path)
+        seg.glow.setPath(cached.path)
+      } catch (e) { /* ignore */ }
+      seg.frozen = true
+    }
+  }
+}
+
+/**
+ * 导出轨迹 MP4。
+ * @param {{
+ *   fileName?: string,
+ *   style?: 'normal'|'satellite'|'hybrid',
+ *   viewMode?: '2d'|'3d',
+ *   fps?: number,
+ *   pitch?: number,
+ *   zoom?: number
+ * }} [options]
+ */
+async function exportTrackVideo(options = {}) {
+  if (exportState.value.active) {
+    ElMessage.warning('正在导出轨迹视频')
+    return null
+  }
+  if (typeof MediaRecorder === 'undefined' || !pickRecorderMime()) {
+    ElMessage.error('当前浏览器不支持录制 MP4，请使用较新的 Chrome / Edge')
+    return null
+  }
+
+  const journey = buildExportJourney()
+  if (!journey?.metrics || !journey.spans?.length) {
+    ElMessage.warning('暂无可用轨迹，请先开启「显示轨迹」或导入 GPX')
+    return null
+  }
+
+  const token = ++exportToken
+  const styleWanted = ['normal', 'satellite', 'hybrid'].includes(options.style)
+    ? options.style
+    : 'hybrid'
+  const want3d = options.viewMode !== '2d'
+  const recordFps = Number(options.fps) === 59.94 ? 59.94 : 29.97
+  exportRestore = {
+    styleKey: currentStyle.value,
+    wasTerrain: terrainMode.value
+  }
+  const styleLabel = styleWanted === 'satellite' ? '卫星' : (styleWanted === 'normal' ? '标准' : '混合')
+  exportState.value = {
+    active: true,
+    finishing: false,
+    phase: `准备${want3d ? '3D' : '二维'}${styleLabel}地图…`,
+    progress: 0,
+    distance: 0
+  }
+
+  try {
+    // 导出统一走高德画布录制；二维用俯仰 0，3D 用倾斜跟拍
+    if (!terrainMode.value || currentStyle.value !== styleWanted) {
+      await selectViewMode(true, styleWanted)
+    } else if (terrainMode.value && amap && currentStyle.value === styleWanted) {
+      applyAmapLayers(styleWanted)
+    }
+    if (token !== exportToken) return null
+    if (!amap || !window.AMap) throw new Error('地图未就绪')
+
+    exportState.value.phase = '加载地图影像…'
+    await sleep(700)
+    if (token !== exportToken) return null
+
+    stopTerrainTraveler()
+    stopTerrainFlowAnim()
+    unbindTerrainViewControls()
+    unbindTerrainWheelZoom()
+    unbindTerrainGpxMapPick()
+
+    // 清空既有轨迹/途经点/照片点：导出只保留「一个主体 + 渐显尾迹」
+    clearAmapOverlays()
+    clearExportOverlays()
+
+    const AMap = window.AMap
+    const { metrics, spans } = journey
+    const { timed, duration } = planExportTimeline(spans)
+    if (!timed.length || !(duration > 0)) throw new Error('轨迹时长无效')
+
+    const pitch = want3d
+      ? (Number(options.pitch) > 0 ? Number(options.pitch) : FOLLOW_CAM_PITCH)
+      : 0
+    const baseZoom = Number(options.zoom) > 0
+      ? Number(options.zoom)
+      : (want3d ? FOLLOW_CAM_ZOOM : Math.min(FOLLOW_CAM_ZOOM, 18.2))
+    const start = pointAlongPath(metrics, 0)
+    const startPos = [start.latlng.lng, start.latlng.lat]
+    // 开场锁定「从后往前看」：高德 rotation 与航向差 180° 时才会背对镜头朝前走
+    const lockedRotation = (chordHeading(metrics, 0, 40, 180) + 180) % 360
+    let camLng = startPos[0]
+    let camLat = startPos[1]
+    let lastTickAt = 0
+    let lastTrailAt = 0
+    let lastTrailDist = -1
+    let lastCenterAt = 0
+    exportLiveDist = 0
+
+    ensureExportTravelerLayer(AMap, startPos, timed[0].mode)
+
+    try {
+      amap.setStatus?.({
+        dragEnable: true,
+        zoomEnable: true,
+        pitchEnable: false,
+        rotateEnable: false,
+        animateEnable: false
+      })
+    } catch (e) { /* ignore */ }
+    try {
+      amap.setZoomAndCenter(baseZoom, startPos, true)
+      amap.setPitch(pitch, true)
+      amap.setRotation(lockedRotation, true)
+      amap.setZoom(baseZoom, true)
+      amap.setCenter(startPos, true)
+    } catch (e) { /* ignore */ }
+    await sleep(800)
+    if (token !== exportToken) return null
+    // 再次清场，防止 complete 回调晚到又把全量轨迹画回来
+    stopTerrainTraveler()
+    clearAmapOverlays()
+    clearExportOverlays()
+    ensureExportTravelerLayer(AMap, startPos, timed[0].mode)
+    try {
+      amap.setZoom(baseZoom, true)
+      amap.setCenter(startPos, true)
+      amap.setPitch(pitch, true)
+      amap.setRotation(lockedRotation, true)
+      amap.resize?.()
+      amap.setStatus?.({
+        dragEnable: false,
+        zoomEnable: false,
+        pitchEnable: false,
+        rotateEnable: false,
+        animateEnable: false
+      })
+    } catch (e) { /* ignore */ }
+
+    // 二次清场后再建缓存，避免任何清场逻辑误伤；path 已是 AMap 坐标
+    exportState.value.phase = '预处理轨迹线…'
+    await sleep(20)
+    if (token !== exportToken) return null
+    exportTrailCache = buildExportTrailCache(metrics, timed)
+
+    // 等卫星/标准瓦片加载，避免录到模糊拉伸图
+    exportState.value.phase = '等待地图清晰加载…'
+    await sleep(1400)
+    if (token !== exportToken) return null
+    try { amap.resize?.() } catch (e) { /* ignore */ }
+    await sleep(200)
+    if (token !== exportToken) return null
+
+    const canvas = pickAmapRecordCanvas(amap.getContainer?.() || amapEl.value)
+    if (!canvas) throw new Error('未找到可录制的地图画布')
+    exportMapCanvas = canvas
+    // GPU captureStream → video → 合成 HUD，避免主线程每帧 drawImage(WebGL)
+    exportRecorder = await startSmoothMapRecorder(canvas, {
+      fps: recordFps,
+      maxEdge: 1920,
+      getDistance: () => exportLiveDist
+    })
+    exportState.value.phase = `正在录制轨迹（${recordFps} fps）…`
+
+    const startedAt = performance.now()
+    let lastMode = timed[0].mode
+
+    await new Promise((resolve, reject) => {
+      const tick = (now) => {
+        if (token !== exportToken) {
+          resolve('cancelled')
+          return
+        }
+        if (!amap || !exportRecorder) {
+          reject(new Error('导出已中断'))
+          return
+        }
+        const elapsed = now - startedAt
+        const dt = lastTickAt ? (now - lastTickAt) : 16
+        lastTickAt = now
+        const t = Math.min(elapsed, duration)
+        const state = journeyStateAt(timed, duration, t)
+        const pos = pointAlongPath(metrics, state.dist)
+        const targetLng = pos.latlng.lng
+        const targetLat = pos.latlng.lat
+        const lnglat = [targetLng, targetLat]
+        exportLiveDist = state.dist
+
+        // 轻柔跟中心；平移略降频，录制侧不再抢主线程
+        const posAlpha = Math.min(0.14, 0.05 + dt / 180)
+        camLng += (targetLng - camLng) * posAlpha
+        camLat += (targetLat - camLat) * posAlpha
+        if (now - lastCenterAt >= 32) {
+          lastCenterAt = now
+          try { amap.setCenter([camLng, camLat], true) } catch (e) { /* ignore */ }
+        }
+
+        if (state.mode !== lastMode) {
+          lastMode = state.mode
+          ensureExportTravelerLayer(AMap, lnglat, state.mode)
+        } else if (exportLabelMarker?.setPosition) {
+          exportLabelMarker.setPosition(lnglat)
+        } else {
+          ensureExportTravelerLayer(AMap, lnglat, state.mode)
+        }
+
+        // 尾迹：预计算切片，完成段冻结
+        if (now - lastTrailAt > 40 || Math.abs(state.dist - lastTrailDist) > 4) {
+          lastTrailAt = now
+          lastTrailDist = state.dist
+          updateExportTrail(AMap, state.dist)
+        }
+
+        exportState.value.progress = duration > 0 ? Math.min(1, t / duration) : 1
+        exportState.value.distance = state.dist
+
+        if (elapsed >= duration) {
+          resolve('done')
+          return
+        }
+        exportRaf = requestAnimationFrame(tick)
+      }
+      exportRaf = requestAnimationFrame(tick)
+    })
+
+    if (token !== exportToken) return null
+
+    exportState.value.finishing = true
+    exportState.value.phase = '生成视频文件…'
+    exportState.value.progress = 1
+    // 末帧多留一瞬，避免收尾被截断
+    await sleep(350)
+    if (token !== exportToken) return null
+
+    const mimeType = exportRecorder.mimeType
+    const blob = await exportRecorder.stop()
+    exportRecorder = null
+    if (token !== exportToken) return null
+    if (!blob || blob.size < 64) throw new Error('视频生成失败，文件为空')
+
+    const ext = extensionForMime(mimeType)
+    const fileName = `${sanitizeFileName(options.fileName || '轨迹动画')}.${ext}`
+    downloadBlob(blob, fileName)
+    ElMessage.success(ext === 'mp4' ? '轨迹视频已导出为 MP4' : `已导出为 ${ext.toUpperCase()}（当前浏览器不支持 MP4 容器）`)
+    cleanupExportSession(token)
+    return { blob, fileName, mimeType }
+  } catch (e) {
+    console.error('[PhotoClusterMap] exportTrackVideo failed', e)
+    if (token === exportToken) {
+      cleanupExportSession(token)
+      ElMessage.error(e?.message || '导出轨迹视频失败')
+    }
+    return null
+  }
+}
+
 defineExpose({
   refresh,
   invalidateMapSize,
   terrainMode,
   exitTerrainMode,
+  exportTrackVideo,
+  cancelTrackVideoExport,
+  exportState,
   /** 将地图中心移到 WGS84 坐标（用于估计点预览） */
   focusWgs(lat, lng, zoom = 16) {
     if (lat == null || lng == null) return
@@ -4684,6 +5240,93 @@ defineExpose({
 
 .photo-cluster-map.is-terrain {
   /* 3D 只读：禁用编辑类光标暗示 */
+  cursor: default;
+}
+
+.photo-cluster-map.is-exporting .map-toolbar-left,
+.photo-cluster-map.is-exporting .map-toolbar-right,
+.photo-cluster-map.is-exporting .pmc-br-stack {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pmc-export-overlay {
+  position: absolute;
+  z-index: 800;
+  left: 12px;
+  bottom: 12px;
+  pointer-events: none;
+}
+
+.pmc-export-distance {
+  position: absolute;
+  z-index: 790;
+  right: 18px;
+  bottom: 16px;
+  pointer-events: none;
+  font-size: clamp(28px, 3.6vw, 48px);
+  font-weight: 800;
+  font-style: italic;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.65), 0 0 2px rgba(0, 0, 0, 0.9);
+  letter-spacing: 0.02em;
+}
+
+.pmc-export-card {
+  pointer-events: auto;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.pmc-export-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.pmc-export-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+
+.pmc-export-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f59e0b, #22c55e);
+  transition: width 0.12s linear;
+}
+
+.pmc-export-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.pmc-export-cancel {
+  margin-top: 10px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pmc-export-cancel:disabled {
+  opacity: 0.5;
   cursor: default;
 }
 

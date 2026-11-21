@@ -74,6 +74,13 @@
             <div class="meta-actions">
               <el-button
                 size="small"
+                :loading="exportingVideo"
+                :disabled="editing || correcting || !trackLineVisible"
+                title="导出轨迹 MP4，可选择帧率、二维/3D 与底图样式"
+                @click="openExportTrackDialog"
+              >导出轨迹视频</el-button>
+              <el-button
+                size="small"
                 :loading="replanning"
                 :disabled="editing || correcting"
                 title="仅对照片轨点之间缺折线的路段贴合；已匹配 GPX 的媒体不会进照片轨；已有手动连接会保留；不影响 GPX"
@@ -744,12 +751,19 @@
         <el-button :disabled="mergeSaving" @click="closeMergePanel">取消</el-button>
       </div>
     </aside>
+
+    <TrackVideoExportDialog
+      ref="exportDialogRef"
+      v-model="exportDialogOpen"
+      @confirm="onExportTrackConfirm"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue'
 import PhotoClusterMap from '@/components/PhotoClusterMap/index.vue'
+import TrackVideoExportDialog from '@/components/TrackVideoExportDialog/index.vue'
 import {
   addCustomSegment,
   addTrainSegment,
@@ -796,6 +810,9 @@ const correctThumb = computed(() => (correctEdit.value ? mediaSrc(correctEdit.va
 const saving = ref(false)
 const planning = ref(false)
 const replanning = ref(false)
+const exportingVideo = ref(false)
+const exportDialogOpen = ref(false)
+const exportDialogRef = ref(null)
 const draftPoints = ref([])
 const activeIndex = ref(-1)
 const draftMode = ref('')
@@ -1274,6 +1291,39 @@ watch(() => props.points, () => {
     activeIndex.value = -1
   }
 })
+
+function openExportTrackDialog() {
+  if (exportingVideo.value || editing.value || correcting.value) return
+  if (!trackLineVisible.value) {
+    proxy.$modal.msgWarning('请先开启「显示轨迹」再导出')
+    return
+  }
+  if (!clusterMapRef.value?.exportTrackVideo) {
+    proxy.$modal.msgError('地图尚未就绪')
+    return
+  }
+  exportDialogOpen.value = true
+}
+
+async function onExportTrackConfirm(opts) {
+  const map = clusterMapRef.value
+  exportDialogRef.value?.finish?.()
+  if (!map?.exportTrackVideo) {
+    proxy.$modal.msgError('地图尚未就绪')
+    return
+  }
+  exportingVideo.value = true
+  try {
+    await map.exportTrackVideo({
+      fileName: props.track?.trackName || '轨迹动画',
+      fps: opts?.fps,
+      viewMode: opts?.viewMode,
+      style: opts?.style
+    })
+  } finally {
+    exportingVideo.value = false
+  }
+}
 
 function formatDistance(km) {
   if (km == null || km === '') return '-'
