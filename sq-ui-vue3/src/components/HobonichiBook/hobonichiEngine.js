@@ -40,13 +40,15 @@ void main(){
  face*=1.-uShow*uLift*air*vF*clamp(1.-lum(rev)/lum(PAPER),0.,1.);
  float ndl=dot(Nv,uL),sh=(.87+.13*max(ndl,0.))/(.87+.13*uL.z);
  vec3 col=face*sh*mix(vec3(.985,.968,.94),vec3(1.),smoothstep(.87,1.,sh));
- col*=1.-.1*uLift*(1.-uBoard)*exp(-vUV.x*uWH.x/22.)*smoothstep(4.,40.,h+vUV.x*60.);
+ col*=1.-.035*uLift*(1.-uBoard)*exp(-vUV.x*uWH.x/28.)*smoothstep(4.,40.,h+vUV.x*60.);
  col+=vec3(1.,.9,.74)*uGlow*uLift*max(-ndl,0.);
  vec3 H=normalize(uL+V);float sp=pow(max(dot(Nv,H),0.),uShin),sp0=pow(normalize(uL+vec3(0.,0.,1.)).z,uShin);
  col+=vec3(1.,.98,.93)*uSpec*uLift*max(sp-sp0,0.);
- if(uTrans>0.){vec2 gw=uCam.xy+(vS-uCen)/uCam.z;float lod=.5+log2(1.+h*.05);vec3 bg=PAPER;
-  if(gw.x>=0.&&uHas.x>.5)bg=textureLod(uUnderR,vec2(gw.x/uWH.x,gw.y/uWH.y),lod).rgb;
-  else if(gw.x<0.&&uHas.y>.5)bg=textureLod(uUnderL,vec2((gw.x+uWH.x)/uWH.x,gw.y/uWH.y),lod).rgb;
+ if(uTrans>0.){vec2 gw=uCam.xy+(vS-uCen)/uCam.z;float lod=.5+log2(1.+h*.05);vec3 bgR=PAPER,bgL=PAPER;
+  if(uHas.x>.5)bgR=textureLod(uUnderR,vec2(clamp(gw.x/uWH.x,0.,1.),clamp(gw.y/uWH.y,0.,1.)),lod).rgb;
+  if(uHas.y>.5)bgL=textureLod(uUnderL,vec2(clamp((gw.x+uWH.x)/uWH.x,0.,1.),clamp(gw.y/uWH.y,0.,1.)),lod).rgb;
+  /* 订口附近柔混左右底页，避免硬切竖缝 */
+  float seam=smoothstep(-3.,3.,gw.x);vec3 bg=mix(bgL,bgR,seam);
   if(gw.y<0.||gw.y>uWH.y||abs(gw.x)>uWH.x)bg=PAPER;
   float T=uTrans*uLift*air*vF*mix(.35,1.,abs(dot(Nv,V)));col*=mix(vec3(1.),clamp(bg/PAPER,0.,1.1),T);}
  float ex=(1.-vUV.x)/max(fwidth(vUV.x),1e-6),ey=min(vUV.y,1.-vUV.y)/max(fwidth(vUV.y),1e-6),e=min(ex,ey)/uPx;
@@ -102,10 +104,11 @@ export function paintBlank(c, _hand = 'right', seed = 11) {
   const r = gRnd(seed)
   g.fillStyle = TOMOE_CREAM
   g.fillRect(0, 0, w, h)
+  // 订口侧洗色压淡，避免左右页相接时叠出硬竖线
   const wash = g.createLinearGradient(0, 0, w * 0.12, h)
-  wash.addColorStop(0, 'rgba(245,236,214,0.28)')
+  wash.addColorStop(0, 'rgba(245,236,214,0.12)')
   wash.addColorStop(0.5, 'rgba(251,247,239,0)')
-  wash.addColorStop(1, 'rgba(236,226,204,0.16)')
+  wash.addColorStop(1, 'rgba(236,226,204,0.1)')
   g.fillStyle = wash
   g.fillRect(0, 0, w, h)
   g.fillStyle = 'rgba(146,128,92,0.028)'
@@ -459,8 +462,7 @@ export function paintCoverInside(c, spineLeft = true) {
   gr.addColorStop(1, 'rgba(120,96,60,0)')
   g.fillStyle = gr
   g.fillRect(spineLeft ? 0 : w - 26, 0, 26, h)
-  g.fillStyle = 'rgba(150,122,78,.18)'
-  g.fillRect(spineLeft ? 9 : w - 10, 0, 1, h)
+  // 不再画订口 1px 实线（翻页透出时会像竖缝）
 }
 
 export function paintCoverBack(c, year) {
@@ -1178,9 +1180,9 @@ export function createEngine({ bookCanvas, leafCanvas }) {
       g.clearRect(0, 0, VW, VH)
       g.setTransform(cam.k, 0, 0, cam.k, cam.cx - cam.x * cam.k, cam.cy - cam.y * cam.k)
 
-      // settle still lies flat — treat it like rest for which face shows
+      // 仅 rest 画进静止书页。settle 仍走 leaf，避免与 book-canvas 叠出重影
       const liesFlat = (U, side) =>
-        (U.mode === 'rest' || U.mode === 'settle') &&
+        U.mode === 'rest' &&
         (side === 0 ? U.th < 0.02 : U.th > PI - 0.02)
 
       let restR = null
@@ -1282,25 +1284,27 @@ export function createEngine({ bookCanvas, leafCanvas }) {
         g.restore()
       }
 
+      // 订口重叠 2px，盖住对开笔迹接缝，避免红色框那种硬竖线
+      const seam = 2
       if (restR != null) {
         const fr = faces[units[restR].frontKey]
-        if (restR === 0) g.drawImage(fr, 0, 0, W, H)
-        else if (restR === last) g.drawImage(fr, 0, 0, W, H)
+        if (restR === 0) g.drawImage(fr, -seam, 0, W + seam, H)
+        else if (restR === last) g.drawImage(fr, -seam, 0, W + seam, H)
         else {
           g.drawImage(faces.coverBI, 0, 0, W, H)
           if (nR > 0) drawPageBlock(1, nR)
-          g.drawImage(fr, 0, 0, W, H)
+          g.drawImage(fr, -seam, 0, W + seam, H)
           under.r = { key: units[restR].frontKey, img: fr }
         }
       }
       if (restL != null) {
-        if (restL === last) g.drawImage(faces[units[restL].backKey], -W, 0, W, H)
+        if (restL === last) g.drawImage(faces[units[restL].backKey], -W, 0, W + seam, H)
         else {
           g.drawImage(faces.coverFI, -W, 0, W, H)
           if (restL > 0) {
             if (nL > 0) drawPageBlock(-1, nL)
             const bk = faces[units[restL].backKey]
-            g.drawImage(bk, -W, 0, W, H)
+            g.drawImage(bk, -W, 0, W + seam, H)
             under.l = { key: units[restL].backKey, img: bk }
           }
         }
@@ -1314,18 +1318,20 @@ export function createEngine({ bookCanvas, leafCanvas }) {
         if (nL > 0) drawPageBlock(-1, nL)
       }
 
-      // gutter valley（压淡，避免书写时中间像多了一条竖线）
+      // 订口谷影：柔和阴影表达深度，避免实线竖缝
       if (restL != null && restL < last && restR != null && restR > 0) {
-        const gr = g.createLinearGradient(0, 0, 22, 0)
-        gr.addColorStop(0, 'rgba(90,70,40,0.06)')
+        const gr = g.createLinearGradient(0, 0, 28, 0)
+        gr.addColorStop(0, 'rgba(90,70,40,0.055)')
+        gr.addColorStop(0.45, 'rgba(90,70,40,0.02)')
         gr.addColorStop(1, 'rgba(90,70,40,0)')
         g.fillStyle = gr
-        g.fillRect(0, 0, 22, H)
-        const gl2 = g.createLinearGradient(0, 0, -22, 0)
-        gl2.addColorStop(0, 'rgba(90,70,40,0.06)')
+        g.fillRect(0, 0, 28, H)
+        const gl2 = g.createLinearGradient(0, 0, -28, 0)
+        gl2.addColorStop(0, 'rgba(90,70,40,0.055)')
+        gl2.addColorStop(0.45, 'rgba(90,70,40,0.02)')
         gl2.addColorStop(1, 'rgba(90,70,40,0)')
         g.fillStyle = gl2
-        g.fillRect(-22, 0, 22, H)
+        g.fillRect(-28, 0, 28, H)
       }
 
       const moving = units.filter(u => u.mode !== 'rest')

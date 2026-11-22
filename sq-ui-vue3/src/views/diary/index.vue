@@ -73,6 +73,7 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
 import {
+  ensureMediaImage,
   mediaHeightForWidth,
   mediaWidthForPage,
   newId
@@ -205,6 +206,14 @@ function onMediaConfirm(items) {
   for (const [pageNo, layers] of byPage) {
     setContent(pageNo, { v: 1, layers }, { markDirty: true })
   }
+
+  // 先预热缩略图，再拉清晰大图；大图就绪后触发纸面 rebake
+  const onHiRes = () => bookRef.value?.rebakeVisible?.()
+  items.forEach((item) => {
+    if (item.thumbSrc) ensureMediaImage(item.thumbSrc)
+    if (item.src) ensureMediaImage(item.src, onHiRes)
+  })
+
   tool.value = 'media'
   ElMessage.success(`已导入 ${items.length} 项，可拖动调整位置`)
 }

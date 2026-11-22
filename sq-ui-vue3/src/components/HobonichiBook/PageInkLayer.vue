@@ -67,16 +67,26 @@
           @pointerdown.stop="onVideoPointerDown($event, item)"
           @dblclick.prevent.stop="onMediaDblClick($event, item)"
         />
-        <img
-          v-else
-          class="media-el"
-          :src="mediaSrc(item)"
-          :alt="item.fileName || ''"
-          draggable="false"
-          decoding="async"
-          @load="onMediaImgLoad($event, item)"
-          @dblclick.prevent.stop="onMediaDblClick($event, item)"
-        />
+        <template v-else>
+          <img
+            v-if="mediaThumbSrc(item) && !isMediaReady(item)"
+            class="media-el media-el--thumb"
+            :src="mediaThumbSrc(item)"
+            alt=""
+            draggable="false"
+            decoding="async"
+          />
+          <img
+            class="media-el media-el--full"
+            :class="{ ready: isMediaReady(item) }"
+            :src="mediaSrc(item)"
+            :alt="item.fileName || ''"
+            draggable="false"
+            decoding="async"
+            @load="onMediaFullLoad($event, item)"
+            @dblclick.prevent.stop="onMediaDblClick($event, item)"
+          />
+        </template>
         <template v-if="tool === 'media' && !isPinned(item)">
           <div class="media-handle" title="拖动" @pointerdown.stop="onMediaDragStart($event, item)" />
           <div class="media-resize" title="缩放" @pointerdown.stop="onMediaResizeStart($event, item)" />
@@ -173,6 +183,8 @@ const dragging = ref(null)
 const resizing = ref(null)
 /** 橡皮滑动擦除中 */
 const erasing = ref(null)
+/** 已加载清晰大图的贴图 id（blur-up） */
+const mediaReadyIds = ref(new Set())
 
 const isSpread = computed(() => !!(props.leftPageNo && props.rightPageNo))
 
@@ -201,9 +213,9 @@ const wrapStyle = computed(() => {
     pointerEvents: enabled.value ? 'auto' : 'none',
     zIndex: enabled.value ? 6 : 0
   }
-  // 翻页时只露出静止半页，避免揭开的邻页被当前美纹纸盖住
-  if (props.clipSide === 'left') style.clipPath = 'inset(0 50% 0 0)'
-  else if (props.clipSide === 'right') style.clipPath = 'inset(0 0 0 50%)'
+  // 翻页时只露出静止半页；略越过中线 2px，避免订口刀切竖缝
+  if (props.clipSide === 'left') style.clipPath = 'inset(0 calc(50% - 2px) 0 0)'
+  else if (props.clipSide === 'right') style.clipPath = 'inset(0 0 0 calc(50% - 2px))'
   return style
 })
 
@@ -219,10 +231,14 @@ const textboxes = computed(() => viewLayers.value.filter((l) => l && l.type === 
 /** 贴图保持相对顺序；胶条插到所压贴图上方，保证能贴住 */
 const overlayStack = computed(() => buildOverlayStack(viewLayers.value))
 /**
- * 贴图/美纹纸始终用 HTML 层（清晰）。
- * 翻页时 ink-layer 压在 leaf 之下：静止半页仍锐利，翻起的那页由 leaf 烘焙纹理盖住。
+ * 翻页工具：不叠 HTML，只看全量烘焙（层级与翻页中一致）。
+ * 贴图/胶带/查看/橡皮：用 HTML 方便操作；拖页动画中一律隐藏。
  */
-const showMediaOverlay = computed(() => true)
+const showMediaOverlay = computed(() => {
+  if (!props.previewStrokes) return false
+  const t = props.tool
+  return t === 'media' || t === 'tape' || t === 'view' || t === 'eraser'
+})
 
 function boxStyle(box) {
   return {
@@ -437,10 +453,32 @@ function mediaSrc(m) {
   return resolveMediaUrl(m.src || m.thumbSrc || '')
 }
 
+function mediaThumbSrc(m) {
+  if (!m || m.kind === 'video') return ''
+  const thumb = m.thumbSrc || ''
+  const full = m.src || ''
+  if (!thumb || thumb === full) return ''
+  return resolveMediaUrl(thumb)
+}
+
 function mediaPoster(m) {
   // 仅视频封面可用小图；图片勿走 thumb
   if (m?.kind === 'video') return resolveMediaUrl(m.thumbSrc || '')
   return resolveMediaUrl(m.src || m.thumbSrc || '')
+}
+
+function isMediaReady(m) {
+  if (!m?.id) return false
+  // 无独立缩略图时直接显示大图，避免一直透明
+  if (!mediaThumbSrc(m)) return true
+  return mediaReadyIds.value.has(m.id)
+}
+
+function markMediaReady(id) {
+  if (!id || mediaReadyIds.value.has(id)) return
+  const next = new Set(mediaReadyIds.value)
+  next.add(id)
+  mediaReadyIds.value = next
 }
 
 /** 贴图是否压住订口（对开坐标） */
@@ -567,6 +605,11 @@ function upsertMediaLayer(layer, { toFront = false } = {}) {
   )
 }
 
+function onMediaFullLoad(e, m) {
+  markMediaReady(m?.id)
+  onMediaImgLoad(e, m)
+}
+
 function onMediaImgLoad(e, m) {
   const img = e?.target
   if (!img?.naturalWidth || !img.naturalHeight) return
@@ -600,7 +643,9 @@ function redrawInk() {
   if (!cv) return
   const g = cv.getContext('2d')
   g.clearRect(0, 0, cv.width, cv.height)
-  if (props.previewStrokes) {
+  // 仅画笔/橡皮工具用 HTML 笔迹；翻页工具走纸面烘焙，避免压住贴图
+  const strokeOnHtml = props.previewStrokes && (props.tool === 'pen' || props.tool === 'eraser')
+  if (strokeOnHtml) {
     for (const layer of viewLayers.value) {
       if (layer && layer.type === 'stroke') {
         paintStrokeOnCtx(g, layer, cv.width, cv.height, 1)
@@ -609,7 +654,6 @@ function redrawInk() {
   }
   const d = drafting.value
   if (!d || !d.points || !d.points.length) return
-  // 对开：width 用页相对，显示时 *0.5
   const showW = isSpread.value ? (d.width || props.penWidth) * 0.5 : (d.width || props.penWidth)
   paintStrokeOnCtx(g, { ...d, width: showW }, cv.width, cv.height, 1)
 }
@@ -1402,7 +1446,7 @@ onUnmounted(() => {
   padding: 0;
   background: #fdf8ec;
   border-radius: 4px;
-  box-shadow: 1px 3px 10px rgba(62, 50, 32, 0.22);
+  box-shadow: 1px 2px 6px rgba(62, 50, 32, 0.18);
   overflow: hidden;
   pointer-events: auto;
   user-select: none;
@@ -1462,6 +1506,28 @@ onUnmounted(() => {
   background: rgba(210, 198, 178, 0.35);
   pointer-events: auto;
   overflow: hidden;
+}
+
+.media-el--thumb {
+  filter: blur(10px) saturate(0.92);
+  transform: scale(1.08);
+  transform-origin: center;
+  z-index: 0;
+  pointer-events: none !important;
+}
+
+.media-el--full {
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.28s ease;
+  &.ready {
+    opacity: 1;
+  }
+}
+
+/* 无缩略图时直接显示大图，避免一直透明 */
+.media-box:not(:has(.media-el--thumb)) .media-el--full {
+  opacity: 1;
 }
 
 .media-box:not(.editable) .media-el {

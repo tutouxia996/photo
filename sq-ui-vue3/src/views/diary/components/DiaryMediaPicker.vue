@@ -2,9 +2,10 @@
   <el-dialog
     :model-value="modelValue"
     title="导入图片 / 视频"
-    width="760px"
+    width="860px"
     append-to-body
     destroy-on-close
+    align-center
     class="diary-media-picker"
     @update:model-value="onVisible"
   >
@@ -367,7 +368,10 @@ watch(
 <style scoped lang="scss">
 .picker-tabs {
   :deep(.el-tabs__header) {
-    margin-bottom: 12px;
+    margin-bottom: 8px;
+  }
+  :deep(.el-tabs__content) {
+    overflow: hidden;
   }
 }
 
@@ -375,7 +379,7 @@ watch(
   display: grid;
   grid-template-columns: 220px 1fr;
   gap: 12px;
-  min-height: 420px;
+  height: min(460px, 58vh);
 }
 
 .album-side,
@@ -395,7 +399,7 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 8px 10px;
   font-size: 13px;
   color: rgba(62, 52, 38, 0.72);
   border-bottom: 1px solid rgba(62, 52, 38, 0.08);
@@ -460,20 +464,28 @@ watch(
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  grid-auto-rows: auto;
   gap: 8px;
   align-content: start;
+  align-items: start;
 }
 
 .photo-item {
   position: relative;
-  aspect-ratio: 1;
+  width: 100%;
+  height: 0;
+  padding: 0 0 100%; /* 正方形，避免 button + grid 把缩略图压扁 */
+  align-self: start;
   border: 0;
-  padding: 0;
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   background: rgba(210, 198, 178, 0.35);
+  box-sizing: border-box;
+  line-height: 0;
   img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -518,13 +530,13 @@ watch(
 
 .more-wrap {
   flex: none;
-  padding: 8px;
+  padding: 6px;
   text-align: center;
   border-top: 1px solid rgba(62, 52, 38, 0.08);
 }
 
 .empty-tip {
-  padding: 24px 12px;
+  padding: 16px 12px;
   text-align: center;
   color: rgba(62, 52, 38, 0.45);
   font-size: 13px;
@@ -534,14 +546,18 @@ watch(
 }
 
 .local-pane {
-  min-height: 360px;
+  height: min(460px, 58vh);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .local-upload {
   width: 100%;
+  flex: none;
   :deep(.el-upload-dragger) {
     width: 100%;
-    padding: 36px 16px;
+    padding: 20px 16px;
     background: rgba(255, 252, 245, 0.7);
     border-color: rgba(62, 52, 38, 0.18);
   }
@@ -564,11 +580,12 @@ watch(
 }
 
 .upload-list {
-  margin-top: 12px;
+  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 220px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -622,10 +639,31 @@ watch(
 @media (max-width: 720px) {
   .album-pane {
     grid-template-columns: 1fr;
-    min-height: 480px;
+    height: auto;
+    max-height: min(420px, 60vh);
   }
   .album-side {
-    max-height: 160px;
+    max-height: 120px;
+  }
+  .photo-side {
+    min-height: 220px;
+  }
+  .local-pane {
+    height: auto;
+    max-height: min(400px, 56vh);
+  }
+}
+</style>
+
+<style lang="scss">
+/* append-to-body：弹层样式需非 scoped */
+.diary-media-picker.el-dialog {
+  .el-dialog__body {
+    padding-top: 8px;
+    padding-bottom: 4px;
+  }
+  .el-dialog__footer {
+    padding-top: 8px;
   }
 }
 </style>

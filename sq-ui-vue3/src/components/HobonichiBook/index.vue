@@ -184,8 +184,8 @@ const spreadInkContent = computed(() => {
 })
 
 /**
- * 静止时用 HTML 清晰层（翻页工具也一样）；拖页/翻页动画时关掉笔迹预览，改走纸面烘焙。
- * 贴图/美纹纸仍保留在静止半页（见 turningClipSide）。
+ * 非翻页动画中：可显示 HTML 编辑层。
+ * 翻页工具静止时主要靠全量烘焙（与翻页中层级一致）；编辑工具才用 HTML 叠层。
  */
 const inkPreview = computed(() => !animBusy.value && !drag.value)
 
@@ -276,7 +276,8 @@ function contentOf(pageNo) {
 }
 
 function isBusy() {
-  return units.some(u => u.mode !== 'rest' && u.mode !== 'settle')
+  // settle 也算忙碌：落地后约 1s 内 leaf 仍有残影，若此时抬高 HTML 层会叠出重影/错位
+  return units.some((u) => u.mode !== 'rest')
 }
 
 function syncBusy() {
@@ -433,23 +434,29 @@ function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, ski
 function rebakeVisible() {
   const { left, right } = spreadPages.value
   const visible = new Set([left, right].filter(Boolean))
-  // 覆盖层预览开启时：可见页纹理跳过 stroke/textbox/media，避免订口断缝与叠绘
   const preview = inkPreview.value
+  const tool = props.tool
   const { w: W, h: H } = facePixelSize()
   for (const n of [...contentFaces.keys()]) {
     if (visible.has(n) || !pageHasDrawable(n)) continue
-    // 离屏页已是全量烘焙且尺寸正确 → 不必每帧/每次收尾重画
     const c = contentFaces.get(n)
     if (bakeMode.get(n) === 'full' && c && c.width === W && c.height === H) continue
     applyPageContent(n, { skipTextbox: false, skipStroke: false, skipMedia: false })
   }
-  // 文字工具：HTML 编辑层显示文字 → 纹理跳过 textbox 防叠字
-  // 画笔等：文字烘焙进纸面，避免切工具后“文字消失”
-  // 贴图：预览时走 HTML 层（视频可播），翻页时烘焙进纸面
-  const skipText = preview && props.tool === 'text'
-  const skipMedia = preview
-  if (left) applyPageContent(left, { skipTextbox: skipText, skipStroke: preview, skipMedia })
-  if (right) applyPageContent(right, { skipTextbox: skipText, skipStroke: preview, skipMedia })
+  /**
+   * 翻页工具：始终全量烘焙 → 静止层级=翻页层级，且下次拖页无需重烘（不再卡顿）。
+   * 编辑工具：仅跳过当前 HTML 正在显示的那一类，避免叠影。
+   */
+  let skipTextbox = false
+  let skipStroke = false
+  let skipMedia = false
+  if (preview && tool !== 'turn') {
+    skipTextbox = tool === 'text'
+    skipStroke = tool === 'pen' || tool === 'eraser'
+    skipMedia = tool === 'media' || tool === 'tape' || tool === 'view'
+  }
+  if (left) applyPageContent(left, { skipTextbox, skipStroke, skipMedia })
+  if (right) applyPageContent(right, { skipTextbox, skipStroke, skipMedia })
 }
 
 function buildFaces() {
@@ -649,7 +656,14 @@ function localPoint(e) {
 
 function onPointerDown(e) {
   if (e.button != null && e.button !== 0) return
-  if (isBusy() && !drag.value) return
+  if (isBusy() && !drag.value) {
+    // settle/peek 残影时立刻摊平，允许马上再拖，不必干等
+    const canInterrupt = units.every(
+      (u) => u.mode === 'rest' || u.mode === 'settle' || u.mode === 'peek'
+    )
+    if (canInterrupt) settleToRest()
+    else return
+  }
   if (!engine) return
   // 编辑工具下，中部交给 ink 层；此处仍处理页角/封面
   const p = localPoint(e)

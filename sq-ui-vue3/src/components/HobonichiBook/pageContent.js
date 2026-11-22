@@ -509,12 +509,13 @@ function drawSpreadStrokeOnPage(g, layer, W, H, side) {
   for (const p of pts) {
     const sx = p[0]
     const sy = p[1]
+    // 订口各多吃 1.5% 对开宽，左右重叠，避免跨页笔迹中间断缝/竖线
     if (side === 'left') {
-      if (sx > 0.5 + 0.002) continue
-      mapped.push([Math.min(1, Math.max(0, sx * 2)), sy])
+      if (sx > 0.5 + 0.015) continue
+      mapped.push([Math.min(1.03, Math.max(0, sx * 2)), sy])
     } else {
-      if (sx < 0.5 - 0.002) continue
-      mapped.push([Math.min(1, Math.max(0, (sx - 0.5) * 2)), sy])
+      if (sx < 0.5 - 0.015) continue
+      mapped.push([Math.min(1, Math.max(-0.03, (sx - 0.5) * 2)), sy])
     }
   }
   // 补订口接点，避免半笔缺端点
@@ -622,17 +623,27 @@ function drawMedia(g, layer, W, H, onMediaReady) {
   const pad = Math.max(3, Math.min(boxW, boxH) * 0.04) // 与 HTML 贴图层 4% 内边距一致
   const rot = layer.rot || 0
   const src = mediaBakeSrc(layer)
-  const img = ensureMediaImage(src, onMediaReady)
+  let img = ensureMediaImage(src, onMediaReady)
+  let soft = false
+  // 大图未就绪时先用缩略图占位，避免翻页纸面长时间灰块
+  if (!img && layer.kind !== 'video') {
+    const thumb = layer.thumbSrc || ''
+    if (thumb && thumb !== src) {
+      img = ensureMediaImage(thumb, onMediaReady)
+      soft = !!img
+    }
+  }
 
   g.save()
   g.translate(x + boxW / 2, y + boxH / 2)
   if (rot) g.rotate(rot)
   g.translate(-boxW / 2, -boxH / 2)
 
-  g.shadowColor = 'rgba(62, 50, 32, 0.28)'
-  g.shadowBlur = Math.max(4, boxW * 0.04)
-  g.shadowOffsetX = 1.5
-  g.shadowOffsetY = 3
+  // 轻阴影即可，过重 blur 会在纸面烘焙里看起来像发光外框
+  g.shadowColor = 'rgba(62, 50, 32, 0.2)'
+  g.shadowBlur = Math.max(3, boxW * 0.025)
+  g.shadowOffsetX = 1
+  g.shadowOffsetY = 2
   g.fillStyle = '#FDF8EC'
   roundRectPath(g, 0, 0, boxW, boxH, Math.min(8, boxW * 0.04))
   g.fill()
@@ -643,7 +654,18 @@ function drawMedia(g, layer, W, H, onMediaReady) {
   const iw = Math.max(1, boxW - pad * 2)
   const ih = Math.max(1, boxH - pad * 2)
   if (img) {
-    drawCoverImage(g, img, ix, iy, iw, ih)
+    if (soft) {
+      g.save()
+      g.beginPath()
+      g.rect(ix, iy, iw, ih)
+      g.clip()
+      g.filter = 'blur(6px)'
+      // 放大一点避免模糊露边
+      drawCoverImage(g, img, ix - iw * 0.03, iy - ih * 0.03, iw * 1.06, ih * 1.06)
+      g.restore()
+    } else {
+      drawCoverImage(g, img, ix, iy, iw, ih)
+    }
     g.fillStyle = 'rgba(236, 214, 172, 0.22)'
     g.globalCompositeOperation = 'multiply'
     g.fillRect(ix, iy, iw, ih)
