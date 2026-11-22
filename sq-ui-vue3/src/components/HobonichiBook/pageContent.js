@@ -2,7 +2,12 @@
  * 日记页图层模型：归一化坐标 0–1。
  * - space:'page'（默认）：单页坐标
  * - space:'spread'：整幅对开坐标（可跨订口，文字可放中间）
+ *
+ * 贴图建议用 space:'page'：对开显示时由 layerToSpread 映射，避免 spread 宽高比算错。
  */
+
+/** A5 单页宽高比（宽/高），用于把图片像素比换成页内归一化 h */
+export const PAGE_ASPECT = 148 / 210
 
 export function emptyContent() {
   return { v: 1, layers: [] }
@@ -13,10 +18,108 @@ export function parseContent(raw) {
   try {
     const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (!obj || !Array.isArray(obj.layers)) return emptyContent()
-    return { v: obj.v || 1, layers: obj.layers.filter(Boolean) }
+    return {
+      v: obj.v || 1,
+      layers: obj.layers.filter(Boolean).map(normalizeMediaLayer)
+    }
   } catch {
     return emptyContent()
   }
+}
+
+/**
+ * 修正贴图尺寸；跨订口的保持 space:spread（翻页时左右半幅分别烘焙），
+ * 完全在一侧的用 page 坐标。
+ */
+export function normalizeMediaLayer(layer) {
+  if (!layer || layer.type !== 'media') return layer
+  const aspect = layer.aspect && layer.aspect > 0 ? layer.aspect : 4 / 3
+  const y = Math.min(0.85, Math.max(0, layer.y || 0))
+
+  if (layer.space === 'spread') {
+    let x0 = layer.x || 0
+    let w0 = layer.w || 0.2
+    // 旧 bug：对开宽被存得过大
+    if (w0 > 0.5) w0 = 0.22
+    w0 = Math.min(0.55, Math.max(0.08, w0))
+    x0 = Math.min(1 - w0, Math.max(0, x0))
+    const crosses = x0 < 0.5 && x0 + w0 > 0.5
+    if (crosses) {
+      return {
+        ...layer,
+        space: 'spread',
+        x: x0,
+        y,
+        w: w0,
+        h: mediaHeightForWidth(w0, aspect, true),
+        aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
+      }
+    }
+    // 不跨缝：落到单页
+    const side = x0 + w0 / 2 < 0.5 ? 'left' : 'right'
+    let x = side === 'left' ? x0 * 2 : (x0 - 0.5) * 2
+    let w = w0 * 2
+    if (w > 0.72) w = 0.42
+    w = Math.min(0.72, Math.max(0.16, w))
+    x = Math.min(1 - w, Math.max(0, x))
+    return {
+      ...layer,
+      space: 'page',
+      x,
+      y,
+      w,
+      h: mediaHeightForWidth(w, aspect, false),
+      aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
+    }
+  }
+
+  let x = Math.min(0.88, Math.max(0, layer.x || 0))
+  let w = Math.min(0.85, Math.max(0.12, layer.w || 0.42))
+  // 单页贴图伸出页缘（跨订口残留）：改成 spread，挂在对开坐标
+  if (x + w > 1.02) {
+    const sx = x * 0.5
+    const sw = Math.min(0.55, w * 0.5)
+    return {
+      ...layer,
+      space: 'spread',
+      x: sx,
+      y,
+      w: sw,
+      h: mediaHeightForWidth(sw, aspect, true),
+      aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
+    }
+  }
+  if (x + w > 1) w = Math.max(0.12, 1 - x)
+
+  const expectH = mediaHeightForWidth(w, aspect, false)
+  const h = layer.h && layer.h > 0.05 ? layer.h : expectH
+  const fixedH =
+    layer.aspect && layer.aspect > 0 && Math.abs(h - expectH) / Math.max(expectH, 1e-6) > 0.25
+      ? expectH
+      : h
+  return {
+    ...layer,
+    space: 'page',
+    x,
+    w,
+    y,
+    h: Math.min(0.72, Math.max(0.1, fixedH))
+  }
+}
+
+/** 按目标显示宽（归一化）与图片宽高比，计算页内/对开归一化高度 */
+export function mediaHeightForWidth(w, aspect, spread) {
+  const a = aspect > 0 ? aspect : 4 / 3
+  if (spread) {
+    // 视觉比 = (w * 2 * pageW) / (h * pageH) = a  →  h = 2*w*PAGE_ASPECT/a
+    return Math.min(0.62, Math.max(0.1, (2 * w * PAGE_ASPECT) / a))
+  }
+  return Math.min(0.72, Math.max(0.1, (w * PAGE_ASPECT) / a))
+}
+
+export function mediaWidthForPage(spread) {
+  // 单页约 40% 宽；对开坐标系下为单页一半 → 0.2
+  return spread ? 0.2 : 0.42
 }
 
 export function serializeContent(content) {
@@ -253,9 +356,12 @@ export function ensureMediaImage(url, onReady) {
   return null
 }
 
+/** 纸面烘焙用图：图片优先中图/原图；视频用封面缩略图 */
 export function mediaBakeSrc(layer) {
   if (!layer) return ''
-  return layer.thumbSrc || layer.src || ''
+  if (layer.kind === 'video') return layer.thumbSrc || layer.src || ''
+  // 切勿优先 thumbSrc：网格小图放大后会糊
+  return layer.src || layer.thumbSrc || ''
 }
 
 function distToSeg(px, py, x1, y1, x2, y2) {
@@ -316,10 +422,27 @@ export function paintLayers(
   // 右页烘焙时，把左页里的 spread 图层半幅画上来
   if (side === 'right' && extraSpreadContent) {
     for (const layer of extraSpreadContent.layers || []) {
-      if (!layer || layer.space !== 'spread') continue
-      if (layer.type === 'stroke' && !skipStroke) drawSpreadStrokeOnPage(g, layer, W, H, 'right')
-      else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
-      else if (layer.type === 'media' && !skipMedia) drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
+      if (!layer) continue
+      if (layer.space === 'spread') {
+        if (layer.type === 'stroke' && !skipStroke) drawSpreadStrokeOnPage(g, layer, W, H, 'right')
+        else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
+        else if (layer.type === 'media' && !skipMedia) drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
+        continue
+      }
+      // 左页 page 贴图伸出右缘（旧数据）：把溢出部分画到右页
+      if (layer.type === 'media' && !skipMedia) {
+        const x = layer.x || 0
+        const w = layer.w || 0
+        if (x + w > 1.002) {
+          drawMedia(
+            g,
+            { ...layer, x: x - 1, w },
+            W,
+            H,
+            onMediaReady
+          )
+        }
+      }
     }
   }
 }
@@ -467,7 +590,7 @@ function drawMedia(g, layer, W, H, onMediaReady) {
   const y = (layer.y || 0) * H
   const boxW = Math.max(8, (layer.w || 0.32) * W)
   const boxH = Math.max(8, (layer.h || 0.28) * H)
-  const pad = Math.max(3, Math.min(boxW, boxH) * 0.04)
+  const pad = Math.max(3, Math.min(boxW, boxH) * 0.04) // 与 HTML 贴图层 4% 内边距一致
   const rot = layer.rot || 0
   const src = mediaBakeSrc(layer)
   const img = ensureMediaImage(src, onMediaReady)
@@ -529,7 +652,7 @@ function drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady) {
   const overlapR = Math.min(x0 + w0, pageX1)
   if (overlapR <= overlapL) return
 
-  // 映射到单页坐标后整框绘制，并用 clip 裁半幅
+  // 整框按对开→单页映射后绘制，画布自然裁掉另一半，左右页拼成完整贴图
   const local = {
     ...layer,
     x: side === 'left' ? x0 * 2 : (x0 - 0.5) * 2,
@@ -557,6 +680,8 @@ function drawCoverImage(g, img, x, y, w, h) {
   g.beginPath()
   g.rect(x, y, w, h)
   g.clip()
+  g.imageSmoothingEnabled = true
+  g.imageSmoothingQuality = 'high'
   g.drawImage(img, dx, dy, dw, dh)
   g.restore()
 }

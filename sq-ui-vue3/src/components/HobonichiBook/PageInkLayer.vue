@@ -60,9 +60,11 @@
       <img
         v-else
         class="media-el"
-        :src="mediaPoster(m) || mediaSrc(m)"
+        :src="mediaSrc(m)"
         :alt="m.fileName || ''"
         draggable="false"
+        decoding="async"
+        @load="onMediaImgLoad($event, m)"
       />
       <template v-if="tool === 'media'">
         <div class="media-handle" title="拖动" @pointerdown.stop="onMediaDragStart($event, m)" />
@@ -78,6 +80,7 @@ import {
   hitTestMedia,
   hitTestStroke,
   hitTestTextbox,
+  mediaHeightForWidth,
   mergeSpreadLayers,
   newId,
   paintStrokeOnCtx,
@@ -96,12 +99,12 @@ const props = defineProps({
   color: { type: String, default: '#2B2A33' },
   penWidth: { type: Number, default: 0.004 },
   rect: { type: Object, default: () => ({ x: 0, y: 0, w: 0, h: 0 }) },
-  edgeTurn: { type: Number, default: 0.06 },
+  /** 对开外缘可拖翻的宽度（相对整幅）；略加大便于回翻 */
   previewStrokes: { type: Boolean, default: true },
   interactive: { type: Boolean, default: true }
 })
 
-const emit = defineEmits(['update-content', 'turn-edge'])
+const emit = defineEmits(['update-content', 'request-import'])
 
 const drawRef = ref(null)
 const selectedId = ref(null)
@@ -174,37 +177,133 @@ function mediaStyle(m) {
 }
 
 function mediaSrc(m) {
+  // 显示用中图/原图，不用网格小缩略图
   return resolveMediaUrl(m.src || m.thumbSrc || '')
 }
 
 function mediaPoster(m) {
-  return resolveMediaUrl(m.thumbSrc || (m.kind === 'image' ? m.src : '') || '')
+  // 仅视频封面可用小图；图片勿走 thumb
+  if (m?.kind === 'video') return resolveMediaUrl(m.thumbSrc || '')
+  return resolveMediaUrl(m.src || m.thumbSrc || '')
+}
+
+/** 贴图是否压住订口（对开坐标） */
+function mediaCrossesSpine(x, w) {
+  return x < 0.5 - 0.004 && x + w > 0.5 + 0.004
+}
+
+/** 对开视图坐标 → 单页坐标（完全落在一侧时） */
+function spreadMediaToPage(x, y, w, h) {
+  const cx = x + w / 2
+  if (cx < 0.5) {
+    let px = Math.min(1, Math.max(0, x * 2))
+    let pw = Math.min(0.92, Math.max(0.12, w * 2))
+    // 钳在单页内，避免「差一点点跨缝」又被裁掉
+    if (px + pw > 1) pw = Math.max(0.12, 1 - px)
+    return { side: 'left', x: px, w: pw, y, h }
+  }
+  let px = Math.min(1, Math.max(0, (x - 0.5) * 2))
+  let pw = Math.min(0.92, Math.max(0.12, w * 2))
+  if (px + pw > 1) pw = Math.max(0.12, 1 - px)
+  return { side: 'right', x: px, w: pw, y, h }
 }
 
 function upsertMediaLayer(layer) {
   const id = layer.id
-  const payload = {
+  const base = {
     id,
     type: 'media',
-    space: layer.space || (isSpread.value ? 'spread' : 'page'),
-    x: layer.x,
-    y: layer.y,
-    w: layer.w,
-    h: layer.h,
     rot: layer.rot || 0,
     kind: layer.kind || 'image',
     src: layer.src || '',
     thumbSrc: layer.thumbSrc || '',
     photoId: layer.photoId ?? null,
-    fileName: layer.fileName || ''
+    fileName: layer.fileName || '',
+    aspect: layer.aspect || null
   }
-  if (payload.space === 'spread' || isSpread.value) {
-    upsertSpreadLayer(payload)
+
+  if (isSpread.value) {
+    const x = layer.x || 0
+    const y = layer.y || 0
+    const w = layer.w || 0.32
+    const h = layer.h || 0.28
+
+    // 跨订口：必须存 space:spread，翻页时左右页各烘焙半幅，否则右半会被右页盖住
+    if (mediaCrossesSpine(x, w)) {
+      upsertSpreadLayer({
+        ...base,
+        space: 'spread',
+        x: Math.min(0.82, Math.max(0.02, x)),
+        y,
+        w: Math.min(0.55, Math.max(0.08, w)),
+        h
+      })
+      return
+    }
+
+    const mapped = spreadMediaToPage(x, y, w, h)
+    const pageNo = mapped.side === 'left' ? props.leftPageNo : props.rightPageNo
+    const src = mapped.side === 'left' ? props.leftContent : props.rightContent
+    const otherNo = mapped.side === 'left' ? props.rightPageNo : props.leftPageNo
+    const otherSrc = mapped.side === 'left' ? props.rightContent : props.leftContent
+    const payload = {
+      ...base,
+      space: 'page',
+      x: mapped.x,
+      y: mapped.y,
+      w: mapped.w,
+      h: mapped.h
+    }
+    const layers = clonePageLayers(src).filter((l) => l.id !== id)
+    layers.push(payload)
+    emitPage(pageNo, layers)
+    // 从另一页 / 左页 spread 残留里清掉同 id
+    if (otherNo && (otherSrc?.layers || []).some((l) => l && l.id === id)) {
+      emitPage(
+        otherNo,
+        clonePageLayers(otherSrc).filter((l) => l.id !== id)
+      )
+    }
+    // 若原先挂在左页 spread，也要清掉
+    if (mapped.side === 'right' && props.leftPageNo) {
+      const leftLayers = (props.leftContent?.layers || [])
+      if (leftLayers.some((l) => l && l.id === id && l.space === 'spread')) {
+        emitPage(
+          props.leftPageNo,
+          clonePageLayers(props.leftContent).filter((l) => l.id !== id)
+        )
+      }
+    }
     return
+  }
+
+  const payload = {
+    ...base,
+    space: 'page',
+    x: layer.x,
+    y: layer.y,
+    w: layer.w,
+    h: layer.h
   }
   const layers = clonePageLayers(hostContent.value).filter((l) => l.id !== id)
   layers.push(payload)
   emitPage(hostPageNo.value, layers)
+}
+
+function onMediaImgLoad(e, m) {
+  const img = e?.target
+  if (!img?.naturalWidth || !img.naturalHeight) return
+  const aspect = img.naturalWidth / img.naturalHeight
+  if (!aspect || !isFinite(aspect)) return
+  const w = m.w || 0.42
+  // 视图可能是对开坐标：用当前显示宽重算高
+  const expectH = mediaHeightForWidth(w, aspect, isSpread.value)
+  const curH = m.h || 0
+  if (Math.abs(curH - expectH) / Math.max(expectH, 1e-6) < 0.12) {
+    if (!m.aspect) upsertMediaLayer({ ...m, aspect })
+    return
+  }
+  upsertMediaLayer({ ...m, aspect, h: expectH })
 }
 
 function syncCanvasSize() {
@@ -249,11 +348,6 @@ function localNorm(e) {
     nx: x,
     ny: y
   }
-}
-
-function isTurnEdge(nx) {
-  const e = props.edgeTurn
-  return nx <= e || nx >= 1 - e
 }
 
 function clonePageLayers(content) {
@@ -342,15 +436,7 @@ function onDrawDown(e) {
   if ((props.rect.w || 0) < 8 || (props.rect.h || 0) < 8) return
   const p = localNorm(e)
 
-  // 仅「翻页」工具走页缘拖翻；画笔模式误触页缘会把 unit 卡在 drag，导致整本翻不了
-  if (props.tool === 'turn' && isTurnEdge(p.nx)) {
-    const pageNo = isSpread.value
-      ? (p.nx < 0.5 ? props.leftPageNo : props.rightPageNo)
-      : hostPageNo.value
-    emit('turn-edge', { pageNo, event: e })
-    return
-  }
-
+  // 模式隔离：非翻页工具不在页缘转发翻页，各工具只做自己的事
   if (props.tool === 'eraser') {
     erasing.value = {
       id: e.pointerId,
@@ -407,6 +493,15 @@ function onDrawDown(e) {
       drawRef.value?.setPointerCapture?.(e.pointerId)
     } catch { /* ignore */ }
     redrawInk()
+    e.preventDefault()
+    e.stopPropagation()
+    return
+  }
+
+  // 图片模式点空白处 → 打开导入
+  if (props.tool === 'media') {
+    selectedId.value = null
+    emit('request-import')
     e.preventDefault()
     e.stopPropagation()
   }
@@ -584,17 +679,26 @@ function onResizeMove(e) {
   const p = localNorm(e)
   const dx = p.x - d.startX
   const dy = p.y - d.startY
-  const minW = isSpread.value ? 0.12 : 0.16
-  const minH = 0.12
-  const maxW = isSpread.value ? 0.72 : 0.9
-  const maxH = 0.72
+  const minW = isSpread.value ? 0.1 : 0.16
+  const minH = 0.1
+  const maxW = isSpread.value ? 0.45 : 0.85
+  const maxH = 0.7
   let nw = Math.min(maxW, Math.max(minW, d.startW + dx))
   let nh = Math.min(maxH, Math.max(minH, d.startH + dy))
-  // 等比：优先跟较大位移轴
-  if (Math.abs(dx) > Math.abs(dy)) {
-    nh = Math.min(maxH, Math.max(minH, d.startH * (nw / d.startW)))
+  const aspect = d.box.aspect || (d.startW / Math.max(d.startH, 1e-6))
+  // 等比缩放，保持贴图框贴合照片比例
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    nh = mediaHeightForWidth(nw, aspect, isSpread.value)
+    nh = Math.min(maxH, Math.max(minH, nh))
+    nw = Math.min(maxW, Math.max(minW, nw))
   } else {
-    nw = Math.min(maxW, Math.max(minW, d.startW * (nh / d.startH)))
+    // 由高反推宽：spread 时 h = 2*w*PAGE_AR/a → w = h*a/(2*PAGE_AR)
+    const PAGE_AR = 148 / 210
+    nw = isSpread.value
+      ? (nh * aspect) / (2 * PAGE_AR)
+      : (nh * aspect) / PAGE_AR
+    nw = Math.min(maxW, Math.max(minW, nw))
+    nh = mediaHeightForWidth(nw, aspect, isSpread.value)
   }
   const nx = Math.min(1 - nw, Math.max(0, d.box.x || 0))
   const ny = Math.min(1 - nh * 0.5, Math.max(0, d.box.y || 0))
@@ -603,7 +707,8 @@ function onResizeMove(e) {
     x: nx,
     y: ny,
     w: nw,
-    h: nh
+    h: nh,
+    aspect
   })
 }
 
@@ -796,7 +901,7 @@ onUnmounted(() => {
   position: absolute;
   z-index: 3;
   box-sizing: border-box;
-  padding: 3.5%;
+  padding: 0;
   background: #fdf8ec;
   border-radius: 4px;
   box-shadow: 1px 3px 10px rgba(62, 50, 32, 0.22);
@@ -811,20 +916,21 @@ onUnmounted(() => {
     outline: 1.5px dashed rgba(62, 52, 38, 0.42);
     outline-offset: 2px;
   }
-  /* 非贴图工具时，仅视频控件可点，图片穿透给画笔 */
-  &:not(.editable):not(.video) {
+  /* 非贴图工具：贴图不抢画笔/橡皮/文字操作 */
+  &:not(.editable) {
     pointer-events: none;
-  }
-  &:not(.editable).video {
-    pointer-events: auto;
   }
 }
 
 .media-el {
+  position: absolute;
+  left: 4%;
+  top: 4%;
+  width: 92%;
+  height: 92%;
   display: block;
-  width: 100%;
-  height: 100%;
   object-fit: cover;
+  object-position: center;
   border-radius: 2px;
   background: rgba(210, 198, 178, 0.35);
   pointer-events: auto;
@@ -833,15 +939,12 @@ onUnmounted(() => {
 .media-box:not(.editable) .media-el {
   pointer-events: none;
 }
-.media-box:not(.editable).video .media-el {
-  pointer-events: auto;
-}
 
 .media-handle {
   position: absolute;
-  left: 6%;
-  right: 6%;
-  top: 2%;
+  left: 8%;
+  right: 8%;
+  top: 3px;
   height: 10px;
   border-radius: 2px;
   background: rgba(62, 52, 38, 0.14);

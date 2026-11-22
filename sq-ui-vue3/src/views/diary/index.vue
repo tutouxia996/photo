@@ -12,7 +12,7 @@
           type="button"
           class="tool-btn"
           :class="{ active: tool === t.id }"
-          :title="t.label"
+          :title="t.tip"
           @click="setTool(t.id)"
         >
           {{ t.label }}
@@ -20,11 +20,16 @@
 
         <span class="tool-sep" aria-hidden="true" />
 
-        <label class="color-wrap" title="颜色">
-          <input v-model="inkColor" type="color" class="color-input" />
+        <label class="color-wrap" title="颜色" :class="{ disabled: tool !== 'pen' && tool !== 'text' }">
+          <input
+            v-model="inkColor"
+            type="color"
+            class="color-input"
+            :disabled="tool !== 'pen' && tool !== 'text'"
+          />
         </label>
 
-        <label class="width-wrap" title="笔粗">
+        <label class="width-wrap" title="笔粗" :class="{ disabled: tool !== 'pen' }">
           <input
             v-model.number="penWidthUi"
             type="range"
@@ -53,6 +58,7 @@
         @change="onBookChange"
         @need-pages="onNeedPages"
         @update-content="onUpdateContent"
+        @request-import="openMediaPicker"
       />
       <div v-else class="diary-loading">正在打开日记本…</div>
     </div>
@@ -66,7 +72,11 @@ import { computed, getCurrentInstance, onMounted, onUnmounted, ref, watch } from
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
-import { newId } from '@/components/HobonichiBook/pageContent.js'
+import {
+  mediaHeightForWidth,
+  mediaWidthForPage,
+  newId
+} from '@/components/HobonichiBook/pageContent.js'
 import { getMineBook } from '@/api/journal/book'
 import { useJournalPages } from './composables/useJournalPages.js'
 import DiaryMediaPicker from './components/DiaryMediaPicker.vue'
@@ -85,11 +95,11 @@ const penWidthUi = ref(3)
 const mediaPickerOpen = ref(false)
 
 const tools = [
-  { id: 'turn', label: '翻页' },
-  { id: 'pen', label: '画笔' },
-  { id: 'text', label: '文字' },
-  { id: 'media', label: '图片' },
-  { id: 'eraser', label: '橡皮' }
+  { id: 'turn', label: '翻页', tip: '仅翻页：拖页角或按 ← →' },
+  { id: 'pen', label: '画笔', tip: '仅书写：在纸面上画' },
+  { id: 'text', label: '文字', tip: '仅文字：点击放置文字框' },
+  { id: 'media', label: '图片', tip: '仅贴图：拖动缩放；再点本按钮或点空白可导入' },
+  { id: 'eraser', label: '橡皮', tip: '仅擦除：点击删除笔画/文字/贴图' }
 ]
 
 const {
@@ -116,10 +126,16 @@ function setTool(id) {
     }
     flushAll()
   }
-  tool.value = id
-  if (id === 'media') {
-    mediaPickerOpen.value = true
+  // 图片工具：已在该模式再点一次 → 打开导入；首次切入只进入贴图调整
+  if (id === 'media' && tool.value === 'media') {
+    openMediaPicker()
+    return
   }
+  tool.value = id
+}
+
+function openMediaPicker() {
+  mediaPickerOpen.value = true
 }
 
 function currentSpread() {
@@ -128,12 +144,12 @@ function currentSpread() {
   return exposed || { left: null, right: null }
 }
 
-function mediaSize(item, spread) {
+function mediaSize(item) {
   const aspect = item.aspect && item.aspect > 0 ? item.aspect : 4 / 3
-  const w = spread ? 0.28 : 0.42
-  // 对开坐标系宽度约为单页一半视觉；高度仍相对整页高度
-  const h = Math.min(spread ? 0.42 : 0.5, Math.max(0.14, (w / aspect) * (spread ? 1.05 : 1)))
-  return { w, h }
+  // 一律按单页坐标存，对开显示时再映射，避免 spread 宽高比拉歪
+  const w = mediaWidthForPage(false)
+  const h = mediaHeightForWidth(w, aspect, false)
+  return { w, h, aspect }
 }
 
 function onMediaConfirm(items) {
@@ -144,25 +160,37 @@ function onMediaConfirm(items) {
     tool.value = 'turn'
     return
   }
-  const spread = !!(left && right)
-  const hostNo = spread ? left : (right || left)
-  const content = pageContents.value.get?.(hostNo) || { v: 1, layers: [] }
-  const layers = [...(content.layers || [])]
-  const baseX = spread ? 0.18 : 0.12
-  const baseY = 0.16
 
+  // 贴图挂在单页：交替落到左右页，不跨订口
+  const targets = []
   items.forEach((item, i) => {
-    const size = mediaSize(item, spread)
-    const col = i % 3
-    const row = Math.floor(i / 3)
+    const preferLeft = left && (!right || i % 2 === 0)
+    const pageNo = preferLeft ? left : right || left
+    targets.push({ item, pageNo, i })
+  })
+
+  const byPage = new Map()
+  for (const t of targets) {
+    if (!byPage.has(t.pageNo)) {
+      const cur = pageContents.value.get?.(t.pageNo) || { v: 1, layers: [] }
+      byPage.set(t.pageNo, [...(cur.layers || [])])
+    }
+  }
+
+  targets.forEach(({ item, pageNo, i }, idx) => {
+    const size = mediaSize(item)
+    const col = Math.floor(idx / 2) % 2
+    const row = Math.floor(idx / 4)
+    const layers = byPage.get(pageNo)
     layers.push({
       id: newId('m'),
       type: 'media',
-      space: spread ? 'spread' : 'page',
-      x: Math.min(0.72, baseX + col * (spread ? 0.22 : 0.28)),
-      y: Math.min(0.62, baseY + row * 0.3),
+      space: 'page',
+      x: Math.min(0.55, 0.1 + col * 0.45),
+      y: Math.min(0.58, 0.14 + row * 0.32),
       w: size.w,
       h: size.h,
+      aspect: size.aspect,
       rot: ((i % 5) - 2) * 0.012,
       kind: item.kind || 'image',
       src: item.src || '',
@@ -172,7 +200,9 @@ function onMediaConfirm(items) {
     })
   })
 
-  setContent(hostNo, { v: 1, layers }, { markDirty: true })
+  for (const [pageNo, layers] of byPage) {
+    setContent(pageNo, { v: 1, layers }, { markDirty: true })
+  }
   tool.value = 'media'
   ElMessage.success(`已导入 ${items.length} 项，可拖动调整位置`)
 }
@@ -310,6 +340,11 @@ onUnmounted(() => {
   border: 1px solid rgba(62, 52, 38, 0.16);
   display: inline-flex;
   cursor: pointer;
+  &.disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
 }
 
 .color-input {
@@ -320,12 +355,19 @@ onUnmounted(() => {
   transform: translate(-6px, -6px);
   cursor: pointer;
   background: transparent;
+  &:disabled {
+    cursor: default;
+  }
 }
 
 .width-wrap {
   display: inline-flex;
   align-items: center;
   padding: 0 6px;
+  &.disabled {
+    opacity: 0.35;
+    pointer-events: none;
+  }
 }
 
 .width-input {

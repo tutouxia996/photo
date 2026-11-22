@@ -237,10 +237,13 @@ function togglePhoto(p) {
   }
   const kind = Number(p.fileType) === 2 ? 'video' : 'image'
   const thumb = p.thumbUrl || `/album/photo/thumb/${p.photoId}`
+  // 日记贴图用浏览中图/原片，勿用网格小缩略图（否则放大必糊）
   const src =
     kind === 'video'
       ? `/album/photo/media/${p.photoId}?original=true`
       : `/album/photo/media/${p.photoId}?size=medium`
+  const pw = Number(p.width || p.imageWidth || 0)
+  const ph = Number(p.height || p.imageHeight || 0)
   selected.value = [
     ...selected.value,
     {
@@ -249,7 +252,7 @@ function togglePhoto(p) {
       src,
       thumbSrc: thumb,
       fileName: p.fileName || '',
-      aspect: p.width && p.height ? p.width / p.height : null
+      aspect: pw > 0 && ph > 0 ? pw / ph : null
     }
   ]
 }

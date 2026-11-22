@@ -12,6 +12,14 @@
     <div class="vignette" aria-hidden="true" />
 
     <div ref="bookAreaRef" class="book-area">
+      <button
+        type="button"
+        class="side-nav side-nav-prev"
+        title="上一页"
+        :disabled="!canPrev"
+        @click.stop="prev"
+      >‹</button>
+
       <div class="book-wrap" :style="bookStyle">
         <div class="book-shadow" :class="{ open: spread > 0.3 }" />
         <canvas ref="bookRef" class="book-canvas" />
@@ -37,9 +45,17 @@
           :preview-strokes="inkPreview"
           :interactive="inkInteractive"
           @update-content="onInkUpdate"
-          @turn-edge="onInkTurnEdge"
+          @request-import="onRequestImport"
         />
       </div>
+
+      <button
+        type="button"
+        class="side-nav side-nav-next"
+        title="下一页"
+        :disabled="!canNext"
+        @click.stop="next"
+      >›</button>
     </div>
 
     <div class="chrome">
@@ -47,10 +63,6 @@
         <span>{{ hintText }}</span>
         <span class="sep">·</span>
         <span>{{ progressText }}</span>
-      </div>
-      <div class="nav">
-        <button type="button" class="nav-btn" :disabled="!canPrev" @click.stop="prev">‹</button>
-        <button type="button" class="nav-btn" :disabled="!canNext" @click.stop="next">›</button>
       </div>
     </div>
   </div>
@@ -98,7 +110,7 @@ const props = defineProps({
   pageContents: { type: [Map, Object], default: () => new Map() }
 })
 
-const emit = defineEmits(['change', 'update-content', 'need-pages'])
+const emit = defineEmits(['change', 'update-content', 'need-pages', 'request-import'])
 
 const stageRef = ref(null)
 const bookAreaRef = ref(null)
@@ -200,10 +212,10 @@ const progressText = computed(() => {
 
 const hintText = computed(() => {
   if (index.value === 0) return '拖封面右下角或按 → 打开'
-  if (props.tool === 'pen') return '可跨左右页连续书写 · 外缘翻页'
-  if (props.tool === 'text') return '整幅对开任意放置文字'
-  if (props.tool === 'media') return '拖动贴图 · 右下角缩放'
-  if (props.tool === 'eraser') return '点击笔画、文字或贴图删除'
+  if (props.tool === 'pen') return '在纸面上书写'
+  if (props.tool === 'text') return '点击放置文字'
+  if (props.tool === 'media') return '拖动贴图 · 右下角缩放 · 点空白导入'
+  if (props.tool === 'eraser') return '擦除笔画、文字或贴图'
   return '拖页角翻页 · ← →'
 })
 
@@ -518,6 +530,8 @@ function prev() {
 
 function onKey(e) {
   if (e.target && e.target.isContentEditable) return
+  // 仅翻页模式响应方向键；底部 ‹ › 仍可在任意模式翻页
+  if (props.tool !== 'turn' && index.value > 0) return
   const k = e.key
   if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) {
     e.preventDefault()
@@ -552,16 +566,18 @@ function onPointerDown(e) {
 
   let leaf = -1
   let fwd = true
+  // 外缘抓取阈值略放宽，避免左页回翻难点到
+  const grabInner = W * 0.16
   if (x >= 0 && pos <= units.length - 1) {
     const U = units[pos]
-    if (U && x > W * 0.28 && x < W + 40) {
+    if (U && x > grabInner && x < W + 40) {
       leaf = pos
       fwd = true
     }
   }
   if (leaf < 0 && x < 0 && pos > 0) {
     const U = units[pos - 1]
-    if (U && -x > W * 0.28 && -x < W + 40) {
+    if (U && -x > grabInner && -x < W + 40) {
       leaf = pos - 1
       fwd = false
     }
@@ -572,11 +588,8 @@ function onPointerDown(e) {
   }
   if (leaf < 0) return
 
-  // 编辑模式：仅允许外缘抓取（封面除外）
-  if (props.tool !== 'turn' && pos > 0) {
-    const nx = x >= 0 ? x / W : -x / W
-    if (nx < 0.88) return
-  }
+  // 模式隔离：非翻页工具禁止拖页（封面合上时除外，否则打不开本）
+  if (props.tool !== 'turn' && pos > 0) return
 
   beginDrag(e, leaf, fwd, y, H)
 }
@@ -671,6 +684,7 @@ function beginDrag(e, leaf, fwd, y, H, { useWindow = false } = {}) {
     lastT: performance.now(),
     moved: false,
     tap: true,
+    progress: 0,
     useWindow
   }
   U.mode = 'drag'
@@ -687,26 +701,12 @@ function beginDrag(e, leaf, fwd, y, H, { useWindow = false } = {}) {
   e.preventDefault?.()
 }
 
-function onInkTurnEdge({ pageNo, event }) {
-  if (!event || isBusy()) return
-  const pos = index.value
-  const rightPage = pageNo % 2 === 1
-  let leaf = -1
-  let fwd = true
-  if (rightPage) {
-    leaf = pos
-    fwd = true
-  } else {
-    leaf = pos - 1
-    fwd = false
-  }
-  if (leaf < 0 || leaf > units.length - 1) return
-  const lp = localPoint(event)
-  beginDrag(event, leaf, fwd, lp.y, pageH(), { useWindow: true })
-}
-
 function onInkUpdate({ pageNo, content }) {
   emit('update-content', { pageNo, content })
+}
+
+function onRequestImport() {
+  emit('request-import')
 }
 
 function onPointerMove(e) {
@@ -716,10 +716,12 @@ function onPointerMove(e) {
   if (!U) return
   const t = performance.now()
   const dx = e.clientX - d.startX
-  const span = Math.max(120, bookSize.value.w * 0.42)
+  // 回翻跨度略短，减少「拖很远仍过不了中线」
+  const span = Math.max(120, bookSize.value.w * (d.fwd ? 0.42 : 0.36))
   let p
   if (d.fwd) p = clamp(-dx / span, 0, 1)
   else p = clamp(dx / span, 0, 1)
+  d.progress = p
   if (Math.abs(dx) > 4) {
     d.moved = true
     d.tap = false
@@ -728,9 +730,9 @@ function onPointerMove(e) {
   U.tt = d.fwd ? PI * e2 : PI * (1 - e2)
   const dt = Math.max(0.008, (t - d.lastT) / 1000)
   const vx = (e.clientX - d.lastX) / dt
-  U.om = d.fwd
-    ? clamp((-vx / span) * PI * 0.38, -16, 16)
-    : clamp((vx / span) * PI * 0.38, -16, 16)
+  // 角速度统一：向左拖 → om>0（往前翻），向右拖 → om<0（往回翻）
+  // 旧逻辑回翻用了 +vx，松手时正角速度会被判成「继续往前」，差一点点就弹回
+  U.om = clamp((-vx / span) * PI * 0.42, -16, 16)
   const lp = localPoint(e)
   U.vl = clamp(lp.y / pageH(), 0.15, 0.92)
   d.lastX = e.clientX
@@ -755,7 +757,7 @@ function onPointerUp(e) {
     startAuto(U, d.fwd, reducedMotion.value)
     return
   }
-  release(U)
+  release(U, { fwd: d.fwd, progress: d.progress || 0 })
 }
 
 function recomputeIndex() {
@@ -903,6 +905,54 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   min-height: 0;
 }
 
+.side-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 10;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(62, 52, 38, 0.16);
+  background: rgba(255, 252, 245, 0.78);
+  color: rgba(62, 52, 38, 0.72);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  box-shadow: 0 2px 10px rgba(70, 56, 36, 0.08);
+  &:hover:not(:disabled) {
+    background: rgba(255, 252, 245, 0.96);
+    color: #2b2a33;
+  }
+  &:disabled {
+    opacity: 0.28;
+    cursor: default;
+  }
+}
+
+.side-nav-prev {
+  left: 10px;
+}
+
+.side-nav-next {
+  right: 10px;
+}
+
+@media (max-width: 768px) {
+  .side-nav {
+    width: 36px;
+    height: 36px;
+    font-size: 20px;
+  }
+  .side-nav-prev { left: 4px; }
+  .side-nav-next { right: 4px; }
+}
+
 .book-wrap {
   position: absolute;
   left: 50%;
@@ -968,10 +1018,17 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
 }
 
 .hobo-stage.editing .leaf-canvas {
-  /* 书写模式：中部交给 ink；外缘翻页仍由 ink 转发 */
+  /* 非翻页模式：翻页层不接手势，避免与书写/贴图抢操作 */
   pointer-events: none !important;
   z-index: 2;
   cursor: default;
+}
+
+/* 合上时即使在编辑工具，也要能拖开封面 */
+.hobo-stage.editing.closed .leaf-canvas {
+  pointer-events: auto !important;
+  z-index: 8;
+  cursor: grab;
 }
 
 .chrome {
@@ -981,7 +1038,6 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
   padding: 6px 12px calc(8px + env(safe-area-inset-bottom));
   pointer-events: none;
 }
@@ -992,32 +1048,5 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   letter-spacing: 0.06em;
   color: rgba(62, 52, 38, 0.52);
   .sep { margin: 0 8px; opacity: 0.4; }
-}
-
-.nav {
-  display: flex;
-  gap: 6px;
-  pointer-events: auto;
-}
-
-.nav-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 1px solid rgba(62, 52, 38, 0.16);
-  background: rgba(255, 252, 245, 0.72);
-  color: rgba(62, 52, 38, 0.72);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  backdrop-filter: blur(4px);
-  &:hover:not(:disabled) {
-    background: rgba(255, 252, 245, 0.95);
-    color: #2b2a33;
-  }
-  &:disabled {
-    opacity: 0.32;
-    cursor: default;
-  }
 }
 </style>

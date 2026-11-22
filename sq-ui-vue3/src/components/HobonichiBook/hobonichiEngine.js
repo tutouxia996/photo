@@ -551,13 +551,43 @@ export function land(U, side, now) {
   U.st = { t0: now, amp: clamp(imp / 8, 0.25, 1), side }
 }
 
-export function release(U) {
+/**
+ * 松手后自由落体翻页。
+ * @param intent optional { fwd: boolean, progress: 0–1 }
+ *   fwd=false 表示用户正在回翻；此前对称阈值会导致「快翻过去却弹回」。
+ */
+export function release(U, intent = null) {
   const b = isBoard(U)
   const G = b ? 17 : 24
   const need = 2 * G * (1 - Math.sin(U.th)) * 1.3
-  if (Math.abs(U.om) > 2.2 && U.om * U.om < need) U.om = (U.om > 0 ? 1 : -1) * Math.sqrt(need)
+  const prefer =
+    intent && typeof intent.fwd === 'boolean' ? (intent.fwd ? 1 : 0) : null
+  const progress = intent && intent.progress != null ? intent.progress : 0
+
+  // 清掉与意图相反的残速，避免回翻拖到一半被正角速度判成「继续往前」
+  if (prefer === 0 && U.om > 0) U.om = Math.min(U.om, 0.35)
+  if (prefer === 1 && U.om < 0) U.om = Math.max(U.om, -0.35)
+
+  // 手势过半：直接按意图补足越过中线所需角速度
+  if (prefer != null && progress >= 0.48) {
+    const dir = prefer ? 1 : -1
+    U.om = dir * Math.max(Math.abs(U.om), Math.sqrt(Math.max(need, 4)))
+    U.goal = prefer
+    U.mode = 'free'
+    return
+  }
+
+  // 仅沿当前 om 方向补能；不反向「甩」过去
+  if (Math.abs(U.om) > 2.2 && U.om * U.om < need) {
+    const sgn = U.om > 0 ? 1 : -1
+    if (prefer == null || (prefer === 1 && sgn > 0) || (prefer === 0 && sgn < 0)) {
+      U.om = sgn * Math.sqrt(need)
+    }
+  }
   const over = U.om * U.om >= need * 0.99
-  U.goal = over ? (U.om > 0 ? 1 : 0) : (U.th > PI / 2 ? 1 : 0)
+  // 回翻阈值略偏后（0.55π），往前略偏前（0.45π），减少「差一点点弹回」
+  const mid = prefer === 0 ? PI * 0.55 : prefer === 1 ? PI * 0.45 : PI / 2
+  U.goal = over ? (U.om > 0 ? 1 : 0) : (U.th > mid ? 1 : 0)
   U.mode = 'free'
 }
 
