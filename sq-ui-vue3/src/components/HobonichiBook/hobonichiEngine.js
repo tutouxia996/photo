@@ -866,7 +866,8 @@ function uploadTex(R, key, img, force) {
         Math.min(16, gl.getParameter(R.ani.MAX_TEXTURE_MAX_ANISOTROPY_EXT))
       )
     }
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+    // 不用 mipmap：翻页时贴图/胶条更利落，避免被自动降采样抹糊
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
@@ -874,7 +875,6 @@ function uploadTex(R, key, img, force) {
   if (force || T.img !== img) {
     gl.bindTexture(gl.TEXTURE_2D, T.t)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-    gl.generateMipmap(gl.TEXTURE_2D)
     T.img = img
   } else {
     gl.bindTexture(gl.TEXTURE_2D, T.t)
@@ -1007,7 +1007,8 @@ function drawGLFrame(R, items, cam, W, H, now, faces, under, dpr) {
   gl.uniform3f(U.uEye, cam.x, cam.y, HC)
   gl.uniform3f(U.uL, LAMP[0], LAMP[1], LAMP[2])
   gl.uniform1f(U.uPx, Math.max(1, dpr * 0.75))
-  gl.uniform1f(U.uLod, -Math.max(0, Math.log2(2 / cam.k)))
+  // LOD bias 会让翻页中贴图/胶条发糊；固定 0 保持锐利采样
+  gl.uniform1f(U.uLod, 0)
 
   let hasR = 0
   let hasL = 0

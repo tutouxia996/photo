@@ -2,7 +2,12 @@
   <div
     ref="stageRef"
     class="hobo-stage"
-    :class="{ closed: spread <= 0.02, editing: tool !== 'turn' }"
+    :class="{
+      closed: spread <= 0.02,
+      editing: tool !== 'turn',
+      turning: !!drag || animBusy,
+      inspecting: !!inspectItem
+    }"
     tabindex="0"
     role="img"
     :aria-label="ariaLabel"
@@ -16,7 +21,7 @@
         type="button"
         class="side-nav side-nav-prev"
         title="上一页"
-        :disabled="!canPrev"
+        :disabled="!canPrev || !!inspectItem"
         @click.stop="prev"
       >‹</button>
 
@@ -44,8 +49,11 @@
           :rect="spreadOverlayRect"
           :preview-strokes="inkPreview"
           :interactive="inkInteractive"
+          :clip-side="turningClipSide"
+          :inspect-hide-id="inspectItem?.id || null"
           @update-content="onInkUpdate"
           @request-import="onRequestImport"
+          @inspect-media="onInspectMedia"
         />
       </div>
 
@@ -53,7 +61,7 @@
         type="button"
         class="side-nav side-nav-next"
         title="下一页"
-        :disabled="!canNext"
+        :disabled="!canNext || !!inspectItem"
         @click.stop="next"
       >›</button>
     </div>
@@ -65,6 +73,12 @@
         <span>{{ progressText }}</span>
       </div>
     </div>
+
+    <DiaryItemInspect
+      :item="inspectItem"
+      :from-rect="inspectFromRect"
+      @close="closeInspect"
+    />
   </div>
 </template>
 
@@ -86,6 +100,7 @@ import {
   stepUnit
 } from './hobonichiEngine.js'
 import PageInkLayer from './PageInkLayer.vue'
+import DiaryItemInspect from './DiaryItemInspect.vue'
 import {
   emptyContent,
   hasContent,
@@ -102,7 +117,7 @@ const props = defineProps({
   coverSub: { type: String, default: 'HOBONICHI STYLE' },
   year: { type: [String, Number], default: () => new Date().getFullYear() },
   initialIndex: { type: Number, default: 0 },
-  /** turn | pen | text | eraser | media */
+  /** view | turn | pen | text | eraser | media | tape */
   tool: { type: String, default: 'turn' },
   inkColor: { type: String, default: '#2B2A33' },
   penWidth: { type: Number, default: 0.004 },
@@ -122,10 +137,15 @@ const index = ref(0)
 const drag = ref(null)
 const coverOpen = ref(0)
 const animBusy = ref(false)
+/** 当前翻页方向：true=往后翻(保留左页 HTML)，false=往前翻(保留右页) */
+const turnFwd = ref(null)
 const overlayRects = ref({
   left: { x: 0, y: 0, w: 0, h: 0 },
   right: { x: 0, y: 0, w: 0, h: 0 }
 })
+/** 查看模式：拿起的贴图 */
+const inspectItem = ref(null)
+const inspectFromRect = ref(null)
 
 /**
  * 书写层矩形：优先用打开态的稳定纸面几何（不跟相机抖动），
@@ -163,8 +183,19 @@ const spreadInkContent = computed(() => {
   return n ? contentOf(n) : emptyContent()
 })
 
-/** 翻页动画时关掉覆盖层预览，改走纸面纹理 */
-const inkPreview = computed(() => !animBusy.value && !drag.value && props.tool !== 'turn')
+/**
+ * 静止时用 HTML 清晰层（翻页工具也一样）；拖页/翻页动画时关掉笔迹预览，改走纸面烘焙。
+ * 贴图/美纹纸仍保留在静止半页（见 turningClipSide）。
+ */
+const inkPreview = computed(() => !animBusy.value && !drag.value)
+
+/** 翻页中：只露出未翻起那半页的 HTML 美纹纸/贴图 */
+const turningClipSide = computed(() => {
+  if (inkPreview.value || turnFwd.value == null) return null
+  const { left, right } = spreadPages.value
+  if (!left || !right) return null
+  return turnFwd.value ? 'left' : 'right'
+})
 
 /** 可书写：有纸页且非翻页工具（settle 中也允许，避免翻完假死） */
 const inkInteractive = computed(() => {
@@ -185,6 +216,10 @@ let now = 0
 let areaObserver = null
 /** pageNo → dedicated face canvas */
 const contentFaces = new Map()
+/** pageNo → 上次烘焙模式：'full' | 'preview' */
+const bakeMode = new Map()
+/** prepareTurnBake 刚写完全量贴图，跳过 inkPreview 关闭时的重复 rebake */
+let turnBakeReady = false
 
 const leavesMeta = computed(() => {
   const sheets = props.pages || []
@@ -212,10 +247,13 @@ const progressText = computed(() => {
 
 const hintText = computed(() => {
   if (index.value === 0) return '拖封面右下角或按 → 打开'
+  if (inspectItem.value) return '双击翻转背面 · 点击空白放回'
+  if (props.tool === 'view') return '点击相片 / 纸条 / 物品拿起查看'
   if (props.tool === 'pen') return '在纸面上书写'
   if (props.tool === 'text') return '点击放置文字'
   if (props.tool === 'media') return '拖动贴图 · 右下角缩放 · 点空白导入'
-  if (props.tool === 'eraser') return '擦除笔画、文字或贴图'
+  if (props.tool === 'tape') return '拖出美纹纸 · 压住的固定 · 盖在上面的仍可拿起'
+  if (props.tool === 'eraser') return '擦除笔画、文字、贴图或美纹纸'
   return '拖页角翻页 · ← →'
 })
 
@@ -247,6 +285,50 @@ function syncBusy() {
 
 function pageW() {
   return ((bookSize.value.contentW || bookSize.value.w) * dpr) / 2
+}
+
+/** 纸面贴图烘焙分辨率（约 1.5× 屏像素：胶条边缘够清，又不至于翻页卡顿） */
+function facePixelSize() {
+  const screen = window.devicePixelRatio || 1
+  const boost = Math.min(2.25, Math.max(screen * 1.5, screen))
+  const w = Math.round(((bookSize.value.contentW || bookSize.value.w) * boost) / 2)
+  const h = Math.round((bookSize.value.contentH || bookSize.value.h) * boost)
+  return { w: Math.max(2, w), h: Math.max(2, h) }
+}
+
+/**
+ * 翻页前把贴图/胶条烘焙进纸面。
+ * @param {'next'|'prev'|'both'} [dir='both'] 只预热翻向那一侧的邻页，避免一次重绘 6 页
+ */
+function prepareTurnBake(dir = 'both') {
+  const { left, right } = spreadPages.value
+  const opts = { skipTextbox: false, skipStroke: false, skipMedia: false }
+  const need = new Set()
+  if (left) need.add(left)
+  if (right) need.add(right)
+  const idx = index.value
+  const len = (props.pages || []).length
+  if (dir === 'next' || dir === 'both') {
+    const nextNo = spreadPageNos(idx + 1, len)
+    if (nextNo.left) need.add(nextNo.left)
+    if (nextNo.right) need.add(nextNo.right)
+  }
+  if (dir === 'prev' || dir === 'both') {
+    const prevNo = spreadPageNos(Math.max(0, idx - 1), len)
+    if (prevNo.left) need.add(prevNo.left)
+    if (prevNo.right) need.add(prevNo.right)
+  }
+  need.forEach((n) => {
+    if (!n || !pageHasDrawable(n)) return
+    // 已是全量烘焙且尺寸未变 → 跳过，避免翻页卡顿
+    if (bakeMode.get(n) === 'full') {
+      const { w: W, h: H } = facePixelSize()
+      const c = contentFaces.get(n)
+      if (c && c.width === W && c.height === H && faces[pageToFaceKey(n)]) return
+    }
+    applyPageContent(n, opts)
+  })
+  turnBakeReady = true
 }
 
 function pageH() {
@@ -326,14 +408,14 @@ function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false,
 }
 
 function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, skipMedia = false } = {}) {
-  const W = Math.round(pageW())
-  const H = Math.round(pageH())
+  const { w: W, h: H } = facePixelSize()
   if (W < 2 || H < 2) return
   if (!pageNo || !pageHasDrawable(pageNo)) {
     const key = pageToFaceKey(pageNo)
     if (key && blankFront && blankBack) {
       faces[key] = key.endsWith('-f') ? blankFront : blankBack
       contentFaces.delete(pageNo)
+      bakeMode.delete(pageNo)
       engine?.invalidateFace?.(key)
     }
     return
@@ -341,6 +423,7 @@ function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, ski
   const face = getContentFace(pageNo, W, H, { skipTextbox, skipStroke, skipMedia })
   if (!face) return
   faces[face.key] = face.canvas
+  bakeMode.set(pageNo, skipMedia || skipStroke || skipTextbox ? 'preview' : 'full')
   engine?.invalidateFace?.(face.key)
   units.forEach((U) => {
     if (U.frontKey === face.key || U.backKey === face.key) U.fresh = true
@@ -352,10 +435,13 @@ function rebakeVisible() {
   const visible = new Set([left, right].filter(Boolean))
   // 覆盖层预览开启时：可见页纹理跳过 stroke/textbox/media，避免订口断缝与叠绘
   const preview = inkPreview.value
+  const { w: W, h: H } = facePixelSize()
   for (const n of [...contentFaces.keys()]) {
-    if (!visible.has(n) && pageHasDrawable(n)) {
-      applyPageContent(n, { skipTextbox: false, skipStroke: false, skipMedia: false })
-    }
+    if (visible.has(n) || !pageHasDrawable(n)) continue
+    // 离屏页已是全量烘焙且尺寸正确 → 不必每帧/每次收尾重画
+    const c = contentFaces.get(n)
+    if (bakeMode.get(n) === 'full' && c && c.width === W && c.height === H) continue
+    applyPageContent(n, { skipTextbox: false, skipStroke: false, skipMedia: false })
   }
   // 文字工具：HTML 编辑层显示文字 → 纹理跳过 textbox 防叠字
   // 画笔等：文字烘焙进纸面，避免切工具后“文字消失”
@@ -367,8 +453,7 @@ function rebakeVisible() {
 }
 
 function buildFaces() {
-  const W = Math.round(pageW())
-  const H = Math.round(pageH())
+  const { w: W, h: H } = facePixelSize()
   const meta = leavesMeta.value
   const next = {}
 
@@ -408,6 +493,7 @@ function buildFaces() {
 
   // 重建后把已有内容页重新 bake
   contentFaces.clear()
+  bakeMode.clear()
   const src = props.pageContents
   const nos = src instanceof Map ? [...src.keys()] : Object.keys(src || {}).map(Number)
   const visible = new Set([spreadPages.value.left, spreadPages.value.right].filter(Boolean))
@@ -514,6 +600,8 @@ function next() {
     snapUnitFlat(U)
   }
   if (!U) return
+  turnFwd.value = true
+  prepareTurnBake('next')
   startAuto(U, true, reducedMotion.value)
 }
 
@@ -525,13 +613,21 @@ function prev() {
   if (U.mode !== 'rest' && U.mode !== 'settle' && U.mode !== 'peek') {
     snapUnitFlat(U)
   }
+  turnFwd.value = false
+  prepareTurnBake('prev')
   startAuto(U, false, reducedMotion.value)
 }
 
 function onKey(e) {
   if (e.target && e.target.isContentEditable) return
+  if (e.key === 'Escape' && inspectItem.value) {
+    e.preventDefault()
+    closeInspect()
+    return
+  }
   // 仅翻页模式响应方向键；底部 ‹ › 仍可在任意模式翻页
   if (props.tool !== 'turn' && index.value > 0) return
+  if (inspectItem.value) return
   const k = e.key
   if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) {
     e.preventDefault()
@@ -675,6 +771,9 @@ function beginDrag(e, leaf, fwd, y, H, { useWindow = false } = {}) {
       useWindow = true
     }
   }
+  // 先烘焙再进入 drag，避免预览层关掉后纸面贴图缺失/发糊
+  turnFwd.value = !!fwd
+  prepareTurnBake(fwd ? 'next' : 'prev')
   drag.value = {
     id: e.pointerId,
     leaf,
@@ -707,6 +806,33 @@ function onInkUpdate({ pageNo, content }) {
 
 function onRequestImport() {
   emit('request-import')
+}
+
+function onInspectMedia({ layer, rect }) {
+  if (!layer) return
+  inspectFromRect.value = rect
+    ? {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height
+      }
+    : null
+  inspectItem.value = {
+    id: layer._pageId || layer.id,
+    kind: layer.kind || 'image',
+    src: layer.src || '',
+    thumbSrc: layer.thumbSrc || '',
+    backSrc: layer.backSrc || '',
+    fileName: layer.fileName || '',
+    aspect: layer.aspect || (layer.w && layer.h ? layer.w / layer.h : 3 / 4),
+    rot: layer.rot || 0
+  }
+}
+
+function closeInspect() {
+  inspectItem.value = null
+  inspectFromRect.value = null
 }
 
 function onPointerMove(e) {
@@ -806,13 +932,17 @@ watch(leavesMeta, () => { syncUnits() })
 
 watch(
   () => props.pageContents,
-  () => { rebakeVisible() },
+  () => {
+    bakeMode.clear()
+    rebakeVisible()
+  },
   { deep: true }
 )
 
 watch(
   () => props.tool,
   (tool, prev) => {
+    if (tool !== 'view') closeInspect()
     // 从文字切到画笔时立刻把文字烘焙进纸面
     if (prev === 'text' && tool !== 'text') {
       nextTick(() => rebakeVisible())
@@ -822,18 +952,29 @@ watch(
   }
 )
 
-watch(inkPreview, () => {
+watch(inkPreview, (on) => {
+  // 翻页开始时 prepareTurnBake 已全量烘焙；跳过重复重绘，否则会严重卡顿
+  if (!on && turnBakeReady) {
+    turnBakeReady = false
+    return
+  }
+  turnBakeReady = false
   rebakeVisible()
 })
 
 watch(animBusy, (busy, was) => {
   // 翻页物理结束（进入 settle/rest）后再收尾，勿在半页时打断
   if (was && !busy) {
+    turnFwd.value = null
     nextTick(() => {
       settleToRest()
       rebakeVisible()
     })
   }
+})
+
+watch(drag, (d) => {
+  if (!d && !animBusy.value) turnFwd.value = null
 })
 
 onMounted(() => {
@@ -861,6 +1002,7 @@ onUnmounted(() => {
   areaObserver = null
   engine = null
   contentFaces.clear()
+  bakeMode.clear()
 })
 
 defineExpose({ next, prev, index, spreadPages, rebakeVisible })
@@ -914,19 +1056,19 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   height: 40px;
   border-radius: 50%;
   border: 1px solid rgba(62, 52, 38, 0.16);
-  background: rgba(255, 252, 245, 0.78);
+  /* 不透明底，避免 backdrop-filter 把底下胶条/贴图糊掉 */
+  background: #fffaf2;
   color: rgba(62, 52, 38, 0.72);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  backdrop-filter: blur(4px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   pointer-events: auto;
   box-shadow: 0 2px 10px rgba(70, 56, 36, 0.08);
   &:hover:not(:disabled) {
-    background: rgba(255, 252, 245, 0.96);
+    background: #fffdf8;
     color: #2b2a33;
   }
   &:disabled {
@@ -958,12 +1100,28 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  transition:
+    filter 0.45s ease,
+    transform 0.45s cubic-bezier(0.22, 0.61, 0.24, 1);
   &::before {
     content: '';
     display: block;
     width: 100%;
     height: 100%;
   }
+}
+
+/* 拿起物品时：日记本退后、略虚，形成视差景深 */
+.hobo-stage.inspecting .book-wrap {
+  filter: blur(2.4px) brightness(0.78) saturate(0.88);
+  transform: translate(-50%, -50%) scale(0.965);
+  pointer-events: none;
+}
+
+.hobo-stage.inspecting .side-nav,
+.hobo-stage.inspecting .chrome {
+  opacity: 0.35;
+  transition: opacity 0.35s ease;
 }
 
 .book-shadow {
@@ -1012,8 +1170,14 @@ defineExpose({ next, prev, index, spreadPages, rebakeVisible })
   pointer-events: auto !important;
   cursor: grab;
 }
-.hobo-stage:not(.editing) .ink-layer {
-  z-index: 0 !important;
+/* 静止：清晰层盖在书页上（不接手势） */
+.hobo-stage:not(.editing):not(.turning) .ink-layer {
+  z-index: 9 !important;
+  pointer-events: none !important;
+}
+/* 翻页中：压在 leaf 之下、书页之上——未翻起的半页继续显示清晰 HTML 美纹纸 */
+.hobo-stage:not(.editing).turning .ink-layer {
+  z-index: 3 !important;
   pointer-events: none !important;
 }
 

@@ -95,11 +95,13 @@ const penWidthUi = ref(3)
 const mediaPickerOpen = ref(false)
 
 const tools = [
+  { id: 'view', label: '查看', tip: '拿起查看：点击相片/纸条/物品 · 双击翻转背面' },
   { id: 'turn', label: '翻页', tip: '仅翻页：拖页角或按 ← →' },
   { id: 'pen', label: '画笔', tip: '仅书写：在纸面上画' },
   { id: 'text', label: '文字', tip: '仅文字：点击放置文字框' },
   { id: 'media', label: '图片', tip: '仅贴图：拖动缩放；再点本按钮或点空白可导入' },
-  { id: 'eraser', label: '橡皮', tip: '仅擦除：点击删除笔画/文字/贴图' }
+  { id: 'tape', label: '美纹纸', tip: '拖出胶条：压在胶条下的图/卡片会固定；盖在上面且无胶条的仍可拿起' },
+  { id: 'eraser', label: '橡皮', tip: '仅擦除：点击删除笔画/文字/贴图/美纹纸' }
 ]
 
 const {

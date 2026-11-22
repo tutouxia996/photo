@@ -6,6 +6,8 @@
  * 贴图建议用 space:'page'：对开显示时由 layerToSpread 映射，避免 spread 宽高比算错。
  */
 
+import { drawSpreadTapeOnPage, drawTapeLayerOnCtx } from './maskingTape.js'
+
 /** A5 单页宽高比（宽/高），用于把图片像素比换成页内归一化 h */
 export const PAGE_ASPECT = 148 / 210
 
@@ -31,10 +33,20 @@ export function parseContent(raw) {
  * 修正贴图尺寸；跨订口的保持 space:spread（翻页时左右半幅分别烘焙），
  * 完全在一侧的用 page 坐标。
  */
+/** 把贴图框钳在页面/对开内，禁止探出页缘 */
+export function clampMediaRect(x, y, w, h, { maxW = 0.92, maxH = 0.85 } = {}) {
+  let nw = Math.min(maxW, Math.max(0.08, w || 0.32))
+  let nh = Math.min(maxH, Math.max(0.06, h || 0.28))
+  if (nw > 1) nw = 1
+  if (nh > 1) nh = 1
+  const nx = Math.min(1 - nw, Math.max(0, x || 0))
+  const ny = Math.min(1 - nh, Math.max(0, y || 0))
+  return { x: nx, y: ny, w: nw, h: nh }
+}
+
 export function normalizeMediaLayer(layer) {
   if (!layer || layer.type !== 'media') return layer
   const aspect = layer.aspect && layer.aspect > 0 ? layer.aspect : 4 / 3
-  const y = Math.min(0.85, Math.max(0, layer.y || 0))
 
   if (layer.space === 'spread') {
     let x0 = layer.x || 0
@@ -45,13 +57,12 @@ export function normalizeMediaLayer(layer) {
     x0 = Math.min(1 - w0, Math.max(0, x0))
     const crosses = x0 < 0.5 && x0 + w0 > 0.5
     if (crosses) {
+      const h0 = mediaHeightForWidth(w0, aspect, true)
+      const box = clampMediaRect(x0, layer.y || 0, w0, h0, { maxW: 0.55, maxH: 0.62 })
       return {
         ...layer,
         space: 'spread',
-        x: x0,
-        y,
-        w: w0,
-        h: mediaHeightForWidth(w0, aspect, true),
+        ...box,
         aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
       }
     }
@@ -62,13 +73,12 @@ export function normalizeMediaLayer(layer) {
     if (w > 0.72) w = 0.42
     w = Math.min(0.72, Math.max(0.16, w))
     x = Math.min(1 - w, Math.max(0, x))
+    const h = mediaHeightForWidth(w, aspect, false)
+    const box = clampMediaRect(x, layer.y || 0, w, h)
     return {
       ...layer,
       space: 'page',
-      x,
-      y,
-      w,
-      h: mediaHeightForWidth(w, aspect, false),
+      ...box,
       aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
     }
   }
@@ -79,13 +89,12 @@ export function normalizeMediaLayer(layer) {
   if (x + w > 1.02) {
     const sx = x * 0.5
     const sw = Math.min(0.55, w * 0.5)
+    const sh = mediaHeightForWidth(sw, aspect, true)
+    const box = clampMediaRect(sx, layer.y || 0, sw, sh, { maxW: 0.55, maxH: 0.62 })
     return {
       ...layer,
       space: 'spread',
-      x: sx,
-      y,
-      w: sw,
-      h: mediaHeightForWidth(sw, aspect, true),
+      ...box,
       aspect: layer.aspect && layer.aspect > 0 ? layer.aspect : null
     }
   }
@@ -97,13 +106,11 @@ export function normalizeMediaLayer(layer) {
     layer.aspect && layer.aspect > 0 && Math.abs(h - expectH) / Math.max(expectH, 1e-6) > 0.25
       ? expectH
       : h
+  const box = clampMediaRect(x, layer.y || 0, w, Math.min(0.72, Math.max(0.1, fixedH)))
   return {
     ...layer,
     space: 'page',
-    x,
-    w,
-    y,
-    h: Math.min(0.72, Math.max(0.1, fixedH))
+    ...box
   }
 }
 
@@ -216,6 +223,16 @@ export function layerToSpread(layer, side) {
       w: (layer.w || 0.32) * 0.5
     }
   }
+  if (layer.type === 'tape') {
+    return {
+      ...layer,
+      _side: side,
+      _pageId: layer.id,
+      x: side === 'left' ? (layer.x || 0) * 0.5 : 0.5 + (layer.x || 0) * 0.5,
+      w: (layer.w || 0.12) * 0.5,
+      h: layer.h || 0.058
+    }
+  }
   return { ...layer, _side: side, _pageId: layer.id }
 }
 
@@ -321,6 +338,13 @@ export function hitTestMedia(layer, x, y) {
   return x >= layer.x && x <= layer.x + w && y >= layer.y && y <= layer.y + h
 }
 
+export {
+  buildOverlayStack,
+  hitTestTape,
+  isLayerPinned,
+  tapePinsLayer
+} from './maskingTape.js'
+
 /** 解析媒体相对路径为可请求 URL */
 export function resolveMediaUrl(url) {
   if (!url) return ''
@@ -407,16 +431,20 @@ export function paintLayers(
         drawSpreadTextOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'media' && !skipMedia) {
         drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady)
+      } else if (side && layer.type === 'tape' && !skipMedia) {
+        drawSpreadTapeOnPage(g, layer, W, H, side)
       } else if (!side) {
         if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
         else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
         else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
+        else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
       }
       continue
     }
     if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
     else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
     else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
+    else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
   }
 
   // 右页烘焙时，把左页里的 spread 图层半幅画上来
@@ -427,6 +455,7 @@ export function paintLayers(
         if (layer.type === 'stroke' && !skipStroke) drawSpreadStrokeOnPage(g, layer, W, H, 'right')
         else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
         else if (layer.type === 'media' && !skipMedia) drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
+        else if (layer.type === 'tape' && !skipMedia) drawSpreadTapeOnPage(g, layer, W, H, 'right')
         continue
       }
       // 左页 page 贴图伸出右缘（旧数据）：把溢出部分画到右页
