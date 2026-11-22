@@ -104,6 +104,15 @@ export function layerToSpread(layer, side) {
       w: (layer.w || 0.4) * 0.5
     }
   }
+  if (layer.type === 'media') {
+    return {
+      ...layer,
+      _side: side,
+      _pageId: layer.id,
+      x: side === 'left' ? (layer.x || 0) * 0.5 : 0.5 + (layer.x || 0) * 0.5,
+      w: (layer.w || 0.32) * 0.5
+    }
+  }
   return { ...layer, _side: side, _pageId: layer.id }
 }
 
@@ -202,6 +211,53 @@ export function hitTestTextbox(layer, x, y) {
   return x >= layer.x && x <= layer.x + w && y >= layer.y && y <= layer.y + h
 }
 
+export function hitTestMedia(layer, x, y) {
+  if (!layer || layer.type !== 'media') return false
+  const w = layer.w || 0.32
+  const h = layer.h || 0.28
+  return x >= layer.x && x <= layer.x + w && y >= layer.y && y <= layer.y + h
+}
+
+/** 解析媒体相对路径为可请求 URL */
+export function resolveMediaUrl(url) {
+  if (!url) return ''
+  if (/^https?:\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) return url
+  return (import.meta.env.VITE_APP_BASE_API || '') + url
+}
+
+/** 纸面烘焙用图片缓存 */
+const mediaImageCache = new Map()
+
+/**
+ * 确保 URL 对应图片已加载；未就绪时返回 null 并触发加载，完成后 onReady。
+ */
+export function ensureMediaImage(url, onReady) {
+  if (!url) return null
+  const key = String(url)
+  const cached = mediaImageCache.get(key)
+  if (cached instanceof HTMLImageElement && cached.complete && cached.naturalWidth > 0) {
+    return cached
+  }
+  if (cached === 'loading' || cached === 'error') return null
+  mediaImageCache.set(key, 'loading')
+  const img = new Image()
+  img.decoding = 'async'
+  img.onload = () => {
+    mediaImageCache.set(key, img)
+    onReady?.(img, key)
+  }
+  img.onerror = () => {
+    mediaImageCache.set(key, 'error')
+  }
+  img.src = resolveMediaUrl(key)
+  return null
+}
+
+export function mediaBakeSrc(layer) {
+  if (!layer) return ''
+  return layer.thumbSrc || layer.src || ''
+}
+
 function distToSeg(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1
   const dy = y2 - y1
@@ -216,11 +272,19 @@ function distToSeg(px, py, x1, y1, x2, y2) {
  * 把 layers 画到纸面 canvas。
  * pageSide: 当前烘焙的是左/右页；会绘制本页 layers + 对开 space:spread 的半幅。
  * extraSpreadContent: 伙伴页上可能挂着的 spread 图层来源（通常是左页 content）
+ * onMediaReady: 某张贴图首次加载完成时回调（用于触发重新烘焙）
  */
 export function paintLayers(
   canvas,
   content,
-  { skipTextbox = false, skipStroke = false, pageSide: side = null, extraSpreadContent = null } = {}
+  {
+    skipTextbox = false,
+    skipStroke = false,
+    skipMedia = false,
+    pageSide: side = null,
+    extraSpreadContent = null,
+    onMediaReady = null
+  } = {}
 ) {
   if (!canvas) return
   const g = canvas.getContext('2d')
@@ -235,14 +299,18 @@ export function paintLayers(
         drawSpreadStrokeOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'textbox' && !skipTextbox) {
         drawSpreadTextOnPage(g, layer, W, H, side)
+      } else if (side && layer.type === 'media' && !skipMedia) {
+        drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady)
       } else if (!side) {
         if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
         else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
+        else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
       }
       continue
     }
     if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
     else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
+    else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
   }
 
   // 右页烘焙时，把左页里的 spread 图层半幅画上来
@@ -251,6 +319,7 @@ export function paintLayers(
       if (!layer || layer.space !== 'spread') continue
       if (layer.type === 'stroke' && !skipStroke) drawSpreadStrokeOnPage(g, layer, W, H, 'right')
       else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
+      else if (layer.type === 'media' && !skipMedia) drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
     }
   }
 }
@@ -391,6 +460,120 @@ function drawTextbox(g, layer, W, H) {
     cy += lineH
   }
   g.restore()
+}
+
+function drawMedia(g, layer, W, H, onMediaReady) {
+  const x = (layer.x || 0) * W
+  const y = (layer.y || 0) * H
+  const boxW = Math.max(8, (layer.w || 0.32) * W)
+  const boxH = Math.max(8, (layer.h || 0.28) * H)
+  const pad = Math.max(3, Math.min(boxW, boxH) * 0.04)
+  const rot = layer.rot || 0
+  const src = mediaBakeSrc(layer)
+  const img = ensureMediaImage(src, onMediaReady)
+
+  g.save()
+  g.translate(x + boxW / 2, y + boxH / 2)
+  if (rot) g.rotate(rot)
+  g.translate(-boxW / 2, -boxH / 2)
+
+  g.shadowColor = 'rgba(62, 50, 32, 0.28)'
+  g.shadowBlur = Math.max(4, boxW * 0.04)
+  g.shadowOffsetX = 1.5
+  g.shadowOffsetY = 3
+  g.fillStyle = '#FDF8EC'
+  roundRectPath(g, 0, 0, boxW, boxH, Math.min(8, boxW * 0.04))
+  g.fill()
+  g.shadowColor = 'transparent'
+
+  const ix = pad
+  const iy = pad
+  const iw = Math.max(1, boxW - pad * 2)
+  const ih = Math.max(1, boxH - pad * 2)
+  if (img) {
+    drawCoverImage(g, img, ix, iy, iw, ih)
+    g.fillStyle = 'rgba(236, 214, 172, 0.22)'
+    g.globalCompositeOperation = 'multiply'
+    g.fillRect(ix, iy, iw, ih)
+    g.globalCompositeOperation = 'source-over'
+  } else {
+    g.fillStyle = 'rgba(210, 198, 178, 0.55)'
+    g.fillRect(ix, iy, iw, ih)
+  }
+
+  if (layer.kind === 'video') {
+    const r = Math.min(iw, ih) * 0.14
+    g.fillStyle = 'rgba(30, 24, 18, 0.48)'
+    g.beginPath()
+    g.arc(ix + iw / 2, iy + ih / 2, r, 0, Math.PI * 2)
+    g.fill()
+    g.fillStyle = '#F7F2E8'
+    g.beginPath()
+    g.moveTo(ix + iw / 2 - r * 0.28, iy + ih / 2 - r * 0.42)
+    g.lineTo(ix + iw / 2 - r * 0.28, iy + ih / 2 + r * 0.42)
+    g.lineTo(ix + iw / 2 + r * 0.48, iy + ih / 2)
+    g.closePath()
+    g.fill()
+  }
+  g.restore()
+}
+
+function drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady) {
+  const x0 = layer.x || 0
+  const y0 = layer.y || 0
+  const w0 = layer.w || 0.32
+  const h0 = layer.h || 0.28
+  const pageX0 = side === 'left' ? 0 : 0.5
+  const pageX1 = side === 'left' ? 0.5 : 1
+  const overlapL = Math.max(x0, pageX0)
+  const overlapR = Math.min(x0 + w0, pageX1)
+  if (overlapR <= overlapL) return
+
+  // 映射到单页坐标后整框绘制，并用 clip 裁半幅
+  const local = {
+    ...layer,
+    x: side === 'left' ? x0 * 2 : (x0 - 0.5) * 2,
+    w: w0 * 2,
+    y: y0,
+    h: h0
+  }
+  g.save()
+  g.beginPath()
+  g.rect(0, 0, W, H)
+  g.clip()
+  drawMedia(g, local, W, H, onMediaReady)
+  g.restore()
+}
+
+function drawCoverImage(g, img, x, y, w, h) {
+  const iw = img.naturalWidth || img.width || 1
+  const ih = img.naturalHeight || img.height || 1
+  const scale = Math.max(w / iw, h / ih)
+  const dw = iw * scale
+  const dh = ih * scale
+  const dx = x + (w - dw) / 2
+  const dy = y + (h - dh) / 2
+  g.save()
+  g.beginPath()
+  g.rect(x, y, w, h)
+  g.clip()
+  g.drawImage(img, dx, dy, dw, dh)
+  g.restore()
+}
+
+function roundRectPath(g, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2))
+  g.beginPath()
+  g.moveTo(x + rr, y)
+  g.lineTo(x + w - rr, y)
+  g.quadraticCurveTo(x + w, y, x + w, y + rr)
+  g.lineTo(x + w, y + h - rr)
+  g.quadraticCurveTo(x + w, y + h, x + w - rr, y + h)
+  g.lineTo(x + rr, y + h)
+  g.quadraticCurveTo(x, y + h, x, y + h - rr)
+  g.lineTo(x, y + rr)
+  g.quadraticCurveTo(x, y, x + rr, y)
+  g.closePath()
 }
 
 function wrapText(g, text, maxW) {

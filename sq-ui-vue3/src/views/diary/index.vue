@@ -41,6 +41,7 @@
     <div class="diary-body">
       <HobonichiBook
         v-if="ready"
+        ref="bookRef"
         :pages="sheetPages"
         :cover-title="book?.title || '相册日记'"
         :cover-sub="book?.coverSub || 'HOBONICHI STYLE'"
@@ -55,6 +56,8 @@
       />
       <div v-else class="diary-loading">正在打开日记本…</div>
     </div>
+
+    <DiaryMediaPicker v-model="mediaPickerOpen" @confirm="onMediaConfirm" />
   </div>
 </template>
 
@@ -63,8 +66,10 @@ import { computed, getCurrentInstance, onMounted, onUnmounted, ref, watch } from
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
+import { newId } from '@/components/HobonichiBook/pageContent.js'
 import { getMineBook } from '@/api/journal/book'
 import { useJournalPages } from './composables/useJournalPages.js'
+import DiaryMediaPicker from './components/DiaryMediaPicker.vue'
 
 defineOptions({ name: 'AlbumDiary' })
 
@@ -72,15 +77,18 @@ const { proxy } = getCurrentInstance()
 
 const year = new Date().getFullYear()
 const book = ref(null)
+const bookRef = ref(null)
 const ready = ref(false)
 const tool = ref('turn')
 const inkColor = ref('#2B2A33')
 const penWidthUi = ref(3)
+const mediaPickerOpen = ref(false)
 
 const tools = [
   { id: 'turn', label: '翻页' },
   { id: 'pen', label: '画笔' },
   { id: 'text', label: '文字' },
+  { id: 'media', label: '图片' },
   { id: 'eraser', label: '橡皮' }
 ]
 
@@ -109,6 +117,64 @@ function setTool(id) {
     flushAll()
   }
   tool.value = id
+  if (id === 'media') {
+    mediaPickerOpen.value = true
+  }
+}
+
+function currentSpread() {
+  const exposed = bookRef.value?.spreadPages
+  if (exposed && typeof exposed === 'object' && 'value' in exposed) return exposed.value
+  return exposed || { left: null, right: null }
+}
+
+function mediaSize(item, spread) {
+  const aspect = item.aspect && item.aspect > 0 ? item.aspect : 4 / 3
+  const w = spread ? 0.28 : 0.42
+  // 对开坐标系宽度约为单页一半视觉；高度仍相对整页高度
+  const h = Math.min(spread ? 0.42 : 0.5, Math.max(0.14, (w / aspect) * (spread ? 1.05 : 1)))
+  return { w, h }
+}
+
+function onMediaConfirm(items) {
+  if (!items?.length) return
+  const { left, right } = currentSpread()
+  if (!left && !right) {
+    ElMessage.warning('请先翻开日记页再导入')
+    tool.value = 'turn'
+    return
+  }
+  const spread = !!(left && right)
+  const hostNo = spread ? left : (right || left)
+  const content = pageContents.value.get?.(hostNo) || { v: 1, layers: [] }
+  const layers = [...(content.layers || [])]
+  const baseX = spread ? 0.18 : 0.12
+  const baseY = 0.16
+
+  items.forEach((item, i) => {
+    const size = mediaSize(item, spread)
+    const col = i % 3
+    const row = Math.floor(i / 3)
+    layers.push({
+      id: newId('m'),
+      type: 'media',
+      space: spread ? 'spread' : 'page',
+      x: Math.min(0.72, baseX + col * (spread ? 0.22 : 0.28)),
+      y: Math.min(0.62, baseY + row * 0.3),
+      w: size.w,
+      h: size.h,
+      rot: ((i % 5) - 2) * 0.012,
+      kind: item.kind || 'image',
+      src: item.src || '',
+      thumbSrc: item.thumbSrc || item.src || '',
+      photoId: item.photoId ?? null,
+      fileName: item.fileName || ''
+    })
+  })
+
+  setContent(hostNo, { v: 1, layers }, { markDirty: true })
+  tool.value = 'media'
+  ElMessage.success(`已导入 ${items.length} 项，可拖动调整位置`)
 }
 
 function goBack() {

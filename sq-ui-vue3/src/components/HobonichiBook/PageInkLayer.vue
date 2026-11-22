@@ -33,17 +33,55 @@
         @keydown.stop
       >{{ box.text }}</div>
     </div>
+
+    <div
+      v-for="m in mediaBoxes"
+      v-show="showMediaOverlay"
+      :key="m.id"
+      class="media-box"
+      :class="{
+        selected: selectedId === m.id,
+        editable: tool === 'media',
+        video: m.kind === 'video'
+      }"
+      :style="mediaStyle(m)"
+      @pointerdown.stop="onMediaPointerDown($event, m)"
+    >
+      <video
+        v-if="m.kind === 'video'"
+        class="media-el"
+        :src="mediaSrc(m)"
+        :poster="mediaPoster(m)"
+        controls
+        playsinline
+        preload="metadata"
+        @pointerdown.stop
+      />
+      <img
+        v-else
+        class="media-el"
+        :src="mediaPoster(m) || mediaSrc(m)"
+        :alt="m.fileName || ''"
+        draggable="false"
+      />
+      <template v-if="tool === 'media'">
+        <div class="media-handle" title="拖动" @pointerdown.stop="onMediaDragStart($event, m)" />
+        <div class="media-resize" title="缩放" @pointerdown.stop="onMediaResizeStart($event, m)" />
+      </template>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
+  hitTestMedia,
   hitTestStroke,
   hitTestTextbox,
   mergeSpreadLayers,
   newId,
   paintStrokeOnCtx,
+  resolveMediaUrl,
   simplifyStroke
 } from './pageContent.js'
 
@@ -69,6 +107,7 @@ const drawRef = ref(null)
 const selectedId = ref(null)
 const drafting = ref(null)
 const dragging = ref(null)
+const resizing = ref(null)
 /** 橡皮滑动擦除中 */
 const erasing = ref(null)
 
@@ -108,6 +147,9 @@ const viewLayers = computed(() => {
 })
 
 const textboxes = computed(() => viewLayers.value.filter((l) => l && l.type === 'textbox'))
+const mediaBoxes = computed(() => viewLayers.value.filter((l) => l && l.type === 'media'))
+/** 编辑预览时用 HTML 贴图层（视频可播）；翻页时改烘焙进纸面 */
+const showMediaOverlay = computed(() => !!props.previewStrokes)
 
 function boxStyle(box) {
   return {
@@ -118,6 +160,51 @@ function boxStyle(box) {
     color: box.color || props.color,
     fontSize: `${Math.max(12, (box.fontSize || 0.035) * (props.rect.h || 400))}px`
   }
+}
+
+function mediaStyle(m) {
+  const rot = m.rot ? `rotate(${m.rot}rad)` : null
+  return {
+    left: `${(m.x || 0) * 100}%`,
+    top: `${(m.y || 0) * 100}%`,
+    width: `${(m.w || 0.32) * 100}%`,
+    height: `${(m.h || 0.28) * 100}%`,
+    transform: rot || undefined
+  }
+}
+
+function mediaSrc(m) {
+  return resolveMediaUrl(m.src || m.thumbSrc || '')
+}
+
+function mediaPoster(m) {
+  return resolveMediaUrl(m.thumbSrc || (m.kind === 'image' ? m.src : '') || '')
+}
+
+function upsertMediaLayer(layer) {
+  const id = layer.id
+  const payload = {
+    id,
+    type: 'media',
+    space: layer.space || (isSpread.value ? 'spread' : 'page'),
+    x: layer.x,
+    y: layer.y,
+    w: layer.w,
+    h: layer.h,
+    rot: layer.rot || 0,
+    kind: layer.kind || 'image',
+    src: layer.src || '',
+    thumbSrc: layer.thumbSrc || '',
+    photoId: layer.photoId ?? null,
+    fileName: layer.fileName || ''
+  }
+  if (payload.space === 'spread' || isSpread.value) {
+    upsertSpreadLayer(payload)
+    return
+  }
+  const layers = clonePageLayers(hostContent.value).filter((l) => l.id !== id)
+  layers.push(payload)
+  emitPage(hostPageNo.value, layers)
 }
 
 function syncCanvasSize() {
@@ -334,6 +421,7 @@ function eraseAtPoint(x, y, removedSet) {
     if (removedSet && removedSet.has(id)) continue
     const hit =
       (l.type === 'textbox' && hitTestTextbox(l, x, y)) ||
+      (l.type === 'media' && hitTestMedia(l, x, y)) ||
       (l.type === 'stroke' && hitTestStroke(l, x, y, hitR))
     if (!hit) continue
     if (removedSet) removedSet.add(id)
@@ -440,6 +528,92 @@ function onBoxPointerDown(e, box) {
   }
 }
 
+function onMediaPointerDown(e, m) {
+  if (props.tool === 'eraser') {
+    removeViewLayer(m)
+    e.preventDefault()
+    return
+  }
+  if (props.tool === 'media') {
+    selectedId.value = m.id
+    onMediaDragStart(e, m)
+  }
+}
+
+function onMediaDragStart(e, m) {
+  if (props.tool === 'eraser') return
+  if (props.tool !== 'media') return
+  const p = localNorm(e)
+  selectedId.value = m.id
+  dragging.value = {
+    kind: 'media',
+    id: e.pointerId,
+    box: { ...m },
+    ox: p.x - (m.x || 0),
+    oy: p.y - (m.y || 0)
+  }
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd)
+  window.addEventListener('pointercancel', onDragEnd)
+  e.preventDefault()
+}
+
+function onMediaResizeStart(e, m) {
+  if (props.tool !== 'media') return
+  const p = localNorm(e)
+  selectedId.value = m.id
+  resizing.value = {
+    id: e.pointerId,
+    box: { ...m },
+    startX: p.x,
+    startY: p.y,
+    startW: m.w || 0.32,
+    startH: m.h || 0.28
+  }
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onResizeMove)
+  window.addEventListener('pointerup', onResizeEnd)
+  window.addEventListener('pointercancel', onResizeEnd)
+  e.preventDefault()
+}
+
+function onResizeMove(e) {
+  const d = resizing.value
+  if (!d || (e.pointerId != null && e.pointerId !== d.id)) return
+  const p = localNorm(e)
+  const dx = p.x - d.startX
+  const dy = p.y - d.startY
+  const minW = isSpread.value ? 0.12 : 0.16
+  const minH = 0.12
+  const maxW = isSpread.value ? 0.72 : 0.9
+  const maxH = 0.72
+  let nw = Math.min(maxW, Math.max(minW, d.startW + dx))
+  let nh = Math.min(maxH, Math.max(minH, d.startH + dy))
+  // 等比：优先跟较大位移轴
+  if (Math.abs(dx) > Math.abs(dy)) {
+    nh = Math.min(maxH, Math.max(minH, d.startH * (nw / d.startW)))
+  } else {
+    nw = Math.min(maxW, Math.max(minW, d.startW * (nh / d.startH)))
+  }
+  const nx = Math.min(1 - nw, Math.max(0, d.box.x || 0))
+  const ny = Math.min(1 - nh * 0.5, Math.max(0, d.box.y || 0))
+  upsertMediaLayer({
+    ...d.box,
+    x: nx,
+    y: ny,
+    w: nw,
+    h: nh
+  })
+}
+
+function onResizeEnd() {
+  resizing.value = null
+  window.removeEventListener('pointermove', onResizeMove)
+  window.removeEventListener('pointerup', onResizeEnd)
+  window.removeEventListener('pointercancel', onResizeEnd)
+}
+
 function onDragStart(e, box) {
   if (props.tool === 'eraser') return
   const p = localNorm(e)
@@ -460,13 +634,18 @@ function onDragMove(e) {
   const d = dragging.value
   if (!d || (e.pointerId != null && e.pointerId !== d.id)) return
   const p = localNorm(e)
-  const w = d.box.w || 0.28
-  const h = d.box.h || 0.1
+  const isMedia = d.kind === 'media' || d.box?.type === 'media'
+  const w = d.box.w || (isMedia ? 0.32 : 0.28)
+  const h = d.box.h || (isMedia ? 0.28 : 0.1)
   const nx = Math.min(1 - w, Math.max(0, p.x - d.ox))
   const ny = Math.min(1 - h * 0.5, Math.max(0, p.y - d.oy))
   d.box = { ...d.box, x: nx, y: ny }
 
   const id = d.box._pageId || d.box.id
+  if (isMedia) {
+    upsertMediaLayer({ ...d.box, id, x: nx, y: ny, w, h })
+    return
+  }
   if (isSpread.value || d.box.space === 'spread' || d.box._side === 'spread') {
     upsertSpreadLayer({
       id,
@@ -531,6 +710,7 @@ onUnmounted(() => {
   erasing.value = null
   drafting.value = null
   onDragEnd()
+  onResizeEnd()
 })
 </script>
 
@@ -546,7 +726,8 @@ onUnmounted(() => {
 /* 未激活时必须让子元素也不拦截事件，否则挡翻页拖动 */
 .ink-layer:not(.active),
 .ink-layer:not(.active) .ink-draw,
-.ink-layer:not(.active) .text-box {
+.ink-layer:not(.active) .text-box,
+.ink-layer:not(.active) .media-box {
   pointer-events: none !important;
 }
 
@@ -573,6 +754,10 @@ onUnmounted(() => {
 
 .tool-text .ink-draw {
   cursor: text;
+}
+
+.tool-media .ink-draw {
+  cursor: default;
 }
 
 .text-box {
@@ -605,5 +790,77 @@ onUnmounted(() => {
   min-height: 1.2em;
   padding: 0 2px;
   caret-color: #2b2a33;
+}
+
+.media-box {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  padding: 3.5%;
+  background: #fdf8ec;
+  border-radius: 4px;
+  box-shadow: 1px 3px 10px rgba(62, 50, 32, 0.22);
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: none;
+  &.editable {
+    cursor: grab;
+    &:active { cursor: grabbing; }
+  }
+  &.selected {
+    outline: 1.5px dashed rgba(62, 52, 38, 0.42);
+    outline-offset: 2px;
+  }
+  /* 非贴图工具时，仅视频控件可点，图片穿透给画笔 */
+  &:not(.editable):not(.video) {
+    pointer-events: none;
+  }
+  &:not(.editable).video {
+    pointer-events: auto;
+  }
+}
+
+.media-el {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 2px;
+  background: rgba(210, 198, 178, 0.35);
+  pointer-events: auto;
+}
+
+.media-box:not(.editable) .media-el {
+  pointer-events: none;
+}
+.media-box:not(.editable).video .media-el {
+  pointer-events: auto;
+}
+
+.media-handle {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: 2%;
+  height: 10px;
+  border-radius: 2px;
+  background: rgba(62, 52, 38, 0.14);
+  cursor: grab;
+  z-index: 2;
+  &:active { cursor: grabbing; }
+}
+
+.media-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, transparent 45%, rgba(62, 52, 38, 0.55) 46%, rgba(62, 52, 38, 0.55) 54%, transparent 55%),
+    linear-gradient(135deg, transparent 62%, rgba(62, 52, 38, 0.4) 63%, rgba(62, 52, 38, 0.4) 70%, transparent 71%);
+  cursor: nwse-resize;
+  z-index: 2;
 }
 </style>

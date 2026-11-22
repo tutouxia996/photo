@@ -90,7 +90,7 @@ const props = defineProps({
   coverSub: { type: String, default: 'HOBONICHI STYLE' },
   year: { type: [String, Number], default: () => new Date().getFullYear() },
   initialIndex: { type: Number, default: 0 },
-  /** turn | pen | text | eraser */
+  /** turn | pen | text | eraser | media */
   tool: { type: String, default: 'turn' },
   inkColor: { type: String, default: '#2B2A33' },
   penWidth: { type: Number, default: 0.004 },
@@ -202,7 +202,8 @@ const hintText = computed(() => {
   if (index.value === 0) return '拖封面右下角或按 → 打开'
   if (props.tool === 'pen') return '可跨左右页连续书写 · 外缘翻页'
   if (props.tool === 'text') return '整幅对开任意放置文字'
-  if (props.tool === 'eraser') return '点击笔画或文字删除'
+  if (props.tool === 'media') return '拖动贴图 · 右下角缩放'
+  if (props.tool === 'eraser') return '点击笔画、文字或贴图删除'
   return '拖页角翻页 · ← →'
 })
 
@@ -281,7 +282,16 @@ function pageHasDrawable(pageNo) {
   return false
 }
 
-function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false } = {}) {
+function onMediaImageReady() {
+  // 贴图异步加载完成后补烘焙；用 rAF 合并连发
+  if (onMediaImageReady._raf) return
+  onMediaImageReady._raf = requestAnimationFrame(() => {
+    onMediaImageReady._raf = 0
+    rebakeVisible()
+  })
+}
+
+function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false, skipMedia = false } = {}) {
   const key = pageToFaceKey(pageNo)
   if (!key) return null
   let c = contentFaces.get(pageNo)
@@ -295,13 +305,15 @@ function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false 
   paintLayers(c, contentOf(pageNo), {
     skipTextbox,
     skipStroke,
+    skipMedia,
     pageSide: side,
-    extraSpreadContent: side === 'right' && partner ? contentOf(partner) : null
+    extraSpreadContent: side === 'right' && partner ? contentOf(partner) : null,
+    onMediaReady: onMediaImageReady
   })
   return { key, canvas: c }
 }
 
-function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false } = {}) {
+function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, skipMedia = false } = {}) {
   const W = Math.round(pageW())
   const H = Math.round(pageH())
   if (W < 2 || H < 2) return
@@ -314,7 +326,7 @@ function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false } = 
     }
     return
   }
-  const face = getContentFace(pageNo, W, H, { skipTextbox, skipStroke })
+  const face = getContentFace(pageNo, W, H, { skipTextbox, skipStroke, skipMedia })
   if (!face) return
   faces[face.key] = face.canvas
   engine?.invalidateFace?.(face.key)
@@ -326,18 +338,20 @@ function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false } = 
 function rebakeVisible() {
   const { left, right } = spreadPages.value
   const visible = new Set([left, right].filter(Boolean))
-  // 覆盖层预览开启时：可见页纹理跳过 stroke/textbox，避免订口断缝与叠绘
+  // 覆盖层预览开启时：可见页纹理跳过 stroke/textbox/media，避免订口断缝与叠绘
   const preview = inkPreview.value
   for (const n of [...contentFaces.keys()]) {
     if (!visible.has(n) && pageHasDrawable(n)) {
-      applyPageContent(n, { skipTextbox: false, skipStroke: false })
+      applyPageContent(n, { skipTextbox: false, skipStroke: false, skipMedia: false })
     }
   }
   // 文字工具：HTML 编辑层显示文字 → 纹理跳过 textbox 防叠字
   // 画笔等：文字烘焙进纸面，避免切工具后“文字消失”
+  // 贴图：预览时走 HTML 层（视频可播），翻页时烘焙进纸面
   const skipText = preview && props.tool === 'text'
-  if (left) applyPageContent(left, { skipTextbox: skipText, skipStroke: preview })
-  if (right) applyPageContent(right, { skipTextbox: skipText, skipStroke: preview })
+  const skipMedia = preview
+  if (left) applyPageContent(left, { skipTextbox: skipText, skipStroke: preview, skipMedia })
+  if (right) applyPageContent(right, { skipTextbox: skipText, skipStroke: preview, skipMedia })
 }
 
 function buildFaces() {
@@ -391,7 +405,8 @@ function buildFaces() {
       const onSpread = visible.has(n)
       applyPageContent(n, {
         skipTextbox: preview && onSpread && props.tool === 'text',
-        skipStroke: preview && onSpread
+        skipStroke: preview && onSpread,
+        skipMedia: preview && onSpread
       })
     }
   })
@@ -846,7 +861,7 @@ onUnmounted(() => {
   contentFaces.clear()
 })
 
-defineExpose({ next, prev, index, rebakeVisible })
+defineExpose({ next, prev, index, spreadPages, rebakeVisible })
 </script>
 
 <style scoped lang="scss">
