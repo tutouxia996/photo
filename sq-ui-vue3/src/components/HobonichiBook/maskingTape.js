@@ -155,25 +155,12 @@ export function isLayerPinned(target, orderedLayers) {
 }
 
 /**
- * 显示用叠放顺序：先保持贴图相对顺序，再把每条胶条插到
- * 「它压住的最上层贴图」紧上方，避免胶条沉到图下面贴不上。
+ * 显示用叠放顺序 = layers 数组顺序（后写入的在上）。
+ * 不要按几何重叠把胶条抬到贴图上方，否则后导入的图一拖到胶条区会「钻到下面」。
+ * 钉住规则见 isLayerPinned：只有胶条在目标之上且重叠才固定。
  */
 export function buildOverlayStack(layers) {
-  const list = (layers || []).filter((l) => l && (l.type === 'media' || l.type === 'tape'))
-  const media = list.filter((l) => l.type === 'media')
-  const tapes = list.filter((l) => l.type === 'tape')
-  const result = [...media]
-  for (const tape of tapes) {
-    let best = -1
-    for (let i = 0; i < result.length; i++) {
-      const item = result[i]
-      if (item.type === 'media' && tapePinsLayer(tape, item)) best = i
-    }
-    let insertAt = best >= 0 ? best + 1 : result.length
-    while (insertAt < result.length && result[insertAt].type === 'tape') insertAt += 1
-    result.splice(insertAt, 0, tape)
-  }
-  return result
+  return (layers || []).filter((l) => l && (l.type === 'media' || l.type === 'tape'))
 }
 
 /** 点是否命中胶条（本地未旋转框近似 + 旋转逆变换） */

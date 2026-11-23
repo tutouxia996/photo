@@ -228,7 +228,7 @@ const viewLayers = computed(() => {
 })
 
 const textboxes = computed(() => viewLayers.value.filter((l) => l && l.type === 'textbox'))
-/** 贴图保持相对顺序；胶条插到所压贴图上方，保证能贴住 */
+/** 贴图/美纹纸按 layers 顺序叠放（后加的在上）；钉住看 isPinned */
 const overlayStack = computed(() => buildOverlayStack(viewLayers.value))
 /**
  * 翻页工具：不叠 HTML，只看全量烘焙（层级与翻页中一致）。
@@ -296,10 +296,11 @@ function isPinned(layer) {
 }
 
 /**
- * 胶条插到「被压住的贴图」紧上方。
- * pinProbe：用于命中检测的坐标（对开视图时可用 spread 坐标探针对 page 存盘胶条）
+ * 写入胶条，严格按 layers 数组做层级（后写入的在上）。
+ * - 已有且非 toFront：原地替换，拖动/改长度不抢后加贴图的层级
+ * - 新建或 toFront：追加到末尾（压在当前所有内容之上）
  */
-function placeTapeInLayers(layers, payload, pinProbe = payload) {
+function placeTapeInLayers(layers, payload, { toFront = false } = {}) {
   const without = layers.filter((l) => {
     if (!l) return false
     if (l.id === payload.id) return false
@@ -309,25 +310,18 @@ function placeTapeInLayers(layers, payload, pinProbe = payload) {
     return true
   })
 
-  const pinnedIds = new Set()
-  for (const l of viewLayers.value) {
-    if (!l || (l._pageId || l.id) === payload.id) continue
-    if ((l.type === 'media' || l.type === 'textbox') && tapePinsLayer(pinProbe, l)) {
-      pinnedIds.add(l._pageId || l.id)
+  if (!toFront) {
+    const idx = layers.findIndex((l) => l && l.id === payload.id)
+    if (idx >= 0) {
+      without.splice(Math.min(idx, without.length), 0, payload)
+      return without
     }
   }
-
-  let insertAt = without.length
-  let best = -1
-  for (let i = 0; i < without.length; i++) {
-    if (pinnedIds.has(without[i].id)) best = i
-  }
-  if (best >= 0) insertAt = best + 1
-  without.splice(insertAt, 0, payload)
+  without.push(payload)
   return without
 }
 
-function upsertTapeLayer(layer) {
+function upsertTapeLayer(layer, { toFront = false } = {}) {
   const payload = {
     id: layer.id,
     type: 'tape',
@@ -341,7 +335,7 @@ function upsertTapeLayer(layer) {
   }
 
   if (isSpread.value) {
-    // 优先写到「被压住的最上层贴图」所在页，避免胶条挂在左页、右页图却盖在胶条上
+    // 优先写到「重叠贴图」所在页，避免胶条挂在左页、右页图却盖在胶条上
     let hostSide = null
     for (const l of overlayStack.value) {
       if (l?.type === 'media' && tapePinsLayer(payload, l)) {
@@ -379,9 +373,8 @@ function upsertTapeLayer(layer) {
         w: mapped.w,
         h: mapped.h
       }
-      // pinProbe 用对开坐标，才能和 viewLayers 里的贴图对齐
       if (pageNo) {
-        emitPage(pageNo, placeTapeInLayers(clonePageLayers(src), pageTape, payload))
+        emitPage(pageNo, placeTapeInLayers(clonePageLayers(src), pageTape, { toFront }))
       }
       // 清掉另一侧 / 左页 spread 残留
       const otherNo = hostSide === 'left' ? props.rightPageNo : props.leftPageNo
@@ -408,10 +401,11 @@ function upsertTapeLayer(layer) {
 
     const leftNo = props.leftPageNo
     const rightNo = props.rightPageNo
-    const placed = placeTapeInLayers(clonePageLayers(props.leftContent), {
-      ...payload,
-      space: 'spread'
-    })
+    const placed = placeTapeInLayers(
+      clonePageLayers(props.leftContent),
+      { ...payload, space: 'spread' },
+      { toFront }
+    )
     if (leftNo) emitPage(leftNo, placed)
 
     const rightSrc = (props.rightContent && props.rightContent.layers) || []
@@ -436,7 +430,10 @@ function upsertTapeLayer(layer) {
     return
   }
 
-  emitPage(hostPageNo.value, placeTapeInLayers(clonePageLayers(hostContent.value), payload))
+  emitPage(
+    hostPageNo.value,
+    placeTapeInLayers(clonePageLayers(hostContent.value), payload, { toFront })
+  )
 }
 
 function exitFsIfNeeded() {
@@ -1063,6 +1060,8 @@ function onTapePointerDown(e, t) {
 
 function onTapeDragStart(e, t) {
   if (props.tool !== 'tape') return
+  // 拿起胶条时提到最上层，才能重新贴住后加的图；不会在显示时靠几何强行盖住
+  upsertTapeLayer({ ...t }, { toFront: true })
   const p = localNorm(e)
   selectedId.value = t.id
   dragging.value = {
