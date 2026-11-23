@@ -32,17 +32,29 @@
           <span class="edge-frame">{{ frameLabel }}</span>
         </div>
         <svg class="live-holes" :viewBox="`0 0 ${liveAlongMm} ${rebateMm}`" preserveAspectRatio="none">
-          <rect class="rebate-fill" x="0" y="0" :width="liveAlongMm" :height="rebateMm" />
+          <defs>
+            <mask :id="maskLeadId" maskUnits="userSpaceOnUse">
+              <rect x="0" y="0" :width="liveAlongMm" :height="rebateMm" fill="#fff" />
+              <rect
+                v-for="(h, i) in liveHoles"
+                :key="'tm' + i"
+                :x="h.s"
+                :y="h.t"
+                :width="perf.w"
+                :height="perf.h"
+                :rx="perf.r"
+                :ry="perf.r"
+                fill="#000"
+              />
+            </mask>
+          </defs>
           <rect
-            v-for="(h, i) in liveHoles"
-            :key="'t' + i"
-            class="hole"
-            :x="h.s"
-            :y="h.t"
-            :width="perf.w"
-            :height="perf.h"
-            :rx="perf.r"
-            :ry="perf.r"
+            class="rebate-fill"
+            x="0"
+            y="0"
+            :width="liveAlongMm"
+            :height="rebateMm"
+            :mask="`url(#${maskLeadId})`"
           />
         </svg>
       </div>
@@ -57,17 +69,29 @@
 
       <div v-if="showBorder" class="live-rebate trail" aria-hidden="true">
         <svg class="live-holes" :viewBox="`0 0 ${liveAlongMm} ${rebateMm}`" preserveAspectRatio="none">
-          <rect class="rebate-fill" x="0" y="0" :width="liveAlongMm" :height="rebateMm" />
+          <defs>
+            <mask :id="maskTrailId" maskUnits="userSpaceOnUse">
+              <rect x="0" y="0" :width="liveAlongMm" :height="rebateMm" fill="#fff" />
+              <rect
+                v-for="(h, i) in liveHoles"
+                :key="'bm' + i"
+                :x="h.s"
+                :y="rebateMm - perf.edge - perf.h"
+                :width="perf.w"
+                :height="perf.h"
+                :rx="perf.r"
+                :ry="perf.r"
+                fill="#000"
+              />
+            </mask>
+          </defs>
           <rect
-            v-for="(h, i) in liveHoles"
-            :key="'b' + i"
-            class="hole"
-            :x="h.s"
-            :y="rebateMm - perf.edge - perf.h"
-            :width="perf.w"
-            :height="perf.h"
-            :rx="perf.r"
-            :ry="perf.r"
+            class="rebate-fill"
+            x="0"
+            y="0"
+            :width="liveAlongMm"
+            :height="rebateMm"
+            :mask="`url(#${maskTrailId})`"
           />
         </svg>
         <div class="live-edge bottom">
@@ -108,10 +132,20 @@ const props = defineProps({
   stockId: { type: String, default: 'kodak_portra_400|135' },
   frameNo: { type: [Number, String], default: null },
   /** 视频等：保留真实媒体播放，片边用 DOM/SVG 套在外面 */
-  live: { type: Boolean, default: false }
+  live: { type: Boolean, default: false },
+  /**
+   * 覆盖默认合成分辨率长边（px）。
+   * 相册网格 thumb 默认 ~220；日记贴图等放大场景应传更高（如 1600）。
+   */
+  maxLongEdge: { type: Number, default: null }
 })
 
 const emit = defineEmits(['rendered'])
+
+// Vue 3.4 无 useId；随机串保证多实例 SVG mask id 不冲突
+const uid = `f${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+const maskLeadId = `ff-lead-${uid}`
+const maskTrailId = `ff-trail-${uid}`
 
 const rootRef = ref(null)
 const canvasRef = ref(null)
@@ -183,7 +217,6 @@ const liveCssVars = computed(() => {
     '--rebate-ratio': String(rebate / across),
     '--rebate-px': rebateCss,
     '--film-base': COLORS.rebatePrint,
-    '--film-hole': COLORS.holeWhite,
     '--film-ink': edgeInk.value,
     '--date-glow': COLORS.dateLight
   }
@@ -281,12 +314,29 @@ async function waitMediaReady(el, token, ms = 2500) {
   return ok()
 }
 
+function resolveMaxLongEdge(nw) {
+  const override = Number(props.maxLongEdge)
+  if (Number.isFinite(override) && override > 0) {
+    return Math.min(2400, Math.max(160, override))
+  }
+  // 缩略图小边；全屏按源图像素拉满（上限 2400），避免用小图硬拉到大画布发糊
+  if (isThumb.value) return Math.min(220, Math.max(nw || 160, 120))
+  return Math.min(2400, Math.max(nw || 1200, 1200))
+}
+
+/** 需要清晰合成时：等 is-hires 源，避免先用 300px 预览锁死糊边 */
+function shouldWaitHires() {
+  if (!isThumb.value) return true
+  const override = Number(props.maxLongEdge)
+  return Number.isFinite(override) && override > 400
+}
+
 async function paintNow(token) {
   const canvas = canvasRef.value
   if (!canvas) return false
 
-  // 全屏：先尽量等一下高清层，避免片边用 300px 预览合成后长期不升级
-  if (!isThumb.value) {
+  // 全屏 / 日记高清贴图：先尽量等一下高清层
+  if (shouldWaitHires()) {
     const root = slotRef.value
     const hires = root?.querySelector?.('img.media-image.is-hires')
     if (hires && !(hires.complete && hires.naturalWidth > 0)) {
@@ -314,14 +364,11 @@ async function paintNow(token) {
   }
   if (token !== renderToken || !ready()) return false
 
-  // 缩略图小边；全屏按源图像素拉满（上限 2400），避免用小图硬拉到大画布发糊
   const nw = media.naturalWidth || media.videoWidth || 0
-  const maxLongEdge = isThumb.value
-    ? Math.min(220, Math.max(nw || 160, 120))
-    : Math.min(2400, Math.max(nw || 1200, 1200))
+  const maxLongEdge = resolveMaxLongEdge(nw)
 
   // 已用更高清源合成过则跳过同级/更糊的重绘
-  if (!isThumb.value && canvasReady.value && canvas.dataset.filmNw) {
+  if (shouldWaitHires() && canvasReady.value && canvas.dataset.filmNw) {
     const prev = Number(canvas.dataset.filmNw) || 0
     if (prev > 0 && nw > 0 && nw < prev * 0.85) return true
   }
@@ -336,7 +383,7 @@ async function paintNow(token) {
     dateText: isThumb.value ? '' : dateBackText.value,
     placeText: isThumb.value ? '' : placeBackText.value,
     maxLongEdge,
-    holesWhite: true
+    holesTransparent: true
   })
 
   if (!result || token !== renderToken) return false
@@ -413,8 +460,8 @@ onMounted(async () => {
   observeView()
   bindMedia()
   observeGate()
-  // viewer 才盯 src 变化；缩略图靠虚拟列表 key 重建即可，避免 MO 风暴
-  if (!isThumb.value && rootRef.value) {
+  // viewer / 日记高清贴图：盯 src 变化以便预览→清晰图后升级合成
+  if (shouldWaitHires() && rootRef.value) {
     mo = new MutationObserver(() => bindMedia())
     mo.observe(rootRef.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] })
   }
@@ -430,7 +477,16 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.photo?.photoId, props.stockId, props.showBorder, props.showInfo, props.frameNo, props.mode, props.live],
+  () => [
+    props.photo?.photoId,
+    props.stockId,
+    props.showBorder,
+    props.showInfo,
+    props.frameNo,
+    props.mode,
+    props.live,
+    props.maxLongEdge
+  ],
   async () => {
     canvasReady.value = false
     if (canvasRef.value?.dataset) delete canvasRef.value.dataset.filmNw
@@ -542,10 +598,9 @@ defineExpose({ repaint: schedulePaint })
 .film-live-strip {
   display: flex;
   flex-direction: column;
-  background: var(--film-base, #0e0b09);
+  background: transparent;
   max-width: 100%;
   max-height: 100%;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
 }
 
 .live-rebate {
@@ -553,10 +608,10 @@ defineExpose({ repaint: schedulePaint })
   flex: 0 0 auto;
   height: var(--rebate-px, 36px);
   overflow: hidden;
-  background: var(--film-base, #0e0b09);
+  background: transparent;
 }
 
-/* 齿孔盖在字之上：字即使擦边也不会露进白孔 */
+/* 片基条：mask 镂空齿孔，透出下方纸面/背景 */
 .live-holes {
   position: absolute;
   inset: 0;
@@ -569,10 +624,6 @@ defineExpose({ repaint: schedulePaint })
 
 .rebate-fill {
   fill: var(--film-base, #0e0b09);
-}
-
-.hole {
-  fill: var(--film-hole, #f6f4f0);
 }
 
 /*

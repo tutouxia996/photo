@@ -6,10 +6,52 @@
  * 贴图建议用 space:'page'：对开显示时由 layerToSpread 映射，避免 spread 宽高比算错。
  */
 
+import { getFormat } from '@/utils/spektra/formats'
+import { renderFilmStrip } from '@/utils/spektra/renderStrip'
+import { getStockPreset, presetKey } from '@/utils/spektra/stocks'
 import { drawSpreadTapeOnPage, drawTapeLayerOnCtx } from './maskingTape.js'
 
 /** A5 单页宽高比（宽/高），用于把图片像素比换成页内归一化 h */
 export const PAGE_ASPECT = 148 / 210
+
+const FILM_STOCK_KEY = 'album.filmStockPreset'
+
+/** 与相册共用的胶片片种（localStorage） */
+export function readAlbumFilmStockId() {
+  try {
+    const v = localStorage.getItem(FILM_STOCK_KEY)
+    const p = getStockPreset(v || presetKey('kodak_portra_400', '135'))
+    return presetKey(p.id, p.formatId)
+  } catch {
+    return presetKey('kodak_portra_400', '135')
+  }
+}
+
+/**
+ * 胶片外框显示宽高比（含上下片基），与 FilmFrame / renderFilmStrip 输出一致。
+ * @param {number} photoAspect 照片宽/高
+ * @param {string} [stockId]
+ */
+export function filmStripAspect(photoAspect, stockId) {
+  const preset = getStockPreset(stockId || readAlbumFilmStockId())
+  const fmt = getFormat(preset.formatId)
+  const marginAlong = fmt.perforated ? (fmt.along < 20 ? 0.45 : 0.85) : 1.7
+  const canvasAlong = fmt.along + 2 * marginAlong
+  const canvasAcross = fmt.filmW
+  const pictureIsWide = (photoAspect || 1) >= 1
+  const gateIsWide = fmt.along >= fmt.across
+  const vertical = gateIsWide !== pictureIsWide
+  return vertical ? canvasAcross / canvasAlong : canvasAlong / canvasAcross
+}
+
+export function filmFrameNo(layer) {
+  const n = Number(layer?.photoId)
+  if (Number.isFinite(n) && n > 0) return (n % 36) + 1
+  const id = String(layer?.id || '')
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return (h % 36) + 1
+}
 
 export function emptyContent() {
   return { v: 1, layers: [] }
@@ -114,9 +156,10 @@ export function normalizeMediaLayer(layer) {
   }
 }
 
-/** 按目标显示宽（归一化）与图片宽高比，计算页内/对开归一化高度 */
+/** 按目标显示宽（归一化）与图片宽高比，计算页内/对开归一化高度（含胶片边框） */
 export function mediaHeightForWidth(w, aspect, spread) {
-  const a = aspect > 0 ? aspect : 4 / 3
+  const photoA = aspect > 0 ? aspect : 4 / 3
+  const a = filmStripAspect(photoA)
   if (spread) {
     // 视觉比 = (w * 2 * pageW) / (h * pageH) = a  →  h = 2*w*PAGE_ASPECT/a
     return Math.min(0.62, Math.max(0.1, (2 * w * PAGE_ASPECT) / a))
@@ -404,6 +447,11 @@ function distToSeg(px, py, x1, y1, x2, y2) {
  * extraSpreadContent: 伙伴页上可能挂着的 spread 图层来源（通常是左页 content）
  * onMediaReady: 某张贴图首次加载完成时回调（用于触发重新烘焙）
  */
+function isHiddenMediaLayer(layer, hideMediaId) {
+  if (!hideMediaId || !layer || layer.type !== 'media') return false
+  return layer.id === hideMediaId || layer._pageId === hideMediaId
+}
+
 export function paintLayers(
   canvas,
   content,
@@ -411,6 +459,7 @@ export function paintLayers(
     skipTextbox = false,
     skipStroke = false,
     skipMedia = false,
+    hideMediaId = null,
     pageSide: side = null,
     extraSpreadContent = null,
     onMediaReady = null
@@ -424,26 +473,27 @@ export function paintLayers(
   const pageLayers = (content && content.layers) || []
   for (const layer of pageLayers) {
     if (!layer) continue
+    const hideThis = isHiddenMediaLayer(layer, hideMediaId)
     if (layer.space === 'spread') {
       if (side && layer.type === 'stroke' && !skipStroke) {
         drawSpreadStrokeOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'textbox' && !skipTextbox) {
         drawSpreadTextOnPage(g, layer, W, H, side)
-      } else if (side && layer.type === 'media' && !skipMedia) {
+      } else if (side && layer.type === 'media' && !skipMedia && !hideThis) {
         drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady)
       } else if (side && layer.type === 'tape' && !skipMedia) {
         drawSpreadTapeOnPage(g, layer, W, H, side)
       } else if (!side) {
         if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
         else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
-        else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
+        else if (layer.type === 'media' && !skipMedia && !hideThis) drawMedia(g, layer, W, H, onMediaReady)
         else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
       }
       continue
     }
     if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
     else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
-    else if (layer.type === 'media' && !skipMedia) drawMedia(g, layer, W, H, onMediaReady)
+    else if (layer.type === 'media' && !skipMedia && !hideThis) drawMedia(g, layer, W, H, onMediaReady)
     else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
   }
 
@@ -451,15 +501,17 @@ export function paintLayers(
   if (side === 'right' && extraSpreadContent) {
     for (const layer of extraSpreadContent.layers || []) {
       if (!layer) continue
+      const hideThis = isHiddenMediaLayer(layer, hideMediaId)
       if (layer.space === 'spread') {
         if (layer.type === 'stroke' && !skipStroke) drawSpreadStrokeOnPage(g, layer, W, H, 'right')
         else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
-        else if (layer.type === 'media' && !skipMedia) drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
-        else if (layer.type === 'tape' && !skipMedia) drawSpreadTapeOnPage(g, layer, W, H, 'right')
+        else if (layer.type === 'media' && !skipMedia && !hideThis) {
+          drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
+        } else if (layer.type === 'tape' && !skipMedia) drawSpreadTapeOnPage(g, layer, W, H, 'right')
         continue
       }
       // 左页 page 贴图伸出右缘（旧数据）：把溢出部分画到右页
-      if (layer.type === 'media' && !skipMedia) {
+      if (layer.type === 'media' && !skipMedia && !hideThis) {
         const x = layer.x || 0
         const w = layer.w || 0
         if (x + w > 1.002) {
@@ -687,12 +739,51 @@ function drawTextbox(g, layer, W, H) {
   g.restore()
 }
 
+/** 纸面烘焙用胶片合成缓存（按源图尺寸失效） */
+const filmBakeCache = new Map()
+const FILM_BAKE_CACHE_MAX = 48
+
+function paintFilmStripCached(img, layer) {
+  const nw = img.naturalWidth || img.width || 0
+  const nh = img.naturalHeight || img.height || 0
+  if (!nw || !nh) return null
+  const stockId = readAlbumFilmStockId()
+  const preset = getStockPreset(stockId)
+  const frameNo = filmFrameNo(layer)
+  const key = `${srcKey(img)}|${stockId}|${frameNo}|${nw}x${nh}|ht`
+  const hit = filmBakeCache.get(key)
+  if (hit) return hit
+
+  const canvas = document.createElement('canvas')
+  const result = renderFilmStrip(canvas, img, {
+    stockId: preset.id,
+    formatId: preset.formatId,
+    frameNo,
+    showBorder: true,
+    showInfo: false,
+    dateText: '',
+    placeText: '',
+    maxLongEdge: Math.min(1800, Math.max(nw, nh, 720)),
+    holesTransparent: true
+  })
+  if (!result) return null
+  if (filmBakeCache.size >= FILM_BAKE_CACHE_MAX) {
+    const first = filmBakeCache.keys().next().value
+    filmBakeCache.delete(first)
+  }
+  filmBakeCache.set(key, canvas)
+  return canvas
+}
+
+function srcKey(img) {
+  return img?.currentSrc || img?.src || ''
+}
+
 function drawMedia(g, layer, W, H, onMediaReady) {
   const x = (layer.x || 0) * W
   const y = (layer.y || 0) * H
   const boxW = Math.max(8, (layer.w || 0.32) * W)
   const boxH = Math.max(8, (layer.h || 0.28) * H)
-  const pad = Math.max(3, Math.min(boxW, boxH) * 0.04) // 与 HTML 贴图层 4% 内边距一致
   const rot = layer.rot || 0
   const src = mediaBakeSrc(layer)
   let img = ensureMediaImage(src, onMediaReady)
@@ -705,63 +796,77 @@ function drawMedia(g, layer, W, H, onMediaReady) {
       soft = !!img
     }
   }
+  if (!img && layer.kind === 'video') {
+    const thumb = layer.thumbSrc || ''
+    if (thumb) img = ensureMediaImage(thumb, onMediaReady)
+  }
 
   g.save()
   g.translate(x + boxW / 2, y + boxH / 2)
   if (rot) g.rotate(rot)
   g.translate(-boxW / 2, -boxH / 2)
 
-  // 轻阴影即可，过重 blur 会在纸面烘焙里看起来像发光外框
-  g.shadowColor = 'rgba(62, 50, 32, 0.2)'
-  g.shadowBlur = Math.max(3, boxW * 0.025)
+  // 胶片外阴影（暗底，避免旧版奶油纸框发光感）
+  g.shadowColor = 'rgba(20, 14, 8, 0.35)'
+  g.shadowBlur = Math.max(4, boxW * 0.03)
   g.shadowOffsetX = 1
   g.shadowOffsetY = 2
-  g.fillStyle = '#FDF8EC'
-  roundRectPath(g, 0, 0, boxW, boxH, Math.min(8, boxW * 0.04))
-  g.fill()
-  g.shadowColor = 'transparent'
 
-  const ix = pad
-  const iy = pad
-  const iw = Math.max(1, boxW - pad * 2)
-  const ih = Math.max(1, boxH - pad * 2)
   if (img) {
-    if (soft) {
-      g.save()
-      g.beginPath()
-      g.rect(ix, iy, iw, ih)
-      g.clip()
-      g.filter = 'blur(6px)'
-      // 放大一点避免模糊露边
-      drawCoverImage(g, img, ix - iw * 0.03, iy - ih * 0.03, iw * 1.06, ih * 1.06)
-      g.restore()
+    const strip = paintFilmStripCached(img, layer)
+    if (strip) {
+      if (soft) {
+        g.save()
+        g.filter = 'blur(5px) saturate(0.92)'
+        drawContainImage(g, strip, 0, 0, boxW, boxH)
+        g.restore()
+      } else {
+        drawContainImage(g, strip, 0, 0, boxW, boxH)
+      }
+      g.shadowColor = 'transparent'
     } else {
-      drawCoverImage(g, img, ix, iy, iw, ih)
+      g.fillStyle = '#0e0b09'
+      g.fillRect(0, 0, boxW, boxH)
+      g.shadowColor = 'transparent'
+      drawCoverImage(g, img, boxW * 0.06, boxH * 0.12, boxW * 0.88, boxH * 0.76)
     }
-    g.fillStyle = 'rgba(236, 214, 172, 0.22)'
-    g.globalCompositeOperation = 'multiply'
-    g.fillRect(ix, iy, iw, ih)
-    g.globalCompositeOperation = 'source-over'
   } else {
-    g.fillStyle = 'rgba(210, 198, 178, 0.55)'
-    g.fillRect(ix, iy, iw, ih)
+    g.fillStyle = '#0e0b09'
+    g.fillRect(0, 0, boxW, boxH)
+    g.shadowColor = 'transparent'
   }
 
   if (layer.kind === 'video') {
-    const r = Math.min(iw, ih) * 0.14
-    g.fillStyle = 'rgba(30, 24, 18, 0.48)'
+    const r = Math.min(boxW, boxH) * 0.12
+    const cx = boxW / 2
+    const cy = boxH / 2
+    g.fillStyle = 'rgba(8, 6, 4, 0.5)'
     g.beginPath()
-    g.arc(ix + iw / 2, iy + ih / 2, r, 0, Math.PI * 2)
+    g.arc(cx, cy, r, 0, Math.PI * 2)
     g.fill()
-    g.fillStyle = '#F7F2E8'
+    g.fillStyle = '#F6F4F0'
     g.beginPath()
-    g.moveTo(ix + iw / 2 - r * 0.28, iy + ih / 2 - r * 0.42)
-    g.lineTo(ix + iw / 2 - r * 0.28, iy + ih / 2 + r * 0.42)
-    g.lineTo(ix + iw / 2 + r * 0.48, iy + ih / 2)
+    g.moveTo(cx - r * 0.28, cy - r * 0.42)
+    g.lineTo(cx - r * 0.28, cy + r * 0.42)
+    g.lineTo(cx + r * 0.48, cy)
     g.closePath()
     g.fill()
   }
   g.restore()
+}
+
+function drawContainImage(g, img, x, y, w, h) {
+  const iw = img.naturalWidth || img.width || 1
+  const ih = img.naturalHeight || img.height || 1
+  const scale = Math.min(w / iw, h / ih)
+  const dw = iw * scale
+  const dh = ih * scale
+  const dx = x + (w - dw) / 2
+  const dy = y + (h - dh) / 2
+  g.imageSmoothingEnabled = true
+  g.imageSmoothingQuality = 'high'
+  // 不铺底色：齿孔 alpha 与未铺满区域都透出纸面
+  g.drawImage(img, dx, dy, dw, dh)
 }
 
 function drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady) {
@@ -807,21 +912,6 @@ function drawCoverImage(g, img, x, y, w, h) {
   g.imageSmoothingQuality = 'high'
   g.drawImage(img, dx, dy, dw, dh)
   g.restore()
-}
-
-function roundRectPath(g, x, y, w, h, r) {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2))
-  g.beginPath()
-  g.moveTo(x + rr, y)
-  g.lineTo(x + w - rr, y)
-  g.quadraticCurveTo(x + w, y, x + w, y + rr)
-  g.lineTo(x + w, y + h - rr)
-  g.quadraticCurveTo(x + w, y + h, x + w - rr, y + h)
-  g.lineTo(x + rr, y + h)
-  g.quadraticCurveTo(x, y + h, x, y + h - rr)
-  g.lineTo(x, y + rr)
-  g.quadraticCurveTo(x, y, x + rr, y)
-  g.closePath()
 }
 
 function wrapText(g, text, maxW) {

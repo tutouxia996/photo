@@ -386,7 +386,12 @@ function onMediaImageReady() {
   })
 }
 
-function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false, skipMedia = false } = {}) {
+function getContentFace(
+  pageNo,
+  W,
+  H,
+  { skipTextbox = false, skipStroke = false, skipMedia = false, hideMediaId = null } = {}
+) {
   const key = pageToFaceKey(pageNo)
   if (!key) return null
   let c = contentFaces.get(pageNo)
@@ -401,6 +406,7 @@ function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false,
     skipTextbox,
     skipStroke,
     skipMedia,
+    hideMediaId,
     pageSide: side,
     extraSpreadContent: side === 'right' && partner ? contentOf(partner) : null,
     onMediaReady: onMediaImageReady
@@ -408,7 +414,10 @@ function getContentFace(pageNo, W, H, { skipTextbox = false, skipStroke = false,
   return { key, canvas: c }
 }
 
-function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, skipMedia = false } = {}) {
+function applyPageContent(
+  pageNo,
+  { skipTextbox = false, skipStroke = false, skipMedia = false, hideMediaId = null } = {}
+) {
   const { w: W, h: H } = facePixelSize()
   if (W < 2 || H < 2) return
   if (!pageNo || !pageHasDrawable(pageNo)) {
@@ -421,10 +430,13 @@ function applyPageContent(pageNo, { skipTextbox = false, skipStroke = false, ski
     }
     return
   }
-  const face = getContentFace(pageNo, W, H, { skipTextbox, skipStroke, skipMedia })
+  const face = getContentFace(pageNo, W, H, { skipTextbox, skipStroke, skipMedia, hideMediaId })
   if (!face) return
   faces[face.key] = face.canvas
-  bakeMode.set(pageNo, skipMedia || skipStroke || skipTextbox ? 'preview' : 'full')
+  bakeMode.set(
+    pageNo,
+    skipMedia || skipStroke || skipTextbox || hideMediaId ? 'preview' : 'full'
+  )
   engine?.invalidateFace?.(face.key)
   units.forEach((U) => {
     if (U.frontKey === face.key || U.backKey === face.key) U.fresh = true
@@ -436,6 +448,7 @@ function rebakeVisible() {
   const visible = new Set([left, right].filter(Boolean))
   const preview = inkPreview.value
   const tool = props.tool
+  const hideMediaId = inspectItem.value?.id || null
   const { w: W, h: H } = facePixelSize()
   for (const n of [...contentFaces.keys()]) {
     if (visible.has(n) || !pageHasDrawable(n)) continue
@@ -446,6 +459,7 @@ function rebakeVisible() {
   /**
    * 翻页工具：始终全量烘焙 → 静止层级=翻页层级，且下次拖页无需重烘（不再卡顿）。
    * 编辑工具：仅跳过当前 HTML 正在显示的那一类，避免叠影。
+   * 拿起查看：从纸面烘焙里去掉该贴图，避免本上残影。
    */
   let skipTextbox = false
   let skipStroke = false
@@ -455,8 +469,8 @@ function rebakeVisible() {
     skipStroke = tool === 'pen' || tool === 'eraser'
     skipMedia = tool === 'media' || tool === 'tape' || tool === 'view'
   }
-  if (left) applyPageContent(left, { skipTextbox, skipStroke, skipMedia })
-  if (right) applyPageContent(right, { skipTextbox, skipStroke, skipMedia })
+  if (left) applyPageContent(left, { skipTextbox, skipStroke, skipMedia, hideMediaId })
+  if (right) applyPageContent(right, { skipTextbox, skipStroke, skipMedia, hideMediaId })
 }
 
 function buildFaces() {
@@ -829,7 +843,9 @@ function onInspectMedia({ layer, rect }) {
         left: rect.left,
         top: rect.top,
         width: rect.width,
-        height: rect.height
+        height: rect.height,
+        centerX: rect.centerX,
+        centerY: rect.centerY
       }
     : null
   inspectItem.value = {
@@ -840,13 +856,17 @@ function onInspectMedia({ layer, rect }) {
     backSrc: layer.backSrc || '',
     fileName: layer.fileName || '',
     aspect: layer.aspect || (layer.w && layer.h ? layer.w / layer.h : 3 / 4),
-    rot: layer.rot || 0
+    rot: layer.rot || 0,
+    photoId: layer.photoId ?? null
   }
+  // 立刻重烘：纸面去掉该贴图，避免拿起后本上还留影
+  nextTick(() => rebakeVisible())
 }
 
 function closeInspect() {
   inspectItem.value = null
   inspectFromRect.value = null
+  nextTick(() => rebakeVisible())
 }
 
 function onPointerMove(e) {

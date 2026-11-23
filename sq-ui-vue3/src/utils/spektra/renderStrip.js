@@ -42,9 +42,17 @@ function drawHoles(ctx, L, map) {
   if (!L.perf) return
   const { pitch, w: along, h: across, edge, r } = L.perf
   const ppm = ppmPair(L, map)
-  ctx.fillStyle = L.holesWhite ? COLORS.holeWhite : COLORS.holeBlack
+  // 默认打孔透明（露出纸面/背景）；holesTransparent===false 时仍可画实心孔
+  const punch = L.holesTransparent !== false
 
   const rowsT = [edge, L.filmW - edge - across]
+  ctx.save()
+  if (punch) {
+    ctx.globalCompositeOperation = 'destination-out'
+    ctx.fillStyle = '#000'
+  } else {
+    ctx.fillStyle = L.holesWhite ? COLORS.holeWhite : COLORS.holeBlack
+  }
   // s = leading edge of hole (FilmGeometry)
   let k = Math.floor((L.sLo - 6 - L.perfPhase) / pitch)
   while (L.perfPhase + k * pitch < L.sHi + 6) {
@@ -63,6 +71,7 @@ function drawHoles(ctx, L, map) {
     }
     k += 1
   }
+  ctx.restore()
 }
 
 function drawStripes(ctx, L, map) {
@@ -363,6 +372,7 @@ export function renderFilmStrip(canvas, image, opts) {
     frameH: nh,
     frameNo: opts.frameNo,
     holesWhite: opts.holesWhite,
+    holesTransparent: opts.holesTransparent,
     dateText: showInfo ? opts.dateText : '',
     placeText: showInfo ? opts.placeText : ''
   })
@@ -380,9 +390,10 @@ export function renderFilmStrip(canvas, image, opts) {
   ctx.imageSmoothingQuality = 'high'
 
   if (showBorder) {
+    ctx.clearRect(0, 0, outW, outH)
     ctx.fillStyle = COLORS.rebatePrint
     ctx.fillRect(0, 0, outW, outH)
-    // 片窗 → 彩条 → 片边字/DX → 最后打齿孔（不透明白盖住任何擦边字墨）
+    // 片窗 → 彩条 → 片边字/DX → 最后打齿孔（destination-out 透明穿孔）
     drawGateImage(ctx, image, L, map)
     drawStripes(ctx, L, map)
     drawDxBars(ctx, L, map)

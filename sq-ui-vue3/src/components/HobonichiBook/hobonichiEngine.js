@@ -39,7 +39,9 @@ void main(){
  float h=max(vP.z,0.),air=smoothstep(140.,300.,h);
  face*=1.-uShow*uLift*air*vF*clamp(1.-lum(rev)/lum(PAPER),0.,1.);
  float ndl=dot(Nv,uL),sh=(.87+.13*max(ndl,0.))/(.87+.13*uL.z);
- vec3 col=face*sh*mix(vec3(.985,.968,.94),vec3(1.),smoothstep(.87,1.,sh));
+ /* 纸页偏哑光：高光区少提亮；封面布面仍可略亮 */
+ float glossLift=mix(.55,.95,uBoard);
+ vec3 col=face*sh*mix(vec3(.985,.968,.94),vec3(1.),smoothstep(.87,1.,sh)*glossLift);
  col*=1.-.035*uLift*(1.-uBoard)*exp(-vUV.x*uWH.x/28.)*smoothstep(4.,40.,h+vUV.x*60.);
  col+=vec3(1.,.9,.74)*uGlow*uLift*max(-ndl,0.);
  vec3 H=normalize(uL+V);float sp=pow(max(dot(Nv,H),0.),uShin),sp0=pow(normalize(uL+vec3(0.,0.,1.)).z,uShin);
@@ -53,7 +55,9 @@ void main(){
   float T=uTrans*uLift*air*vF*mix(.35,1.,abs(dot(Nv,V)));col*=mix(vec3(1.),clamp(bg/PAPER,0.,1.1),T);}
  float ex=(1.-vUV.x)/max(fwidth(vUV.x),1e-6),ey=min(vUV.y,1.-vUV.y)/max(fwidth(vUV.y),1e-6),e=min(ex,ey)/uPx;
  float dk=1.-smoothstep(0.,1.+uBoard,e),pl=smoothstep(.6+uBoard,1.3+uBoard,e)*(1.-smoothstep(1.4+uBoard,2.5+uBoard,e));
- col=mix(col,col*(.8-.1*uBoard),dk*uEdge*uLift);col=mix(col,min(col+.05,vec3(1.)),pl*uEdge*uLift);
+ /* 纸边少抛光高光，更像未覆膜纸；封面保留略亮边 */
+ float edgeSpec=mix(.018,.05,uBoard);
+ col=mix(col,col*(.8-.1*uBoard),dk*uEdge*uLift);col=mix(col,min(col+edgeSpec,vec3(1.)),pl*uEdge*uLift);
  o=vec4(col,1.);}`
 
 const LAMP = (() => {
@@ -104,15 +108,32 @@ export function paintBlank(c, _hand = 'right', seed = 11) {
   const r = gRnd(seed)
   g.fillStyle = TOMOE_CREAM
   g.fillRect(0, 0, w, h)
-  // 订口侧洗色压淡，避免左右页相接时叠出硬竖线
+  // 订口侧洗色压淡，避免左右页相接时叠出硬竖线（略压亮，少“抛光感”）
   const wash = g.createLinearGradient(0, 0, w * 0.12, h)
-  wash.addColorStop(0, 'rgba(245,236,214,0.12)')
+  wash.addColorStop(0, 'rgba(236,226,204,0.14)')
   wash.addColorStop(0.5, 'rgba(251,247,239,0)')
-  wash.addColorStop(1, 'rgba(236,226,204,0.1)')
+  wash.addColorStop(1, 'rgba(228,216,192,0.12)')
   g.fillStyle = wash
   g.fillRect(0, 0, w, h)
-  g.fillStyle = 'rgba(146,128,92,0.028)'
-  for (let i = 0; i < 2200; i++) g.fillRect(r() * w, r() * h, 1, 1)
+  // 纸齿 / 纤维：更密更糙，哑光书写纸感（不影响上层胶片贴图光泽）
+  g.fillStyle = 'rgba(130,112,78,0.035)'
+  for (let i = 0; i < 4200; i++) {
+    const s = 0.6 + r() * 1.1
+    g.fillRect(r() * w, r() * h, s, s * (0.4 + r() * 0.8))
+  }
+  g.globalAlpha = 0.028
+  g.fillStyle = '#7a6a4e'
+  for (let y = 0; y < h; y += 2.4 + r() * 1.6) {
+    g.fillRect(0, y, w, 0.35 + r() * 0.25)
+  }
+  g.globalAlpha = 0.018
+  for (let x = 0; x < w; x += 3.2 + r() * 2.2) {
+    g.fillRect(x, 0, 0.3 + r() * 0.25, h)
+  }
+  g.globalAlpha = 1
+  // 少量更暗的杂质点，打断均匀反光
+  g.fillStyle = 'rgba(96,78,52,0.04)'
+  for (let i = 0; i < 900; i++) g.fillRect(r() * w, r() * h, 1 + r(), 1 + r())
 }
 
 /* —— Hobonichi Cousin cover: soft ivory cloth (from arnilabs reference) —— */
@@ -1060,9 +1081,10 @@ function drawGLFrame(R, items, cam, W, H, now, faces, under, dpr) {
     gl.uniform1f(U.uLift, L.lift)
     gl.uniform1f(U.uTrans, b ? 0 : 0.11 * L.amp)
     gl.uniform1f(U.uShow, b ? 0 : 0.08 * L.amp)
-    gl.uniform1f(U.uSpec, b ? 0.1 : 0.24)
-    gl.uniform1f(U.uShin, 34)
-    gl.uniform1f(U.uGlow, b ? 0 : 0.3 * L.amp)
+    // 纸页哑光粗糙；封面布面略保留；胶片本身光泽在贴图/ FilmFrame，不靠纸页 specular
+    gl.uniform1f(U.uSpec, b ? 0.1 : 0.045)
+    gl.uniform1f(U.uShin, b ? 28 : 9)
+    gl.uniform1f(U.uGlow, b ? 0 : 0.12 * L.amp)
     gl.uniform1f(U.uEdge, 1)
     gl.uniform1f(U.uBoard, b ? 0.8 : 0)
     gl.uniform1f(U.uBias, L.bias || 0)

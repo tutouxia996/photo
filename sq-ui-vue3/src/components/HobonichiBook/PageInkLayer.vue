@@ -54,39 +54,51 @@
         @pointerdown.stop="onMediaPointerDown($event, item)"
         @dblclick.prevent.stop="onMediaDblClick($event, item)"
       >
-        <video
-          v-if="item.kind === 'video'"
-          class="media-el"
-          :src="mediaSrc(item)"
-          :poster="mediaPoster(item)"
-          controls
-          playsinline
-          preload="metadata"
-          controlslist="nofullscreen noremoteplayback"
-          disablepictureinpicture
-          @pointerdown.stop="onVideoPointerDown($event, item)"
-          @dblclick.prevent.stop="onMediaDblClick($event, item)"
-        />
-        <template v-else>
-          <img
-            v-if="mediaThumbSrc(item) && !isMediaReady(item)"
-            class="media-el media-el--thumb"
-            :src="mediaThumbSrc(item)"
-            alt=""
-            draggable="false"
-            decoding="async"
-          />
-          <img
-            class="media-el media-el--full"
-            :class="{ ready: isMediaReady(item) }"
+        <FilmFrame
+          class="media-film"
+          :photo="filmPhotoOf(item)"
+          mode="thumb"
+          :live="item.kind === 'video'"
+          :show-border="true"
+          :show-info="false"
+          :stock-id="filmStockId"
+          :frame-no="filmFrameNo(item)"
+          :max-long-edge="1600"
+        >
+          <video
+            v-if="item.kind === 'video'"
+            class="media-el media-image"
             :src="mediaSrc(item)"
-            :alt="item.fileName || ''"
-            draggable="false"
-            decoding="async"
-            @load="onMediaFullLoad($event, item)"
+            :poster="mediaPoster(item)"
+            controls
+            playsinline
+            preload="metadata"
+            controlslist="nofullscreen noremoteplayback"
+            disablepictureinpicture
+            @pointerdown.stop="onVideoPointerDown($event, item)"
             @dblclick.prevent.stop="onMediaDblClick($event, item)"
           />
-        </template>
+          <template v-else>
+            <img
+              v-if="mediaThumbSrc(item) && !isMediaReady(item)"
+              class="media-el media-el--thumb media-image-preview"
+              :src="mediaThumbSrc(item)"
+              alt=""
+              draggable="false"
+              decoding="async"
+            />
+            <img
+              class="media-el media-el--full media-image is-hires"
+              :class="{ ready: isMediaReady(item) }"
+              :src="mediaSrc(item)"
+              :alt="item.fileName || ''"
+              draggable="false"
+              decoding="async"
+              @load="onMediaFullLoad($event, item)"
+              @dblclick.prevent.stop="onMediaDblClick($event, item)"
+            />
+          </template>
+        </FilmFrame>
         <template v-if="tool === 'media' && !isPinned(item)">
           <div class="media-handle" title="拖动" @pointerdown.stop="onMediaDragStart($event, item)" />
           <div class="media-resize" title="缩放" @pointerdown.stop="onMediaResizeStart($event, item)" />
@@ -130,9 +142,11 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import FilmFrame from '@/components/FilmFrame/index.vue'
 import {
   buildOverlayStack,
   clampMediaRect,
+  filmFrameNo,
   hitTestMedia,
   hitTestStroke,
   hitTestTape,
@@ -142,6 +156,7 @@ import {
   mergeSpreadLayers,
   newId,
   paintStrokeOnCtx,
+  readAlbumFilmStockId,
   resolveMediaUrl,
   simplifyStroke,
   tapePinsLayer
@@ -152,6 +167,21 @@ import {
   resolveTapeClip,
   tapeFromDrag
 } from './maskingTape.js'
+
+const filmStockId = ref(readAlbumFilmStockId())
+
+function syncFilmStock() {
+  filmStockId.value = readAlbumFilmStockId()
+}
+
+function filmPhotoOf(m) {
+  return {
+    photoId: m?.photoId,
+    fileName: m?.fileName,
+    shootTime: m?.shootTime || null,
+    location: m?.location || null
+  }
+}
 
 const props = defineProps({
   pageNo: { type: Number, default: null },
@@ -995,11 +1025,23 @@ function onBoxPointerDown(e, box) {
 
 function emitInspect(m, el) {
   const rect = el?.getBoundingClientRect?.()
+  if (!rect) {
+    emit('inspect-media', { layer: m, rect: null })
+    return
+  }
+  // 用布局宽高（非旋转 AABB），拿起后与页上贴图尺寸一致
+  const boxW = el.offsetWidth || rect.width
+  const boxH = el.offsetHeight || rect.height
   emit('inspect-media', {
     layer: m,
-    rect: rect
-      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
-      : null
+    rect: {
+      left: rect.left,
+      top: rect.top,
+      width: boxW,
+      height: boxH,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2
+    }
   })
 }
 
@@ -1343,8 +1385,15 @@ watch(
   }
 )
 
-onMounted(() => syncCanvasSize())
+onMounted(() => {
+  syncCanvasSize()
+  syncFilmStock()
+  window.addEventListener('focus', syncFilmStock)
+  document.addEventListener('visibilitychange', syncFilmStock)
+})
 onUnmounted(() => {
+  window.removeEventListener('focus', syncFilmStock)
+  document.removeEventListener('visibilitychange', syncFilmStock)
   erasing.value = null
   drafting.value = null
   draftingTape.value = null
@@ -1445,9 +1494,10 @@ onUnmounted(() => {
   z-index: 10;
   box-sizing: border-box;
   padding: 0;
-  background: #fdf8ec;
-  border-radius: 4px;
-  box-shadow: 1px 2px 6px rgba(62, 50, 32, 0.18);
+  /* 透明底：胶片齿孔才能透出日记纸面 */
+  background: transparent;
+  border-radius: 0;
+  box-shadow: 1px 2px 8px rgba(20, 14, 8, 0.35);
   overflow: hidden;
   pointer-events: auto;
   user-select: none;
@@ -1460,28 +1510,22 @@ onUnmounted(() => {
     cursor: zoom-in;
     pointer-events: auto !important;
     &:hover {
-      box-shadow: 2px 6px 16px rgba(62, 50, 32, 0.32);
-      filter: brightness(1.03);
+      box-shadow: 2px 8px 18px rgba(12, 8, 4, 0.45);
+      filter: brightness(1.04);
     }
   }
   &.pinned {
     cursor: default;
-    &::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      box-shadow: inset 0 0 0 1px rgba(120, 90, 40, 0.18);
-    }
   }
+  /* 拿起查看：页上原位完全隐去，不留半透明残影 */
   &.lifted {
-    opacity: 0.18;
-    filter: blur(0.6px) grayscale(0.15);
+    opacity: 0;
+    visibility: hidden;
     box-shadow: none;
     pointer-events: none !important;
   }
   &.selected {
-    outline: 1.5px dashed rgba(62, 52, 38, 0.42);
+    outline: 1.5px dashed rgba(255, 236, 200, 0.55);
     outline-offset: 2px;
   }
   &.erasable {
@@ -1494,22 +1538,78 @@ onUnmounted(() => {
   }
 }
 
-.media-el {
+.media-film {
   position: absolute;
-  left: 4%;
-  top: 4%;
-  width: 92%;
-  height: 92%;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+/* 贴图框按胶片外比；contain 避免旧贴图裁掉片基；底透明让齿孔透纸 */
+.media-box :deep(.film-canvas.is-thumb) {
+  object-fit: contain;
+  background: transparent;
+}
+
+.media-box :deep(.film-live-strip) {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+.media-box :deep(.live-rebate) {
+  flex: 0 0 11%;
+  height: 11%;
+  min-height: 10px;
+  max-height: 28px;
+}
+
+.media-box :deep(.live-gate) {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 0;
+  width: 100%;
+}
+
+.media-box :deep(.film-slot.is-live-slot) {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+.media-box :deep(.film-slot.is-live-slot video),
+.media-box :deep(.film-slot.is-live-slot img) {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+}
+
+.media-box :deep(.live-edge) {
+  padding: 0 6px;
+  font-size: clamp(5px, 1.6vw, 9px);
+  letter-spacing: 0.06em;
+}
+
+.media-el {
   display: block;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   object-position: center;
-  border-radius: 2px;
-  background: rgba(210, 198, 178, 0.35);
+  border-radius: 0;
+  background: #111;
   pointer-events: auto;
-  overflow: hidden;
 }
 
 .media-el--thumb {
+  position: absolute;
+  inset: 0;
   filter: blur(10px) saturate(0.92);
   transform: scale(1.08);
   transform-origin: center;
@@ -1518,6 +1618,7 @@ onUnmounted(() => {
 }
 
 .media-el--full {
+  position: relative;
   z-index: 1;
   opacity: 0;
   transition: opacity 0.28s ease;
@@ -1533,6 +1634,11 @@ onUnmounted(() => {
 
 .media-box:not(.editable) .media-el {
   pointer-events: none;
+}
+
+/* 视频 live 槽仍可点控件 */
+.media-box:not(.editable).video :deep(.film-slot.is-live-slot .media-el) {
+  pointer-events: auto;
 }
 
 /* 美纹纸图层 */
@@ -1616,14 +1722,14 @@ onUnmounted(() => {
 
 .media-handle {
   position: absolute;
-  left: 8%;
-  right: 8%;
-  top: 3px;
+  left: 10%;
+  right: 10%;
+  top: 2px;
   height: 10px;
   border-radius: 2px;
-  background: rgba(62, 52, 38, 0.14);
+  background: rgba(255, 236, 200, 0.22);
   cursor: grab;
-  z-index: 2;
+  z-index: 4;
   &:active { cursor: grabbing; }
 }
 
@@ -1635,9 +1741,9 @@ onUnmounted(() => {
   height: 14px;
   border-radius: 2px;
   background:
-    linear-gradient(135deg, transparent 45%, rgba(62, 52, 38, 0.55) 46%, rgba(62, 52, 38, 0.55) 54%, transparent 55%),
-    linear-gradient(135deg, transparent 62%, rgba(62, 52, 38, 0.4) 63%, rgba(62, 52, 38, 0.4) 70%, transparent 71%);
+    linear-gradient(135deg, transparent 45%, rgba(255, 236, 200, 0.7) 46%, rgba(255, 236, 200, 0.7) 54%, transparent 55%),
+    linear-gradient(135deg, transparent 62%, rgba(255, 236, 200, 0.5) 63%, rgba(255, 236, 200, 0.5) 70%, transparent 71%);
   cursor: nwse-resize;
-  z-index: 2;
+  z-index: 4;
 }
 </style>

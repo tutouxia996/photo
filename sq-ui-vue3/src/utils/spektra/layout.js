@@ -17,6 +17,7 @@ import { getEdgeLook, getEdgeText } from './stocks'
  * @param {number} opts.frameH
  * @param {number} [opts.frameNo]
  * @param {boolean} [opts.holesWhite]
+ * @param {boolean} [opts.holesTransparent] 默认 true：齿孔镂空透底
  * @param {string} [opts.dateText]
  * @param {string} [opts.placeText]
  */
@@ -60,6 +61,7 @@ export function buildStripLayout(opts) {
   const perfPhase = perf ? -3.2 : 0
 
   const holesWhite = opts.holesWhite !== false
+  const holesTransparent = opts.holesTransparent !== false
   const frameNo = Math.max(0, Number(opts.frameNo) || 1)
 
   const canvasAlong = gateAlong + 2 * marginAlong
@@ -102,6 +104,7 @@ export function buildStripLayout(opts) {
     perf,
     perfPhase,
     holesWhite,
+    holesTransparent,
     frameNo,
     stripes,
     dateText: opts.dateText || '',

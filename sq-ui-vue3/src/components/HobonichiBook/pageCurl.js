@@ -135,7 +135,8 @@ export function drawCurlingLeaf(ctx, {
         if (t <= last) return
         last = t
         gr.addColorStop(t, `rgba(70,54,32,${Math.min(0.48, s[1]).toFixed(3)})`)
-        gh.addColorStop(t, `rgba(255,252,240,${Math.max(0, (s[2] - 0.93) * 1.5).toFixed(3)})`)
+        // 纸页高光阈值：反转片光泽在胶片贴图本身，不靠翻页条带抛光
+        gh.addColorStop(t, `rgba(255,252,240,${Math.max(0, (s[2] - 0.96) * 0.55).toFixed(3)})`)
       })
       lc.save()
       lc.globalCompositeOperation = 'source-atop'
