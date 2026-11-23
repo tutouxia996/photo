@@ -1329,7 +1329,8 @@ watch(
   }
 )
 
-// 切走文字工具前先 blur，把 DOM 里的字写回 layers
+// 切走文字工具前先 blur，把 DOM 里的字写回 layers；
+// 切到画笔/橡皮时必须同步 redrawInk：纸面会 skipStroke，HTML 层晚一帧就会闪没。
 watch(
   () => props.tool,
   (tool, prev) => {
@@ -1339,6 +1340,7 @@ watch(
         active.blur()
       }
     }
+    redrawInk()
   }
 )
 

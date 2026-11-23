@@ -499,41 +499,113 @@ export function paintStrokeOnCtx(g, layer, W, H, widthScale = 1) {
   g.restore()
 }
 
+/**
+ * 把对开笔迹裁到单页再画。
+ * 旧实现：丢掉另一侧点后仍按原序连线，并把订口交点塞到末尾 → 跨订口笔迹会拉成锯齿。
+ * 现按边裁剪，只保留本侧连续段，段与段分开 stroke。
+ */
 function drawSpreadStrokeOnPage(g, layer, W, H, side) {
   const pts = layer.points || []
   if (!pts.length) return
-  // spread width 存的是相对整幅；页内线宽 ≈ width*2*W_page，但我们约定 width 为页相对
-  // 存盘时 width 用页相对值；spread 显示时 *0.5。烘焙用页相对。
+  // 存盘 width 为页相对；spread 预览时 *0.5。烘焙用页相对。
   const width = layer.width || 0.004
-  const mapped = []
-  for (const p of pts) {
-    const sx = p[0]
-    const sy = p[1]
-    // 订口各多吃 1.5% 对开宽，左右重叠，避免跨页笔迹中间断缝/竖线
-    if (side === 'left') {
-      if (sx > 0.5 + 0.015) continue
-      mapped.push([Math.min(1.03, Math.max(0, sx * 2)), sy])
-    } else {
-      if (sx < 0.5 - 0.015) continue
-      mapped.push([Math.min(1, Math.max(-0.03, (sx - 0.5) * 2)), sy])
-    }
+  // 订口各多吃 1.5% 对开宽，左右重叠，避免跨页断缝
+  const xMin = side === 'left' ? -Infinity : 0.5 - 0.015
+  const xMax = side === 'left' ? 0.5 + 0.015 : Infinity
+
+  function mapPoint(sx, sy) {
+    if (side === 'left') return [Math.min(1.03, Math.max(0, sx * 2)), sy]
+    return [Math.min(1, Math.max(-0.03, (sx - 0.5) * 2)), sy]
   }
-  // 补订口接点，避免半笔缺端点
-  if (pts.length >= 2) {
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1]
-      const b = pts[i]
-      if ((a[0] < 0.5 && b[0] >= 0.5) || (a[0] >= 0.5 && b[0] < 0.5)) {
-        const t = (0.5 - a[0]) / (b[0] - a[0] || 1e-9)
-        const iy = a[1] + t * (b[1] - a[1])
-        const edge = side === 'left' ? [1, iy] : [0, iy]
-        // 插入到 mapped 合理位置较难，直接多画一段
-        mapped.push(edge)
+
+  function inside(sx) {
+    return sx >= xMin && sx <= xMax
+  }
+
+  /** 裁剪线段到本页 x 带，返回 [p0, p1] 或 null */
+  function clipEdge(a, b) {
+    const ax = a[0]
+    const ay = a[1]
+    const bx = b[0]
+    const by = b[1]
+    const dx = bx - ax
+    const dy = by - ay
+    let t0 = 0
+    let t1 = 1
+    if (xMin !== -Infinity) {
+      if (Math.abs(dx) < 1e-12) {
+        if (ax < xMin) return null
+      } else {
+        const t = (xMin - ax) / dx
+        if (dx > 0) t0 = Math.max(t0, t)
+        else t1 = Math.min(t1, t)
       }
     }
+    if (xMax !== Infinity) {
+      if (Math.abs(dx) < 1e-12) {
+        if (ax > xMax) return null
+      } else {
+        const t = (xMax - ax) / dx
+        if (dx < 0) t0 = Math.max(t0, t)
+        else t1 = Math.min(t1, t)
+      }
+    }
+    if (t0 > t1) return null
+    return [
+      [ax + t0 * dx, ay + t0 * dy],
+      [ax + t1 * dx, ay + t1 * dy]
+    ]
   }
-  if (!mapped.length) return
-  drawStroke(g, { ...layer, points: mapped, width }, W, H)
+
+  if (pts.length === 1) {
+    if (!inside(pts[0][0])) return
+    drawStroke(g, { ...layer, points: [mapPoint(pts[0][0], pts[0][1])], width }, W, H)
+    return
+  }
+
+  const segments = []
+  let cur = []
+
+  function sameMapped(p, q) {
+    return Math.abs(p[0] - q[0]) < 1e-7 && Math.abs(p[1] - q[1]) < 1e-7
+  }
+
+  function pushMapped(sx, sy) {
+    const m = mapPoint(sx, sy)
+    if (cur.length && sameMapped(cur[cur.length - 1], m)) return
+    cur.push(m)
+  }
+
+  function flush() {
+    if (!cur.length) return
+    segments.push(cur)
+    cur = []
+  }
+
+  for (let i = 1; i < pts.length; i++) {
+    const clipped = clipEdge(pts[i - 1], pts[i])
+    if (!clipped) {
+      flush()
+      continue
+    }
+    const [p0, p1] = clipped
+    if (!cur.length) {
+      pushMapped(p0[0], p0[1])
+      pushMapped(p1[0], p1[1])
+      continue
+    }
+    const m0 = mapPoint(p0[0], p0[1])
+    if (!sameMapped(cur[cur.length - 1], m0)) {
+      flush()
+      pushMapped(p0[0], p0[1])
+    }
+    pushMapped(p1[0], p1[1])
+  }
+  flush()
+
+  for (const seg of segments) {
+    if (seg.length) drawStroke(g, { ...layer, points: seg, width }, W, H)
+  }
 }
 
 function drawSpreadTextOnPage(g, layer, W, H, side) {
