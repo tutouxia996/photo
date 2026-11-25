@@ -1,14 +1,16 @@
 /**
- * 日记文字字体加载。
- * TTF 内嵌族名是「绿木屐JXP行楷」；对外 id 仍用 JingXiaopeng。
+ * 日记文字字体：仅在日记页按需加载（勿挂全局 CSS，3.6MB TTF 会拖垮整站首屏）。
+ * 文件放在 public/fonts/JingXiaopeng.ttf。
  */
-import jingUrl from '@/assets/fonts/JingXiaopeng.ttf?url'
 
 /** 对外 id（存进 textbox.fontFamily） */
 export const JING_FONT_ID = 'JingXiaopeng'
 
 /** TTF name table 里的真实 family */
 export const JING_FONT_REAL_NAME = '绿木屐JXP行楷'
+
+/** 公共路径，不经 Vite 打包，避免进主包 */
+const FONT_URL = '/fonts/JingXiaopeng.ttf'
 
 export const DIARY_TEXT_FONTS = [
   {
@@ -40,7 +42,6 @@ function injectFaceStyles(srcUrl) {
   if (document.getElementById(id)) return
   const style = document.createElement('style')
   style.id = id
-  // 别名 + 真实族名都指向同一文件；主加载走 FontFace(JING_FONT_ID)
   style.textContent = `
 @font-face {
   font-family: '${JING_FONT_ID}';
@@ -63,38 +64,6 @@ function injectFaceStyles(srcUrl) {
   document.head.appendChild(style)
 }
 
-async function resolveFontUrl() {
-  const candidates = [jingUrl, '/fonts/JingXiaopeng.ttf']
-  let lastErr = null
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url)
-      if (!res.ok) {
-        lastErr = new Error(`HTTP ${res.status} for ${url}`)
-        continue
-      }
-      // 只探活，真正装载用 url（避免 ArrayBuffer 被多次 FontFace 用坏）
-      const len = Number(res.headers.get('content-length') || 0)
-      if (len > 0 && len < 1000) {
-        lastErr = new Error(`font too small: ${url}`)
-        continue
-      }
-      // 部分代理不给 content-length，再读一小段确认不是 HTML 错误页
-      if (!len) {
-        const buf = await res.arrayBuffer()
-        if (buf.byteLength < 1000) {
-          lastErr = new Error(`font too small: ${url}`)
-          continue
-        }
-      }
-      return url
-    } catch (e) {
-      lastErr = e
-    }
-  }
-  throw lastErr || new Error('font fetch failed')
-}
-
 /** 确保自定义字体已加入 document.fonts（可重复调用） */
 export function ensureDiaryFonts() {
   if (typeof document === 'undefined' || !document.fonts) {
@@ -104,22 +73,13 @@ export function ensureDiaryFonts() {
   if (loadPromise) return loadPromise
 
   loadPromise = (async () => {
-    const url = await resolveFontUrl()
-    injectFaceStyles(url)
-
-    // 只注册一次别名，成功即视为可用；不再用 fonts.check 当成败依据（易误判）
-    const face = new FontFace(JING_FONT_ID, `url(${url})`, {
+    injectFaceStyles(FONT_URL)
+    const face = new FontFace(JING_FONT_ID, `url(${FONT_URL})`, {
       style: 'normal',
       weight: 'normal'
     })
     const loaded = await face.load()
     document.fonts.add(loaded)
-    try {
-      await document.fonts.load(`24px "${JING_FONT_ID}"`, '汉字')
-    } catch {
-      /* load 探测失败也不挡：face.load 已成功 */
-    }
-
     loadedOk = true
     return true
   })().catch((err) => {

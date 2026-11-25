@@ -58,6 +58,20 @@
             :disabled="tool !== 'pen'"
           />
         </label>
+
+        <span class="tool-sep" aria-hidden="true" />
+
+        <el-dropdown trigger="click" :disabled="exporting" @command="onExport">
+          <button type="button" class="tool-btn export-btn" :disabled="exporting" title="导出日记">
+            {{ exporting ? '导出中…' : '导出' }}
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="pdf">导出 PDF</el-dropdown-item>
+              <el-dropdown-item command="docx">导出 Word</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
 
@@ -106,7 +120,7 @@ import {
   watch
 } from 'vue'
 import { ArrowLeft } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElLoading, ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
 import {
   DIARY_TEXT_FONTS,
@@ -147,6 +161,7 @@ const ticketEditorOpen = ref(false)
 const ticketEditorData = ref(null)
 const ticketEditorStyle = ref(null)
 const ticketEditorTarget = ref(null)
+const exporting = ref(false)
 
 const tools = [
   { id: 'view', label: '查看', tip: '拿起查看：点击相片/纸条/物品 · 双击翻转背面' },
@@ -342,6 +357,40 @@ function goBack() {
   })
 }
 
+async function onExport(format) {
+  if (exporting.value) return
+  exporting.value = true
+  const loading = ElLoading.service({
+    lock: true,
+    text: '正在准备导出…',
+    background: 'rgba(40, 32, 22, 0.28)'
+  })
+  try {
+    await flushAll()
+    const pageCount = book.value?.pageCount || 1000
+    // 拉齐已存页，避免只导出当前缓存
+    await ensureRange(1, pageCount)
+    const pagesMap = pageContents.value
+    const title = book.value?.title || '相册日记'
+    const onProgress = ({ current, total, pageNo }) => {
+      loading.setText(`正在导出第 ${pageNo} 页（${current}/${total}）…`)
+    }
+    // 按需加载 jspdf/docx，避免拖垮日记首屏
+    const { exportDiaryDocx, exportDiaryPdf } = await import('./exportDiary.js')
+    const result =
+      format === 'docx'
+        ? await exportDiaryDocx({ pagesMap, title, onProgress })
+        : await exportDiaryPdf({ pagesMap, title, onProgress })
+    ElMessage.success(`已导出 ${result.count} 页：${result.name}`)
+  } catch (e) {
+    console.warn('[diary] export failed', e)
+    ElMessage.error(e?.message || '导出失败，请稍后重试')
+  } finally {
+    loading.close()
+    exporting.value = false
+  }
+}
+
 function onBookChange() {
   flushAll()
 }
@@ -532,6 +581,13 @@ onUnmounted(() => {
 .width-input {
   width: 72px;
   accent-color: #2b2a33;
+}
+
+.export-btn {
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
 }
 
 .diary-body {
