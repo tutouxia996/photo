@@ -292,6 +292,13 @@ export function drawTapeLayerOnCtx(g, layer, W, H, onReady) {
   g.rotate(rot)
   g.translate(-w / 2, -h / 2)
 
+  // 对齐 HTML：filter: drop-shadow(0 1px 1.5px rgba(40,30,18,.28))
+  // 翻页只走 canvas 烘焙，不设阴影就会「扁」在纸上
+  g.shadowColor = 'rgba(40, 30, 18, 0.32)'
+  g.shadowBlur = Math.max(1.5, Math.min(5, h * 0.08))
+  g.shadowOffsetX = 0
+  g.shadowOffsetY = Math.max(1, Math.min(3, h * 0.04))
+
   if (img) {
     g.imageSmoothingEnabled = true
     g.imageSmoothingQuality = 'high'
