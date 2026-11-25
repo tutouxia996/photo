@@ -124,14 +124,18 @@ function layerAabb(layer) {
     x: layer.x || 0,
     y: layer.y || 0,
     w: layer.w || 0.3,
-    h: layer.h || (layer.type === 'textbox' ? 0.08 : 0.28)
+    h:
+      layer.h ||
+      (layer.type === 'textbox' ? 0.08 : layer.type === 'ticket' ? 0.25 : 0.28)
   }
 }
 
-/** 胶条是否与某贴图/文字框几何重叠（同坐标系） */
+/** 胶条是否与某贴图/文字框/车票几何重叠（同坐标系） */
 export function tapePinsLayer(tape, target) {
   if (!tape || !target) return false
-  if (target.type !== 'media' && target.type !== 'textbox') return false
+  if (target.type !== 'media' && target.type !== 'textbox' && target.type !== 'ticket') {
+    return false
+  }
   return aabbOverlap(tapeAabb(tape), layerAabb(target), -0.002)
 }
 
@@ -139,11 +143,13 @@ export function tapePinsLayer(tape, target) {
  * 目标是否被钉住：必须有胶条叠在它「上面」（图层顺序更后），
  * 盖在胶条之上、自身没有胶条的图/卡片仍可拿起。
  * @param {object} target
- * @param {Array} orderedLayers 按从下到上的图层列表（含 media / tape）
+ * @param {Array} orderedLayers 按从下到上的图层列表（含 media / tape / ticket）
  */
 export function isLayerPinned(target, orderedLayers) {
   if (!target || !orderedLayers?.length) return false
-  if (target.type !== 'media' && target.type !== 'textbox') return false
+  if (target.type !== 'media' && target.type !== 'textbox' && target.type !== 'ticket') {
+    return false
+  }
   const tid = target._pageId || target.id
   const targetIdx = orderedLayers.findIndex((l) => l && (l._pageId || l.id) === tid)
   if (targetIdx < 0) return false
@@ -160,7 +166,9 @@ export function isLayerPinned(target, orderedLayers) {
  * 钉住规则见 isLayerPinned：只有胶条在目标之上且重叠才固定。
  */
 export function buildOverlayStack(layers) {
-  return (layers || []).filter((l) => l && (l.type === 'media' || l.type === 'tape'))
+  return (layers || []).filter(
+    (l) => l && (l.type === 'media' || l.type === 'tape' || l.type === 'ticket')
+  )
 }
 
 /** 点是否命中胶条（本地未旋转框近似 + 旋转逆变换） */

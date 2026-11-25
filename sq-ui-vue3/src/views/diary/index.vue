@@ -59,16 +59,32 @@
         @need-pages="onNeedPages"
         @update-content="onUpdateContent"
         @request-import="openMediaPicker"
+        @edit-ticket="onEditTicket"
       />
       <div v-else class="diary-loading">正在打开日记本…</div>
     </div>
 
     <DiaryMediaPicker v-model="mediaPickerOpen" @confirm="onMediaConfirm" />
+    <TrainTicketEditor
+      v-model="ticketEditorOpen"
+      :data="ticketEditorData"
+      :style-config="ticketEditorStyle"
+      @confirm="onTicketEditorConfirm"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, getCurrentInstance, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  getCurrentInstance,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch
+} from 'vue'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
@@ -82,6 +98,10 @@ import { getMineBook } from '@/api/journal/book'
 import { useJournalPages } from './composables/useJournalPages.js'
 import DiaryMediaPicker from './components/DiaryMediaPicker.vue'
 
+const TrainTicketEditor = defineAsyncComponent(() =>
+  import('./components/TrainTicketEditor.vue')
+)
+
 defineOptions({ name: 'AlbumDiary' })
 
 const { proxy } = getCurrentInstance()
@@ -94,6 +114,10 @@ const tool = ref('turn')
 const inkColor = ref('#2B2A33')
 const penWidthUi = ref(3)
 const mediaPickerOpen = ref(false)
+const ticketEditorOpen = ref(false)
+const ticketEditorData = ref(null)
+const ticketEditorStyle = ref(null)
+const ticketEditorTarget = ref(null)
 
 const tools = [
   { id: 'view', label: '查看', tip: '拿起查看：点击相片/纸条/物品 · 双击翻转背面' },
@@ -102,7 +126,8 @@ const tools = [
   { id: 'text', label: '文字', tip: '仅文字：点击放置文字框' },
   { id: 'media', label: '图片', tip: '仅贴图：拖动缩放；再点本按钮或点空白可导入' },
   { id: 'tape', label: '美纹纸', tip: '拖出胶条：压在胶条下的图/卡片会固定；盖在上面且无胶条的仍可拿起' },
-  { id: 'eraser', label: '橡皮', tip: '仅擦除：点击删除笔画/文字/贴图/美纹纸' }
+  { id: 'ticket', label: '火车票', tip: '点空白放置；拖动位置；双击拿起查看；点齿轮编辑票面' },
+  { id: 'eraser', label: '橡皮', tip: '仅擦除：点击删除笔画/文字/贴图/美纹纸/车票' }
 ]
 
 const {
@@ -153,6 +178,64 @@ function mediaSize(item) {
   const w = mediaWidthForPage(false)
   const h = mediaHeightForWidth(w, aspect, false)
   return { w, h, aspect }
+}
+
+function onEditTicket({ layer, pageNo }) {
+  if (!layer || layer.type !== 'ticket') return
+  ticketEditorTarget.value = {
+    id: layer._pageId || layer.id,
+    pageNo: pageNo || null,
+    side: layer._side || null,
+    space: layer.space || 'page'
+  }
+  ticketEditorData.value = { ...(layer.data || {}) }
+  ticketEditorStyle.value = layer.style
+    ? JSON.parse(JSON.stringify(layer.style))
+    : null
+  ticketEditorOpen.value = true
+}
+
+function onTicketEditorConfirm(payload) {
+  const target = ticketEditorTarget.value
+  if (!target?.id) return
+  const data = payload?.data || payload
+  const style = payload?.style
+
+  const patchLayer = (content) => {
+    const layers = [...((content && content.layers) || [])]
+    const idx = layers.findIndex((l) => l && l.id === target.id)
+    if (idx < 0) return null
+    layers[idx] = {
+      ...layers[idx],
+      data: { ...data },
+      style: style ? { ...style } : layers[idx].style
+    }
+    return { v: 1, layers }
+  }
+
+  if (target.space === 'spread' || target.side === 'spread') {
+    const left = currentSpread().left
+    const host = left || target.pageNo
+    if (!host) return
+    const next = patchLayer(pageContents.value.get?.(host))
+    if (next) setContent(host, next, { markDirty: true })
+  } else if (target.pageNo) {
+    const next = patchLayer(pageContents.value.get?.(target.pageNo))
+    if (next) setContent(target.pageNo, next, { markDirty: true })
+  } else {
+    const { left, right } = currentSpread()
+    for (const n of [left, right].filter(Boolean)) {
+      const next = patchLayer(pageContents.value.get?.(n))
+      if (next) {
+        setContent(n, next, { markDirty: true })
+        break
+      }
+    }
+  }
+
+  ticketEditorTarget.value = null
+  nextTick(() => bookRef.value?.rebakeVisible?.())
+  ElMessage.success('车票已更新')
 }
 
 function onMediaConfirm(items) {

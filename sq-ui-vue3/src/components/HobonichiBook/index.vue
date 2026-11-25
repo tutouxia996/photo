@@ -54,6 +54,9 @@
           @update-content="onInkUpdate"
           @request-import="onRequestImport"
           @inspect-media="onInspectMedia"
+          @inspect-ticket="onInspectTicket"
+          @edit-ticket="onEditTicket"
+          @ticket-rendered="onTicketRendered"
         />
       </div>
 
@@ -75,6 +78,13 @@
     </div>
 
     <DiaryItemInspect
+      v-if="inspectItem && inspectItem.kind !== 'ticket'"
+      :item="inspectItem"
+      :from-rect="inspectFromRect"
+      @close="closeInspect"
+    />
+    <TicketInspect
+      v-if="inspectItem?.kind === 'ticket'"
       :item="inspectItem"
       :from-rect="inspectFromRect"
       @close="closeInspect"
@@ -101,6 +111,7 @@ import {
 } from './hobonichiEngine.js'
 import PageInkLayer from './PageInkLayer.vue'
 import DiaryItemInspect from './DiaryItemInspect.vue'
+import TicketInspect from './TicketInspect.vue'
 import {
   emptyContent,
   hasContent,
@@ -117,7 +128,7 @@ const props = defineProps({
   coverSub: { type: String, default: 'HOBONICHI STYLE' },
   year: { type: [String, Number], default: () => new Date().getFullYear() },
   initialIndex: { type: Number, default: 0 },
-  /** view | turn | pen | text | eraser | media | tape */
+  /** view | turn | pen | text | eraser | media | tape | ticket */
   tool: { type: String, default: 'turn' },
   inkColor: { type: String, default: '#2B2A33' },
   penWidth: { type: Number, default: 0.004 },
@@ -125,7 +136,13 @@ const props = defineProps({
   pageContents: { type: [Map, Object], default: () => new Map() }
 })
 
-const emit = defineEmits(['change', 'update-content', 'need-pages', 'request-import'])
+const emit = defineEmits([
+  'change',
+  'update-content',
+  'need-pages',
+  'request-import',
+  'edit-ticket'
+])
 
 const stageRef = ref(null)
 const bookAreaRef = ref(null)
@@ -247,13 +264,15 @@ const progressText = computed(() => {
 
 const hintText = computed(() => {
   if (index.value === 0) return '拖封面右下角或按 → 打开'
+  if (inspectItem.value?.kind === 'ticket') return '拖动看正反面 · 滚轮放大 · 点击空白放回'
   if (inspectItem.value) return '双击翻转背面 · 点击空白放回'
   if (props.tool === 'view') return '点击相片 / 纸条 / 物品拿起查看'
   if (props.tool === 'pen') return '在纸面上书写'
   if (props.tool === 'text') return '点击放置文字'
   if (props.tool === 'media') return '拖动贴图 · 右下角缩放 · 点空白导入'
   if (props.tool === 'tape') return '拖出美纹纸 · 压住的固定 · 盖在上面的仍可拿起'
-  if (props.tool === 'eraser') return '擦除笔画、文字、贴图或美纹纸'
+  if (props.tool === 'ticket') return '点空白放置 · 拖动位置 · 双击拿起 · 齿轮编辑'
+  if (props.tool === 'eraser') return '擦除笔画、文字、贴图、美纹纸或车票'
   return '拖页角翻页 · ← →'
 })
 
@@ -467,7 +486,7 @@ function rebakeVisible() {
   if (preview && tool !== 'turn') {
     skipTextbox = tool === 'text'
     skipStroke = tool === 'pen' || tool === 'eraser'
-    skipMedia = tool === 'media' || tool === 'tape' || tool === 'view'
+    skipMedia = tool === 'media' || tool === 'tape' || tool === 'ticket' || tool === 'view'
   }
   if (left) applyPageContent(left, { skipTextbox, skipStroke, skipMedia, hideMediaId })
   if (right) applyPageContent(right, { skipTextbox, skipStroke, skipMedia, hideMediaId })
@@ -836,6 +855,14 @@ function onRequestImport() {
   emit('request-import')
 }
 
+function onEditTicket(payload) {
+  emit('edit-ticket', payload)
+}
+
+function onTicketRendered() {
+  // 仅在票面离屏烘焙完成时刷新（见 ensureTicketBake → onMediaImageReady）
+}
+
 function onInspectMedia({ layer, rect }) {
   if (!layer) return
   inspectFromRect.value = rect
@@ -860,6 +887,30 @@ function onInspectMedia({ layer, rect }) {
     photoId: layer.photoId ?? null
   }
   // 立刻重烘：纸面去掉该贴图，避免拿起后本上还留影
+  nextTick(() => rebakeVisible())
+}
+
+function onInspectTicket({ layer, rect }) {
+  if (!layer) return
+  inspectFromRect.value = rect
+    ? {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        centerX: rect.centerX,
+        centerY: rect.centerY
+      }
+    : null
+  inspectItem.value = {
+    id: layer._pageId || layer.id,
+    kind: 'ticket',
+    data: layer.data || null,
+    style: layer.style || null,
+    face: layer.face || 'front',
+    aspect: layer.aspect || (layer.w && layer.h ? layer.w / layer.h : 876 / 539),
+    rot: layer.rot || 0
+  }
   nextTick(() => rebakeVisible())
 }
 

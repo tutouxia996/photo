@@ -106,6 +106,56 @@
       </div>
 
       <div
+        v-else-if="item.type === 'ticket'"
+        v-show="showMediaOverlay"
+        class="ticket-box"
+        :class="{
+          selected: selectedId === item.id,
+          editable: tool === 'ticket' && !isPinned(item),
+          inspectable: (tool === 'view' || tool === 'ticket') && !isPinned(item),
+          erasable: tool === 'eraser',
+          pinned: isPinned(item),
+          lifted: isInspectHidden(item)
+        }"
+        :style="ticketStyle(item, idx)"
+        :title="
+          isPinned(item)
+            ? '已用美纹纸固定，不可移动'
+            : tool === 'ticket'
+              ? '拖动移动 · 双击拿起 · 点齿轮编辑'
+              : '双击拿起车票'
+        "
+        @pointerdown.stop="onTicketPointerDown($event, item)"
+        @dblclick.prevent.stop="onTicketDblClick($event, item)"
+      >
+        <TrainTicketCard
+          class="ticket-card"
+          :data="item.data"
+          :style-config="item.style"
+          :face="item.face || 'front'"
+          :width-px="ticketWidthPx(item)"
+        />
+        <template v-if="tool === 'ticket' && !isPinned(item)">
+          <div class="ticket-handle" title="拖动" @pointerdown.stop="onTicketDragStart($event, item)" />
+          <button
+            type="button"
+            class="ticket-gear"
+            title="票面设置"
+            aria-label="票面设置"
+            @pointerdown.stop
+            @click.stop="onTicketGearClick($event, item)"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.07 7.07 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.22-1.14.53-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.52a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.69.22l2.39-.96c.5.41 1.05.73 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.22 1.14-.53 1.63-.94l2.39.96c.26.12.55.02.69-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+              />
+            </svg>
+          </button>
+        </template>
+      </div>
+
+      <div
         v-else-if="item.type === 'tape'"
         v-show="showMediaOverlay"
         class="tape-layer"
@@ -143,6 +193,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import FilmFrame from '@/components/FilmFrame/index.vue'
+import TrainTicketCard from './TrainTicketCard.vue'
 import {
   buildOverlayStack,
   clampMediaRect,
@@ -151,6 +202,7 @@ import {
   hitTestStroke,
   hitTestTape,
   hitTestTextbox,
+  hitTestTicket,
   isLayerPinned,
   mediaHeightForWidth,
   mergeSpreadLayers,
@@ -167,6 +219,14 @@ import {
   resolveTapeClip,
   tapeFromDrag
 } from './maskingTape.js'
+import {
+  createTicketLayer,
+  defaultTicketSize,
+  ensureTicketBake,
+  normalizeStyleConfig,
+  normalizeTicketData,
+  TICKET_ASPECT
+} from './trainTicket.js'
 
 const filmStockId = ref(readAlbumFilmStockId())
 
@@ -203,7 +263,14 @@ const props = defineProps({
   clipSide: { type: String, default: null }
 })
 
-const emit = defineEmits(['update-content', 'request-import', 'inspect-media'])
+const emit = defineEmits([
+  'update-content',
+  'request-import',
+  'inspect-media',
+  'inspect-ticket',
+  'edit-ticket',
+  'ticket-rendered'
+])
 
 const drawRef = ref(null)
 const selectedId = ref(null)
@@ -211,6 +278,8 @@ const drafting = ref(null)
 const draftingTape = ref(null)
 const dragging = ref(null)
 const resizing = ref(null)
+/** 车票拖动时仅改本地坐标，松手再写回，避免每帧重渲票面 */
+const ticketDragLive = ref(null)
 /** 橡皮滑动擦除中 */
 const erasing = ref(null)
 /** 已加载清晰大图的贴图 id（blur-up） */
@@ -267,7 +336,7 @@ const overlayStack = computed(() => buildOverlayStack(viewLayers.value))
 const showMediaOverlay = computed(() => {
   if (!props.previewStrokes) return false
   const t = props.tool
-  return t === 'media' || t === 'tape' || t === 'view' || t === 'eraser'
+  return t === 'media' || t === 'tape' || t === 'ticket' || t === 'view' || t === 'eraser'
 })
 
 function boxStyle(box) {
@@ -295,6 +364,31 @@ function mediaStyle(m, idx = 0) {
     transform: rot || undefined,
     zIndex: stackZ(idx)
   }
+}
+
+function ticketStyle(m, idx = 0) {
+  const live =
+    ticketDragLive.value &&
+    (ticketDragLive.value.id === m.id || ticketDragLive.value.id === m._pageId)
+      ? ticketDragLive.value
+      : null
+  const x = live ? live.x : m.x || 0
+  const y = live ? live.y : m.y || 0
+  // 层叠旋转保留给票面；立体倾角在 TrainTicketCard 内部
+  const rot = m.rot ? `rotate(${m.rot}rad)` : null
+  return {
+    left: `${x * 100}%`,
+    top: `${y * 100}%`,
+    width: `${(m.w || 0.4) * 100}%`,
+    height: `${(m.h || 0.25) * 100}%`,
+    transform: rot || undefined,
+    zIndex: stackZ(idx),
+    willChange: live ? 'left, top' : undefined
+  }
+}
+
+function ticketWidthPx(m) {
+  return Math.max(80, (m.w || 0.4) * (props.rect.w || 400))
 }
 
 function tapeStyle(t, idx = 0) {
@@ -368,7 +462,7 @@ function upsertTapeLayer(layer, { toFront = false } = {}) {
     // 优先写到「重叠贴图」所在页，避免胶条挂在左页、右页图却盖在胶条上
     let hostSide = null
     for (const l of overlayStack.value) {
-      if (l?.type === 'media' && tapePinsLayer(payload, l)) {
+      if ((l?.type === 'media' || l?.type === 'ticket') && tapePinsLayer(payload, l)) {
         hostSide = l._side === 'right' ? 'right' : l._side === 'left' ? 'left' : hostSide
       }
     }
@@ -632,6 +726,122 @@ function upsertMediaLayer(layer, { toFront = false } = {}) {
   )
 }
 
+function upsertTicketLayer(layer, { toFront = false, bake = false } = {}) {
+  const id = layer.id
+  const aspect = layer.aspect || TICKET_ASPECT
+  // 拖动时保留原 data/style 引用，避免触发票面重绘
+  const data = layer.data ? layer.data : normalizeTicketData()
+  const style = layer.style ? layer.style : normalizeStyleConfig()
+  const base = {
+    id,
+    type: 'ticket',
+    rot: layer.rot || 0,
+    aspect,
+    data,
+    style,
+    face: layer.face || 'front'
+  }
+  if (bake) ensureTicketBake(base, () => emit('ticket-rendered'))
+
+  if (isSpread.value) {
+    const size = defaultTicketSize(true)
+    const box0 = clampMediaRect(
+      layer.x || 0,
+      layer.y || 0,
+      layer.w || size.w,
+      layer.h || size.h,
+      { maxW: 0.55, maxH: 0.7 }
+    )
+    const x = box0.x
+    const y = box0.y
+    const w = box0.w
+    const h = box0.h
+
+    if (mediaCrossesSpine(x, w)) {
+      const spreadBox = clampMediaRect(x, y, Math.min(0.55, Math.max(0.08, w)), h, {
+        maxW: 0.55,
+        maxH: 0.62
+      })
+      upsertSpreadLayer({ ...base, space: 'spread', ...spreadBox }, { toFront })
+      return
+    }
+
+    const mapped = spreadMediaToPage(x, y, w, h)
+    const pageNo = mapped.side === 'left' ? props.leftPageNo : props.rightPageNo
+    const src = mapped.side === 'left' ? props.leftContent : props.rightContent
+    const otherNo = mapped.side === 'left' ? props.rightPageNo : props.leftPageNo
+    const otherSrc = mapped.side === 'left' ? props.rightContent : props.leftContent
+    // 落到单页时用默认页内尺寸，避免跨坐标缩放
+    const pageSize = defaultTicketSize(false)
+    const pageBox = clampMediaRect(mapped.x, mapped.y, pageSize.w, pageSize.h)
+    emitPage(
+      pageNo,
+      replaceOrAppendLayer(clonePageLayers(src), { ...base, space: 'page', ...pageBox }, toFront)
+    )
+    if (otherNo && (otherSrc?.layers || []).some((l) => l && l.id === id)) {
+      emitPage(otherNo, clonePageLayers(otherSrc).filter((l) => l.id !== id))
+    }
+    if (mapped.side === 'right' && props.leftPageNo) {
+      const leftLayers = props.leftContent?.layers || []
+      if (leftLayers.some((l) => l && l.id === id && l.space === 'spread')) {
+        emitPage(
+          props.leftPageNo,
+          clonePageLayers(props.leftContent).filter((l) => l.id !== id)
+        )
+      }
+    }
+    return
+  }
+
+  const size = defaultTicketSize(false)
+  const pageBox = clampMediaRect(
+    layer.x,
+    layer.y,
+    layer.w || size.w,
+    layer.h || size.h
+  )
+  emitPage(
+    hostPageNo.value,
+    replaceOrAppendLayer(
+      clonePageLayers(hostContent.value),
+      { ...base, space: 'page', ...pageBox },
+      toFront
+    )
+  )
+}
+
+function placeTicketAt(nx, ny) {
+  const size = defaultTicketSize(false)
+  // 对开：点落在哪侧就挂哪页；单页直接挂当前页
+  if (isSpread.value) {
+    const side = nx < 0.5 ? 'left' : 'right'
+    const pageNo = side === 'left' ? props.leftPageNo : props.rightPageNo
+    const src = side === 'left' ? props.leftContent : props.rightContent
+    if (!pageNo) return
+    const localX = side === 'left' ? nx * 2 : (nx - 0.5) * 2
+    const localY = ny
+    const ticket = createTicketLayer({
+      id: newId('tk'),
+      pageX: localX - size.w / 2,
+      pageY: localY - size.h / 2,
+      rot: 0
+    })
+    emitPage(pageNo, [...clonePageLayers(src), ticket])
+    selectedId.value = ticket.id
+    ensureTicketBake(ticket, () => emit('ticket-rendered'))
+    return
+  }
+  const ticket = createTicketLayer({
+    id: newId('tk'),
+    pageX: nx - size.w / 2,
+    pageY: ny - size.h / 2,
+    rot: 0
+  })
+  emitPage(hostPageNo.value, [...clonePageLayers(hostContent.value), ticket])
+  selectedId.value = ticket.id
+  ensureTicketBake(ticket, () => emit('ticket-rendered'))
+}
+
 function onMediaFullLoad(e, m) {
   markMediaReady(m?.id)
   onMediaImgLoad(e, m)
@@ -874,6 +1084,15 @@ function onDrawDown(e) {
     emit('request-import')
     e.preventDefault()
     e.stopPropagation()
+    return
+  }
+
+  // 火车票：点空白处放置一张默认尺寸车票
+  if (props.tool === 'ticket') {
+    selectedId.value = null
+    placeTicketAt(p.x, p.y)
+    e.preventDefault()
+    e.stopPropagation()
   }
 }
 
@@ -888,6 +1107,7 @@ function eraseAtPoint(x, y, removedSet) {
       (l.type === 'tape' && hitTestTape(l, x, y)) ||
       (l.type === 'textbox' && hitTestTextbox(l, x, y)) ||
       (l.type === 'media' && hitTestMedia(l, x, y)) ||
+      (l.type === 'ticket' && hitTestTicket(l, x, y)) ||
       (l.type === 'stroke' && hitTestStroke(l, x, y, hitR))
     if (!hit) continue
     if (removedSet) removedSet.add(id)
@@ -1089,6 +1309,91 @@ function onMediaPointerDown(e, m) {
   }
 }
 
+function onTicketPointerDown(e, m) {
+  if (props.tool === 'eraser') {
+    removeViewLayer(m)
+    e.preventDefault()
+    return
+  }
+  if (isPinned(m)) {
+    e.preventDefault()
+    return
+  }
+  if (props.tool === 'ticket') {
+    selectedId.value = m.id
+    onTicketDragStart(e, m)
+  }
+}
+
+function emitTicketInspect(m, el) {
+  const rect = el?.getBoundingClientRect?.()
+  if (!rect) {
+    emit('inspect-ticket', { layer: m, rect: null })
+    return
+  }
+  const boxW = el.offsetWidth || rect.width
+  const boxH = el.offsetHeight || rect.height
+  emit('inspect-ticket', {
+    layer: m,
+    rect: {
+      left: rect.left,
+      top: rect.top,
+      width: boxW,
+      height: boxH,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2
+    }
+  })
+}
+
+function onTicketGearClick(e, m) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (props.tool !== 'ticket') return
+  if (isPinned(m)) return
+  emit('edit-ticket', {
+    layer: m,
+    pageNo: m._side === 'right' ? props.rightPageNo : m._side === 'left' ? props.leftPageNo : hostPageNo.value
+  })
+}
+
+function onTicketDblClick(e, m) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (props.tool === 'eraser') return
+  if (isPinned(m)) return
+  if (props.tool !== 'ticket' && props.tool !== 'view') return
+  // 双击拿起前先结束可能已开始的拖动
+  if (dragging.value?.kind === 'ticket') {
+    dragging.value = null
+    ticketDragLive.value = null
+  }
+  emitTicketInspect(m, e.currentTarget)
+}
+
+function onTicketDragStart(e, m) {
+  if (props.tool !== 'ticket') return
+  if (isPinned(m)) return
+  // 提到上层，但不重烘焙票面
+  upsertTicketLayer({ ...m }, { toFront: true, bake: false })
+  const p = localNorm(e)
+  selectedId.value = m.id
+  const id = m._pageId || m.id
+  ticketDragLive.value = { id, x: m.x || 0, y: m.y || 0 }
+  dragging.value = {
+    kind: 'ticket',
+    id: e.pointerId,
+    box: { ...m },
+    ox: p.x - (m.x || 0),
+    oy: p.y - (m.y || 0)
+  }
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd)
+  window.addEventListener('pointercancel', onDragEnd)
+  e.preventDefault()
+}
+
 function onTapePointerDown(e, t) {
   if (props.tool === 'eraser') {
     removeViewLayer(t)
@@ -1220,6 +1525,9 @@ function onResizeMove(e) {
     return
   }
 
+  // 车票固定默认尺寸，不再支持缩放
+  if (d.kind === 'ticket') return
+
   const dx = p.x - d.startX
   const dy = p.y - d.startY
   const minW = isSpread.value ? 0.1 : 0.16
@@ -1228,7 +1536,7 @@ function onResizeMove(e) {
   const maxH = 0.7
   let nw = Math.min(maxW, Math.max(minW, d.startW + dx))
   let nh = Math.min(maxH, Math.max(minH, d.startH + dy))
-  const aspect = d.box.aspect || (d.startW / Math.max(d.startH, 1e-6))
+  const aspect = d.box.aspect || d.startW / Math.max(d.startH, 1e-6)
   // 等比缩放，保持贴图框贴合照片比例
   if (Math.abs(dx) >= Math.abs(dy)) {
     nh = mediaHeightForWidth(nw, aspect, isSpread.value)
@@ -1284,8 +1592,9 @@ function onDragMove(e) {
   const p = localNorm(e)
   const isTape = d.kind === 'tape' || d.box?.type === 'tape'
   const isMedia = d.kind === 'media' || d.box?.type === 'media'
-  const w = d.box.w || (isMedia ? 0.32 : isTape ? 0.12 : 0.28)
-  const h = d.box.h || (isMedia ? 0.28 : isTape ? 0.058 : 0.1)
+  const isTicket = d.kind === 'ticket' || d.box?.type === 'ticket'
+  const w = d.box.w || (isTicket ? 0.4 : isMedia ? 0.32 : isTape ? 0.12 : 0.28)
+  const h = d.box.h || (isTicket ? 0.25 : isMedia ? 0.28 : isTape ? 0.058 : 0.1)
   // 贴图/文字必须整框在页内；胶条允许轻微探出（由容器裁切）
   const maxY = isTape ? 1 - h * 0.35 : 1 - h
   const nx = Math.min(1 - w, Math.max(0, p.x - d.ox))
@@ -1304,6 +1613,15 @@ function onDragMove(e) {
       rot: d.box.rot || 0,
       clip: d.box.clip
     })
+    return
+  }
+  if (isTicket) {
+    const box = clampMediaRect(nx, ny, w, h, {
+      maxW: isSpread.value ? 0.55 : 0.92,
+      maxH: isSpread.value ? 0.7 : 0.85
+    })
+    d.box = { ...d.box, ...box }
+    ticketDragLive.value = { id, x: box.x, y: box.y }
     return
   }
   if (isMedia) {
@@ -1347,6 +1665,25 @@ function onDragMove(e) {
 }
 
 function onDragEnd() {
+  const d = dragging.value
+  if (d && (d.kind === 'ticket' || d.box?.type === 'ticket')) {
+    const id = d.box._pageId || d.box.id
+    const live = ticketDragLive.value
+    const x = live && live.id === id ? live.x : d.box.x
+    const y = live && live.id === id ? live.y : d.box.y
+    upsertTicketLayer(
+      {
+        ...d.box,
+        id,
+        x,
+        y,
+        w: d.box.w,
+        h: d.box.h
+      },
+      { toFront: false, bake: false }
+    )
+    ticketDragLive.value = null
+  }
   dragging.value = null
   window.removeEventListener('pointermove', onDragMove)
   window.removeEventListener('pointerup', onDragEnd)
@@ -1416,7 +1753,8 @@ onUnmounted(() => {
 .ink-layer:not(.active),
 .ink-layer:not(.active) .ink-draw,
 .ink-layer:not(.active) .text-box,
-.ink-layer:not(.active) .media-box {
+.ink-layer:not(.active) .media-box,
+.ink-layer:not(.active) .ticket-box {
   pointer-events: none !important;
 }
 
@@ -1455,6 +1793,10 @@ onUnmounted(() => {
 
 .tool-tape .ink-draw {
   cursor: crosshair;
+}
+
+.tool-ticket .ink-draw {
+  cursor: default;
 }
 
 .text-box {
@@ -1639,6 +1981,95 @@ onUnmounted(() => {
 /* 视频 live 槽仍可点控件 */
 .media-box:not(.editable).video :deep(.film-slot.is-live-slot .media-el) {
   pointer-events: auto;
+}
+
+/* 火车票图层：立体阴影/厚度由 TrainTicketCard 承担 */
+.ticket-box {
+  position: absolute;
+  z-index: 10;
+  box-sizing: border-box;
+  background: transparent;
+  overflow: visible;
+  pointer-events: auto;
+  user-select: none;
+  transform-origin: center center;
+  transform-style: preserve-3d;
+  perspective: 920px;
+  perspective-origin: 35% 25%;
+  &.editable {
+    cursor: grab;
+    &:active {
+      cursor: grabbing;
+    }
+  }
+  &.inspectable {
+    cursor: pointer;
+  }
+  &.pinned {
+    cursor: default;
+  }
+  &.selected {
+    outline: 1.5px dashed rgba(62, 52, 38, 0.35);
+    outline-offset: 6px;
+  }
+  &.erasable {
+    cursor: cell;
+  }
+  &:not(.editable):not(.inspectable):not(.erasable) {
+    pointer-events: none;
+  }
+}
+
+.ticket-card {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.ticket-handle {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  width: 18px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(62, 52, 38, 0.2);
+  cursor: grab;
+  z-index: 2;
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.ticket-gear {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(32, 28, 22, 0.55);
+  color: rgba(247, 242, 232, 0.95);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  transition: transform 0.15s ease, background 0.15s ease;
+  &:hover {
+    background: rgba(32, 28, 22, 0.78);
+    transform: scale(1.08);
+  }
+  &:active {
+    transform: scale(0.96);
+  }
+}
+
+.ticket-box.lifted {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* 美纹纸图层 */

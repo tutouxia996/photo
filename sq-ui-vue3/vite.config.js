@@ -23,6 +23,9 @@ export default defineConfig(({ mode, command }) => {
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.vue']
     },
     // vite 相关配置
+    optimizeDeps: {
+      include: ['pinyin-pro', 'qrcode', 'three']
+    },
     server: {
       port: 5177, // 5173 落在 Windows 排除端口段 5077-5176 内会 EACCES
       host: true,

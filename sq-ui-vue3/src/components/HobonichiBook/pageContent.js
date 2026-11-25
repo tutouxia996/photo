@@ -10,6 +10,11 @@ import { getFormat } from '@/utils/spektra/formats'
 import { renderFilmStrip } from '@/utils/spektra/renderStrip'
 import { getStockPreset, presetKey } from '@/utils/spektra/stocks'
 import { drawSpreadTapeOnPage, drawTapeLayerOnCtx } from './maskingTape.js'
+import {
+  drawSpreadTicketOnPage,
+  drawTicketLayerOnCtx,
+  ensureTicketBake
+} from './trainTicket.js'
 
 /** A5 单页宽高比（宽/高），用于把图片像素比换成页内归一化 h */
 export const PAGE_ASPECT = 148 / 210
@@ -257,13 +262,13 @@ export function layerToSpread(layer, side) {
       w: (layer.w || 0.4) * 0.5
     }
   }
-  if (layer.type === 'media') {
+  if (layer.type === 'media' || layer.type === 'ticket') {
     return {
       ...layer,
       _side: side,
       _pageId: layer.id,
       x: side === 'left' ? (layer.x || 0) * 0.5 : 0.5 + (layer.x || 0) * 0.5,
-      w: (layer.w || 0.32) * 0.5
+      w: (layer.w || (layer.type === 'ticket' ? 0.4 : 0.32)) * 0.5
     }
   }
   if (layer.type === 'tape') {
@@ -381,6 +386,13 @@ export function hitTestMedia(layer, x, y) {
   return x >= layer.x && x <= layer.x + w && y >= layer.y && y <= layer.y + h
 }
 
+export function hitTestTicket(layer, x, y) {
+  if (!layer || layer.type !== 'ticket') return false
+  const w = layer.w || 0.4
+  const h = layer.h || 0.25
+  return x >= layer.x && x <= layer.x + w && y >= layer.y && y <= layer.y + h
+}
+
 export {
   buildOverlayStack,
   hitTestTape,
@@ -448,7 +460,8 @@ function distToSeg(px, py, x1, y1, x2, y2) {
  * onMediaReady: 某张贴图首次加载完成时回调（用于触发重新烘焙）
  */
 function isHiddenMediaLayer(layer, hideMediaId) {
-  if (!hideMediaId || !layer || layer.type !== 'media') return false
+  if (!hideMediaId || !layer) return false
+  if (layer.type !== 'media' && layer.type !== 'ticket') return false
   return layer.id === hideMediaId || layer._pageId === hideMediaId
 }
 
@@ -481,20 +494,29 @@ export function paintLayers(
         drawSpreadTextOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'media' && !skipMedia && !hideThis) {
         drawSpreadMediaOnPage(g, layer, W, H, side, onMediaReady)
+      } else if (side && layer.type === 'ticket' && !skipMedia && !hideThis) {
+        ensureTicketBake(layer, onMediaReady)
+        drawSpreadTicketOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'tape' && !skipMedia) {
         drawSpreadTapeOnPage(g, layer, W, H, side)
       } else if (!side) {
         if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
         else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
         else if (layer.type === 'media' && !skipMedia && !hideThis) drawMedia(g, layer, W, H, onMediaReady)
-        else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
+        else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
+          ensureTicketBake(layer, onMediaReady)
+          drawTicketLayerOnCtx(g, layer, W, H)
+        } else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
       }
       continue
     }
     if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
     else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
     else if (layer.type === 'media' && !skipMedia && !hideThis) drawMedia(g, layer, W, H, onMediaReady)
-    else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
+    else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
+      ensureTicketBake(layer, onMediaReady)
+      drawTicketLayerOnCtx(g, layer, W, H)
+    } else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
   }
 
   // 右页烘焙时，把左页里的 spread 图层半幅画上来
@@ -507,6 +529,9 @@ export function paintLayers(
         else if (layer.type === 'textbox' && !skipTextbox) drawSpreadTextOnPage(g, layer, W, H, 'right')
         else if (layer.type === 'media' && !skipMedia && !hideThis) {
           drawSpreadMediaOnPage(g, layer, W, H, 'right', onMediaReady)
+        } else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
+          ensureTicketBake(layer, onMediaReady)
+          drawSpreadTicketOnPage(g, layer, W, H, 'right')
         } else if (layer.type === 'tape' && !skipMedia) drawSpreadTapeOnPage(g, layer, W, H, 'right')
         continue
       }
