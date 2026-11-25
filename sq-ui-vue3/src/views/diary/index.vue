@@ -29,6 +29,24 @@
           />
         </label>
 
+        <label class="font-wrap" title="字体" :class="{ disabled: tool !== 'text' }">
+          <select
+            v-model="textFontFamily"
+            class="font-select"
+            :style="{ fontFamily: textFontCss }"
+            :disabled="tool !== 'text'"
+          >
+            <option
+              v-for="f in textFonts"
+              :key="f.id"
+              :value="f.id"
+              :style="{ fontFamily: f.css }"
+            >
+              {{ f.label }}
+            </option>
+          </select>
+        </label>
+
         <label class="width-wrap" title="笔粗" :class="{ disabled: tool !== 'pen' }">
           <input
             v-model.number="penWidthUi"
@@ -53,6 +71,7 @@
         :year="book?.year || year"
         :tool="tool"
         :ink-color="inkColor"
+        :font-family="textFontFamily"
         :pen-width="penWidth"
         :page-contents="pageContents"
         @change="onBookChange"
@@ -60,6 +79,7 @@
         @update-content="onUpdateContent"
         @request-import="openMediaPicker"
         @edit-ticket="onEditTicket"
+        @text-select="onTextSelect"
       />
       <div v-else class="diary-loading">正在打开日记本…</div>
     </div>
@@ -89,6 +109,8 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import HobonichiBook from '@/components/HobonichiBook/index.vue'
 import {
+  DIARY_TEXT_FONTS,
+  ensureDiaryFonts,
   ensureMediaImage,
   mediaHeightForWidth,
   mediaWidthForPage,
@@ -112,7 +134,14 @@ const bookRef = ref(null)
 const ready = ref(false)
 const tool = ref('turn')
 const inkColor = ref('#2B2A33')
+const textFonts = DIARY_TEXT_FONTS
+const textFontFamily = ref('JingXiaopeng')
 const penWidthUi = ref(3)
+
+const textFontCss = computed(() => {
+  const hit = textFonts.find((f) => f.id === textFontFamily.value)
+  return hit ? hit.css : textFonts[0].css
+})
 const mediaPickerOpen = ref(false)
 const ticketEditorOpen = ref(false)
 const ticketEditorData = ref(null)
@@ -178,6 +207,12 @@ function mediaSize(item) {
   const w = mediaWidthForPage(false)
   const h = mediaHeightForWidth(w, aspect, false)
   return { w, h, aspect }
+}
+
+/** 选中文字框时，工具栏颜色同步为该框颜色，便于继续改色 */
+function onTextSelect({ color }) {
+  if (tool.value !== 'text') return
+  if (color && typeof color === 'string') inkColor.value = color
 }
 
 function onEditTicket({ layer, pageNo }) {
@@ -342,6 +377,10 @@ watch(tool, (v, old) => {
 
 onMounted(() => {
   paintMain('#ebe6dc')
+  ensureDiaryFonts().then((ok) => {
+    if (ok) bookRef.value?.rebakeVisible?.()
+    // 失败只打控制台，避免一进页就弹「请硬刷新」（多为 check 误判或路径暂不可用）
+  })
   bootstrap()
 })
 
@@ -449,6 +488,32 @@ onUnmounted(() => {
   transform: translate(-6px, -6px);
   cursor: pointer;
   background: transparent;
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.font-wrap {
+  display: inline-flex;
+  align-items: center;
+  &.disabled {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+}
+
+.font-select {
+  height: 28px;
+  max-width: 108px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(62, 52, 38, 0.16);
+  background: rgba(255, 252, 245, 0.9);
+  color: #3e3426;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
   &:disabled {
     cursor: default;
   }

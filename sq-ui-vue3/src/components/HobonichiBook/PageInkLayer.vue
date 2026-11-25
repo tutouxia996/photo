@@ -25,13 +25,20 @@
       <div class="text-handle" title="拖动" @pointerdown.stop="onDragStart($event, box)" />
       <div
         class="text-body"
+        :class="{ 'diary-font-jing': isJingFont(box) }"
         contenteditable="true"
         spellcheck="false"
         :data-id="box.id"
+        :style="textBodyStyle(box)"
         @focus="onTextFocus(box)"
         @blur="onTextBlur($event, box)"
         @keydown.stop
       >{{ box.text }}</div>
+      <div
+        class="text-resize"
+        title="缩放"
+        @pointerdown.stop="onTextResizeStart($event, box)"
+      />
     </div>
 
     <!-- 贴图与美纹纸按图层顺序统一叠放，后加的盖住先加的（含胶条） -->
@@ -206,9 +213,11 @@ import {
   paintStrokeOnCtx,
   readAlbumFilmStockId,
   resolveMediaUrl,
+  resolveTextFontCss,
   simplifyStroke,
   tapePinsLayer
 } from './pageContent.js'
+import { JING_FONT_ID, ensureDiaryFonts } from './diaryFonts.js'
 import {
   clampTapePosition,
   createTapeClip,
@@ -249,6 +258,8 @@ const props = defineProps({
   rightContent: { type: Object, default: null },
   tool: { type: String, default: 'turn' },
   color: { type: String, default: '#2B2A33' },
+  /** 新建文字框字体 id，见 DIARY_TEXT_FONTS */
+  fontFamily: { type: String, default: 'default' },
   penWidth: { type: Number, default: 0.004 },
   rect: { type: Object, default: () => ({ x: 0, y: 0, w: 0, h: 0 }) },
   /** 对开外缘可拖翻的宽度（相对整幅）；略加大便于回翻 */
@@ -266,7 +277,8 @@ const emit = defineEmits([
   'inspect-media',
   'inspect-ticket',
   'edit-ticket',
-  'ticket-rendered'
+  'ticket-rendered',
+  'text-select'
 ])
 
 const drawRef = ref(null)
@@ -341,9 +353,28 @@ function boxStyle(box) {
     left: `${(box.x || 0) * 100}%`,
     top: `${(box.y || 0) * 100}%`,
     width: `${(box.w || 0.4) * 100}%`,
-    minHeight: `${(box.h || 0.08) * 100}%`,
+    height: `${(box.h || 0.1) * 100}%`,
     color: box.color || props.color,
-    fontSize: `${Math.max(12, (box.fontSize || 0.035) * (props.rect.h || 400))}px`
+    // 与 canvas 烘焙一致：fontPx = max(10, fontSize * H)
+    fontSize: `${Math.max(10, (box.fontSize || 0.035) * (props.rect.h || 400))}px`,
+    fontFamily: resolveTextFontCss(box.fontFamily || props.fontFamily)
+  }
+}
+
+function textFontId(box) {
+  return box.fontFamily || props.fontFamily || 'default'
+}
+
+function isJingFont(box) {
+  return textFontId(box) === JING_FONT_ID
+}
+
+/** contenteditable 常忽略父级 font-family，必须打在自身上 */
+function textBodyStyle(box) {
+  return {
+    fontFamily: resolveTextFontCss(textFontId(box)),
+    color: 'inherit',
+    fontSize: 'inherit'
   }
 }
 
@@ -1020,6 +1051,7 @@ function onDrawDown(e) {
       h: 0.1,
       text: '',
       fontSize: 0.035,
+      fontFamily: props.fontFamily || 'default',
       color: props.color
     }
     if (isSpread.value) upsertSpreadLayer(box)
@@ -1185,13 +1217,138 @@ function onDrawUp(e) {
 
 function onTextFocus(box) {
   selectedId.value = box.id
+  emit('text-select', {
+    id: box._pageId || box.id,
+    color: box.color || props.color,
+    fontFamily: box.fontFamily || props.fontFamily || 'default'
+  })
+}
+
+function liveTextOf(box) {
+  const liveEl = drawRef.value?.parentElement?.querySelector(`.text-body[data-id="${box.id}"]`)
+  return liveEl
+    ? (liveEl.innerText || '').replace(/\u00a0/g, ' ')
+    : box.text || ''
+}
+
+/** 把工具栏颜色写到当前选中文字框 */
+function applyColorToSelectedTextbox(color) {
+  const next = color || props.color
+  if (!next) return
+  const id = selectedId.value
+  if (!id) return
+  const box = textboxes.value.find((b) => b.id === id || b._pageId === id)
+  if (!box) return
+  const prev = (box.color || '').toLowerCase()
+  if (prev === String(next).toLowerCase()) return
+
+  const text = liveTextOf(box)
+  const fontSize = box.fontSize || 0.035
+  const fontFamily = box.fontFamily || props.fontFamily || 'default'
+  const payload = {
+    id: box._pageId || box.id,
+    type: 'textbox',
+    x: box.x,
+    y: box.y,
+    w: box.w,
+    h: box.h,
+    text,
+    fontSize,
+    fontFamily,
+    color: next
+  }
+
+  if (box.space === 'spread' || box._side === 'spread') {
+    upsertSpreadLayer({ ...payload, space: 'spread' })
+    return
+  }
+  if (isSpread.value) {
+    const side = box._side
+    const pageNo = side === 'left' ? props.leftPageNo : props.rightPageNo
+    const src = side === 'left' ? props.leftContent : props.rightContent
+    const layers = clonePageLayers(src)
+    const idx = layers.findIndex((l) => l.id === payload.id)
+    if (idx < 0) return
+    layers[idx] = { ...layers[idx], color: next, text }
+    emitPage(pageNo, layers)
+    return
+  }
+  const layers = clonePageLayers(hostContent.value)
+  const idx = layers.findIndex((l) => l.id === payload.id)
+  if (idx < 0) return
+  layers[idx] = { ...layers[idx], color: next, text }
+  emitPage(hostPageNo.value, layers)
+}
+
+/** 一次写回当前页所有文字框字体，避免多次 emit 互相覆盖 */
+function applyFontToAllTextboxes(fontFamily) {
+  const nextFont = fontFamily || props.fontFamily || 'default'
+  const boxes = textboxes.value
+  if (!boxes.length) return
+
+  if (isSpread.value) {
+    let leftLayers = clonePageLayers(props.leftContent)
+    const rightLayers = clonePageLayers(props.rightContent)
+    let leftChanged = false
+    let rightChanged = false
+
+    for (const box of boxes) {
+      const id = box._pageId || box.id
+      const liveText = liveTextOf(box)
+      if (box.space === 'spread' || box._side === 'spread') {
+        const payload = {
+          id,
+          type: 'textbox',
+          space: 'spread',
+          x: box.x,
+          y: box.y,
+          w: box.w,
+          h: box.h,
+          text: liveText,
+          fontSize: box.fontSize || 0.035,
+          fontFamily: nextFont,
+          color: box.color || props.color
+        }
+        leftLayers = replaceOrAppendLayer(leftLayers, payload, false)
+        leftChanged = true
+        continue
+      }
+      const side = box._side
+      const layers = side === 'left' ? leftLayers : rightLayers
+      const idx = layers.findIndex((l) => l.id === id)
+      if (idx < 0) continue
+      if ((layers[idx].fontFamily || 'default') === nextFont && layers[idx].text === liveText) {
+        continue
+      }
+      layers[idx] = { ...layers[idx], fontFamily: nextFont, text: liveText }
+      if (side === 'left') leftChanged = true
+      else rightChanged = true
+    }
+    if (leftChanged) emitPage(props.leftPageNo, leftLayers)
+    if (rightChanged) emitPage(props.rightPageNo, rightLayers)
+    return
+  }
+
+  const layers = clonePageLayers(hostContent.value)
+  let changed = false
+  for (const box of boxes) {
+    const id = box._pageId || box.id
+    const liveText = liveTextOf(box)
+    const idx = layers.findIndex((l) => l.id === id)
+    if (idx < 0) continue
+    if ((layers[idx].fontFamily || 'default') === nextFont && layers[idx].text === liveText) continue
+    layers[idx] = { ...layers[idx], fontFamily: nextFont, text: liveText }
+    changed = true
+  }
+  if (changed) emitPage(hostPageNo.value, layers)
 }
 
 function onTextBlur(e, box) {
-  selectedId.value = null
+  // 失焦后仍保留选中，方便立刻改工具栏字体
   const text = (e.target.innerText || '').replace(/\u00a0/g, ' ')
   const id = box._pageId || box.id
   if (!text.trim()) {
+    selectedId.value = null
     removeViewLayer(box)
     return
   }
@@ -1208,6 +1365,7 @@ function onTextBlur(e, box) {
       h: box.h,
       text,
       fontSize: box.fontSize || 0.035,
+      fontFamily: box.fontFamily || props.fontFamily || 'default',
       color: box.color || props.color
     })
     return
@@ -1499,6 +1657,68 @@ function onMediaResizeStart(e, m) {
   e.preventDefault()
 }
 
+function onTextResizeStart(e, box) {
+  if (props.tool !== 'text') return
+  const p = localNorm(e)
+  selectedId.value = box.id
+  resizing.value = {
+    kind: 'textbox',
+    id: e.pointerId,
+    box: { ...box },
+    startX: p.x,
+    startY: p.y,
+    startW: box.w || (isSpread.value ? 0.28 : 0.4),
+    startH: box.h || 0.1
+  }
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onResizeMove)
+  window.addEventListener('pointerup', onResizeEnd)
+  window.addEventListener('pointercancel', onResizeEnd)
+  e.preventDefault()
+}
+
+/** 写回文字框几何（拖动缩放时用，保留正文） */
+function upsertTextboxGeom(box, { x, y, w, h }) {
+  const id = box._pageId || box.id
+  const text = liveTextOf(box)
+  const fontSize = box.fontSize || 0.035
+  const fontFamily = box.fontFamily || props.fontFamily || 'default'
+  const color = box.color || props.color
+
+  if (box.space === 'spread' || box._side === 'spread' || isSpread.value && box.space === 'spread') {
+    upsertSpreadLayer({
+      id,
+      type: 'textbox',
+      space: 'spread',
+      x,
+      y,
+      w,
+      h,
+      text,
+      fontSize,
+      fontFamily,
+      color
+    })
+    return
+  }
+  if (isSpread.value) {
+    const side = box._side
+    const pageNo = side === 'left' ? props.leftPageNo : props.rightPageNo
+    const src = side === 'left' ? props.leftContent : props.rightContent
+    const layers = clonePageLayers(src)
+    const idx = layers.findIndex((l) => l.id === id)
+    if (idx < 0) return
+    layers[idx] = { ...layers[idx], x, y, w, h, text }
+    emitPage(pageNo, layers)
+    return
+  }
+  const layers = clonePageLayers(hostContent.value)
+  const idx = layers.findIndex((l) => l.id === id)
+  if (idx < 0) return
+  layers[idx] = { ...layers[idx], x, y, w, h, text }
+  emitPage(hostPageNo.value, layers)
+}
+
 function onResizeMove(e) {
   const d = resizing.value
   if (!d || (e.pointerId != null && e.pointerId !== d.id)) return
@@ -1528,6 +1748,20 @@ function onResizeMove(e) {
 
   // 车票固定默认尺寸，不再支持缩放
   if (d.kind === 'ticket') return
+
+  // 文字框：宽高独立缩放，可拉满整页/对开（仅受页缘约束）
+  if (d.kind === 'textbox') {
+    const minW = isSpread.value ? 0.06 : 0.08
+    const minH = 0.05
+    const x0 = Math.min(1 - minW, Math.max(0, d.box.x || 0))
+    const y0 = Math.min(1 - minH, Math.max(0, d.box.y || 0))
+    let nw = Math.max(minW, d.startW + (p.x - d.startX))
+    let nh = Math.max(minH, d.startH + (p.y - d.startY))
+    nw = Math.min(nw, 1 - x0)
+    nh = Math.min(nh, 1 - y0)
+    upsertTextboxGeom(d.box, { x: x0, y: y0, w: nw, h: nh })
+    return
+  }
 
   const dx = p.x - d.startX
   const dy = p.y - d.startY
@@ -1573,6 +1807,12 @@ function onResizeEnd() {
 function onDragStart(e, box) {
   if (props.tool === 'eraser') return
   if (isPinned(box)) return
+  selectedId.value = box.id
+  emit('text-select', {
+    id: box._pageId || box.id,
+    color: box.color || props.color,
+    fontFamily: box.fontFamily || props.fontFamily || 'default'
+  })
   const p = localNorm(e)
   dragging.value = {
     id: e.pointerId,
@@ -1656,6 +1896,7 @@ function onDragMove(e) {
       h: th,
       text: d.box.text || '',
       fontSize: d.box.fontSize || 0.035,
+      fontFamily: d.box.fontFamily || props.fontFamily || 'default',
       color: d.box.color || props.color
     })
     return
@@ -1731,9 +1972,27 @@ watch(
   }
 )
 
+watch(
+  () => props.fontFamily,
+  (fam) => {
+    if (props.tool !== 'text' || !fam) return
+    if (!textboxes.value.length) return
+    ensureDiaryFonts().finally(() => applyFontToAllTextboxes(fam))
+  }
+)
+
+watch(
+  () => props.color,
+  (c) => {
+    if (props.tool !== 'text' || !c) return
+    applyColorToSelectedTextbox(c)
+  }
+)
+
 onMounted(() => {
   syncCanvasSize()
   syncFilmStock()
+  ensureDiaryFonts()
   window.addEventListener('focus', syncFilmStock)
   document.addEventListener('visibilitychange', syncFilmStock)
 })
@@ -1812,6 +2071,9 @@ onUnmounted(() => {
   position: absolute;
   z-index: 2;
   min-width: 48px;
+  box-sizing: border-box;
+  /* 不用纵向 flex：拖动手柄若占文档流，文字会被顶下去，
+     切到查看/翻页后 canvas 按 box.y 烘焙就会「错位」 */
   pointer-events: auto;
   background: transparent;
   &.selected {
@@ -1821,23 +2083,45 @@ onUnmounted(() => {
 }
 
 .text-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
   height: 10px;
-  margin-bottom: 2px;
   border-radius: 2px;
   background: rgba(62, 52, 38, 0.12);
   cursor: grab;
+  z-index: 3;
   &:active { cursor: grabbing; }
 }
 
 .text-body {
+  position: absolute;
+  inset: 0;
   outline: none;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.35;
-  font-family: 'Zen Kaku Gothic New', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  min-height: 1.2em;
-  padding: 0 2px;
+  /* 与 canvas fillText 起点对齐：无额外 padding */
+  padding: 0;
+  margin: 0;
+  overflow: auto;
   caret-color: #2b2a33;
+}
+
+.text-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, transparent 45%, rgba(62, 52, 38, 0.45) 46%, rgba(62, 52, 38, 0.45) 54%, transparent 55%),
+    linear-gradient(135deg, transparent 62%, rgba(62, 52, 38, 0.32) 63%, rgba(62, 52, 38, 0.32) 70%, transparent 71%);
+  cursor: nwse-resize;
+  z-index: 4;
 }
 
 .media-box {

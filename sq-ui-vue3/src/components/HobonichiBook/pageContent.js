@@ -9,12 +9,19 @@
 import { getFormat } from '@/utils/spektra/formats'
 import { renderFilmStrip } from '@/utils/spektra/renderStrip'
 import { getStockPreset, presetKey } from '@/utils/spektra/stocks'
+import {
+  DIARY_TEXT_FONTS,
+  ensureDiaryFonts,
+  resolveTextFontCss
+} from './diaryFonts.js'
 import { drawSpreadTapeOnPage, drawTapeLayerOnCtx } from './maskingTape.js'
 import {
   drawSpreadTicketOnPage,
   drawTicketLayerOnCtx,
   ensureTicketBake
 } from './trainTicket.js'
+
+export { DIARY_TEXT_FONTS, ensureDiaryFonts, resolveTextFontCss }
 
 /** A5 单页宽高比（宽/高），用于把图片像素比换成页内归一化 h */
 export const PAGE_ASPECT = 148 / 210
@@ -712,7 +719,8 @@ function drawSpreadTextOnPage(g, layer, W, H, side) {
 
   const fontPx = Math.max(10, (layer.fontSize || 0.035) * H)
   g.fillStyle = layer.color || '#2B2A33'
-  g.font = `${fontPx}px "Zen Kaku Gothic New", "Noto Sans SC", "Microsoft YaHei", sans-serif`
+  // 必须带 family 名的引号串；中文字体未就绪时会回退，外层应在 ensureDiaryFonts 后再 bake
+  g.font = `${fontPx}px ${resolveTextFontCss(layer.fontFamily)}`
   g.textBaseline = 'top'
   const lineH = fontPx * 1.35
   // 文字起点：spread → page
@@ -758,7 +766,7 @@ function drawTextbox(g, layer, W, H) {
   const fontPx = Math.max(10, (layer.fontSize || 0.035) * H)
   g.save()
   g.fillStyle = layer.color || '#2B2A33'
-  g.font = `${fontPx}px "Zen Kaku Gothic New", "Noto Sans SC", "Microsoft YaHei", sans-serif`
+  g.font = `${fontPx}px ${resolveTextFontCss(layer.fontFamily)}`
   g.textBaseline = 'top'
   const lineH = fontPx * 1.35
   const lines = wrapText(g, text, boxW)

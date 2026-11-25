@@ -45,6 +45,7 @@
           :content="spreadInkContent"
           :tool="tool"
           :color="inkColor"
+          :font-family="fontFamily"
           :pen-width="penWidth"
           :rect="spreadOverlayRect"
           :preview-strokes="inkPreview"
@@ -57,6 +58,7 @@
           @inspect-ticket="onInspectTicket"
           @edit-ticket="onEditTicket"
           @ticket-rendered="onTicketRendered"
+          @text-select="onTextSelect"
         />
       </div>
 
@@ -121,6 +123,7 @@ import {
   partnerPageNo,
   spreadPageNos
 } from './pageContent.js'
+import { ensureDiaryFonts } from './diaryFonts.js'
 
 const props = defineProps({
   pages: { type: Array, default: () => [] },
@@ -131,6 +134,8 @@ const props = defineProps({
   /** view | turn | pen | text | eraser | media | tape | ticket */
   tool: { type: String, default: 'turn' },
   inkColor: { type: String, default: '#2B2A33' },
+  /** 文字工具字体 id */
+  fontFamily: { type: String, default: 'default' },
   penWidth: { type: Number, default: 0.004 },
   /** Map 或普通对象：pageNo -> content */
   pageContents: { type: [Map, Object], default: () => new Map() }
@@ -141,7 +146,8 @@ const emit = defineEmits([
   'update-content',
   'need-pages',
   'request-import',
-  'edit-ticket'
+  'edit-ticket',
+  'text-select'
 ])
 
 const stageRef = ref(null)
@@ -859,6 +865,10 @@ function onEditTicket(payload) {
   emit('edit-ticket', payload)
 }
 
+function onTextSelect(payload) {
+  emit('text-select', payload)
+}
+
 function onTicketRendered() {
   // 仅在票面离屏烘焙完成时刷新（见 ensureTicketBake → onMediaImageReady）
 }
@@ -1076,6 +1086,11 @@ onMounted(() => {
       areaObserver = new ResizeObserver(() => resize())
       areaObserver.observe(bookAreaRef.value)
     }
+  })
+  ensureDiaryFonts().then((ok) => {
+    if (!ok) return
+    bakeMode.clear()
+    rebakeVisible()
   })
   raf = requestAnimationFrame(tick)
 })
