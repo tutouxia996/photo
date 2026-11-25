@@ -2,7 +2,49 @@
  * 美纹纸胶条工具：撕边形状、命中、烘焙绘制。
  * 图层：{ type:'tape', id, space, x, y, w, h, rot, clip }
  * x/y/w/h 为未旋转前的轴对齐框（归一化）；rot 为弧度。
+ * 视觉：使用真实美纹纸贴图（assets/masking-tape.png）拉伸铺满胶条。
  */
+
+import maskingTapeUrl from './assets/masking-tape.png'
+
+let tapeImage = null
+let tapeImageState = 'idle' // idle | loading | ready | error
+const tapeImageWaiters = []
+
+/** 预加载美纹纸贴图；未就绪时返回 null，加载完后回调 onReady */
+export function ensureMaskingTapeImage(onReady) {
+  if (tapeImageState === 'ready' && tapeImage?.complete && tapeImage.naturalWidth > 0) {
+    return tapeImage
+  }
+  if (typeof onReady === 'function') tapeImageWaiters.push(onReady)
+  if (tapeImageState === 'loading' || tapeImageState === 'error') return null
+  tapeImageState = 'loading'
+  const img = new Image()
+  img.decoding = 'async'
+  img.onload = () => {
+    tapeImage = img
+    tapeImageState = 'ready'
+    const waiters = tapeImageWaiters.splice(0)
+    waiters.forEach((fn) => {
+      try {
+        fn(img)
+      } catch {
+        /* ignore */
+      }
+    })
+  }
+  img.onerror = () => {
+    tapeImageState = 'error'
+    tapeImageWaiters.length = 0
+  }
+  img.src = maskingTapeUrl
+  return null
+}
+
+// 模块加载时预取，减少首次拖出胶条/翻页烘焙的空白帧
+ensureMaskingTapeImage()
+
+export { maskingTapeUrl }
 
 function hashStr(str) {
   let h = 2166136261
@@ -107,6 +149,31 @@ export function tapeAabb(layer) {
   return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 }
 }
 
+/**
+ * 按旋转后 AABB 钳制胶条位置，四边最多探出 hangFrac。
+ * 斜放长胶带若只按未旋转 h 钳 Y，两端会大量甩出页外被 overflow 裁掉。
+ */
+export function clampTapePosition(x, y, w, h, rot, { hangFrac = 0.35 } = {}) {
+  const tw = Math.max(0.04, w || 0.12)
+  const th = Math.max(0.02, h || 0.058)
+  const r = rot || 0
+  const c = Math.abs(Math.cos(r))
+  const s = Math.abs(Math.sin(r))
+  const hw = (tw * c + th * s) / 2
+  const hh = (tw * s + th * c) / 2
+  const hangX = Math.min(0.08, Math.max(0.01, hw * 2 * hangFrac))
+  const hangY = Math.min(0.08, Math.max(0.01, hh * 2 * hangFrac))
+  let cx = (x || 0) + tw / 2
+  let cy = (y || 0) + th / 2
+  const minCx = -hangX + hw
+  const maxCx = 1 + hangX - hw
+  const minCy = -hangY + hh
+  const maxCy = 1 + hangY - hh
+  cx = minCx <= maxCx ? Math.min(maxCx, Math.max(minCx, cx)) : 0.5
+  cy = minCy <= maxCy ? Math.min(maxCy, Math.max(minCy, cy)) : 0.5
+  return { x: cx - tw / 2, y: cy - th / 2, w: tw, h: th }
+}
+
 function aabbOverlap(a, b, pad = 0) {
   if (!a || !b) return false
   return !(
@@ -207,73 +274,49 @@ function parseClipPoints(clip, tw, th) {
     .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))
 }
 
-/** 与 CSS .masking-tape-body 一致的竖纹周期（CSS px） */
-const TAPE_STRIPE = 3.5
+/** 贴图未就绪时的占位色（接近素材灰白） */
+const TAPE_FALLBACK = '#d8d4cc'
 
-/** 在页画布上绘制一条胶条图层（对齐 HTML/CSS 观感，避免 stroke 抗锯齿发糊） */
-export function drawTapeLayerOnCtx(g, layer, W, H) {
+/** 在页画布上绘制一条胶条图层（与 HTML 贴图层观感一致） */
+export function drawTapeLayerOnCtx(g, layer, W, H, onReady) {
   if (!layer || layer.type !== 'tape') return
   const w = Math.max(4, (layer.w || 0.12) * W)
   const h = Math.max(4, (layer.h || 0.058) * H)
   const cx = ((layer.x || 0) + (layer.w || 0.12) / 2) * W
   const cy = ((layer.y || 0) + (layer.h || 0.058) / 2) * H
   const rot = layer.rot || 0
-  // 烘焙像素相对 CSS 像素的倍率，让竖纹宽度与静止 HTML 层接近
-  const s = Math.max(1, h / Math.max(12, (layer.h || 0.058) * 520))
+  const img = ensureMaskingTapeImage(onReady)
 
   g.save()
-  g.imageSmoothingEnabled = false
   g.translate(cx, cy)
   g.rotate(rot)
   g.translate(-w / 2, -h / 2)
 
-  const pts = parseClipPoints(resolveTapeClip(layer), w, h)
-  if (pts.length >= 3) {
-    g.beginPath()
-    pts.forEach((p, i) => (i === 0 ? g.moveTo(p[0], p[1]) : g.lineTo(p[0], p[1])))
-    g.closePath()
-    g.clip()
+  if (img) {
+    g.imageSmoothingEnabled = true
+    g.imageSmoothingQuality = 'high'
+    // 普通 alpha 叠放（勿用 multiply，否则浅色胶带在车票上会「消失」像被压住）
+    g.globalAlpha = 0.96
+    g.drawImage(img, 0, 0, w, h)
+  } else {
+    // 贴图加载前用撕边 clip + 灰白底占位，避免翻页烘焙空白
+    const pts = parseClipPoints(resolveTapeClip(layer), w, h)
+    g.fillStyle = TAPE_FALLBACK
+    g.globalAlpha = 0.96
+    if (pts.length >= 3) {
+      g.beginPath()
+      pts.forEach((p, i) => (i === 0 ? g.moveTo(p[0], p[1]) : g.lineTo(p[0], p[1])))
+      g.closePath()
+      g.fill()
+    } else {
+      g.fillRect(0, 0, w, h)
+    }
   }
-
-  // 底层纵向渐变（同 CSS linear-gradient）
-  const grad = g.createLinearGradient(0, 0, 0, h)
-  grad.addColorStop(0, '#f2e4c2')
-  grad.addColorStop(0.55, '#e2ce9e')
-  grad.addColorStop(1, '#d4bc88')
-  g.fillStyle = grad
-  g.fillRect(-2, -2, w + 4, h + 4)
-
-  // 竖纹：用 fillRect 对齐 CSS repeating-linear-gradient(90deg, …)
-  const period = TAPE_STRIPE * s
-  const b1 = 1 * s
-  const b2 = 1 * s
-  const b3 = 1.5 * s
-  for (let x = 0; x < w + period; x += period) {
-    g.fillStyle = '#efe0b8'
-    g.fillRect(x, 0, b1, h)
-    g.fillStyle = '#e6d4a6'
-    g.fillRect(x + b1, 0, b2, h)
-    g.fillStyle = '#deca98'
-    g.fillRect(x + b1 + b2, 0, b3, h)
-  }
-
-  // 横纤维：同 .tape-fiber
-  const fiber = 4 * s
-  g.fillStyle = 'rgba(140, 110, 60, 0.07)'
-  for (let y = 3 * s; y < h; y += fiber) {
-    g.fillRect(0, y, w, s)
-  }
-
-  // 底部略暗 + 顶边高光（替代 box-shadow / inset，避免 blur）
-  g.fillStyle = 'rgba(90, 70, 40, 0.12)'
-  g.fillRect(0, h * 0.85, w, h * 0.15)
-  g.fillStyle = 'rgba(255, 248, 220, 0.35)'
-  g.fillRect(0, 0, w, Math.max(1, s))
   g.restore()
 }
 
 /** 对开半页烘焙 */
-export function drawSpreadTapeOnPage(g, layer, W, H, side) {
+export function drawSpreadTapeOnPage(g, layer, W, H, side, onReady) {
   if (!layer || layer.type !== 'tape') return
   const x0 = layer.x || 0
   const y0 = layer.y || 0
@@ -295,6 +338,6 @@ export function drawSpreadTapeOnPage(g, layer, W, H, side) {
   g.beginPath()
   g.rect(0, 0, W, H)
   g.clip()
-  drawTapeLayerOnCtx(g, local, W, H)
+  drawTapeLayerOnCtx(g, local, W, H, onReady)
   g.restore()
 }

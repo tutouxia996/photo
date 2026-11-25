@@ -498,7 +498,7 @@ export function paintLayers(
         ensureTicketBake(layer, onMediaReady)
         drawSpreadTicketOnPage(g, layer, W, H, side)
       } else if (side && layer.type === 'tape' && !skipMedia) {
-        drawSpreadTapeOnPage(g, layer, W, H, side)
+        drawSpreadTapeOnPage(g, layer, W, H, side, onMediaReady)
       } else if (!side) {
         if (layer.type === 'stroke' && !skipStroke) drawStroke(g, layer, W, H)
         else if (layer.type === 'textbox' && !skipTextbox) drawTextbox(g, layer, W, H)
@@ -506,7 +506,9 @@ export function paintLayers(
         else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
           ensureTicketBake(layer, onMediaReady)
           drawTicketLayerOnCtx(g, layer, W, H)
-        } else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
+        } else if (layer.type === 'tape' && !skipMedia) {
+          drawTapeLayerOnCtx(g, layer, W, H, onMediaReady)
+        }
       }
       continue
     }
@@ -516,7 +518,9 @@ export function paintLayers(
     else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
       ensureTicketBake(layer, onMediaReady)
       drawTicketLayerOnCtx(g, layer, W, H)
-    } else if (layer.type === 'tape' && !skipMedia) drawTapeLayerOnCtx(g, layer, W, H)
+    } else if (layer.type === 'tape' && !skipMedia) {
+      drawTapeLayerOnCtx(g, layer, W, H, onMediaReady)
+    }
   }
 
   // 右页烘焙时，把左页里的 spread 图层半幅画上来
@@ -532,7 +536,9 @@ export function paintLayers(
         } else if (layer.type === 'ticket' && !skipMedia && !hideThis) {
           ensureTicketBake(layer, onMediaReady)
           drawSpreadTicketOnPage(g, layer, W, H, 'right')
-        } else if (layer.type === 'tape' && !skipMedia) drawSpreadTapeOnPage(g, layer, W, H, 'right')
+        } else if (layer.type === 'tape' && !skipMedia) {
+          drawSpreadTapeOnPage(g, layer, W, H, 'right', onMediaReady)
+        }
         continue
       }
       // 左页 page 贴图伸出右缘（旧数据）：把溢出部分画到右页

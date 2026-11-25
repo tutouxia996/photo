@@ -167,9 +167,7 @@
         :style="tapeStyle(item, idx)"
         @pointerdown.stop="onTapePointerDown($event, item)"
       >
-        <div class="masking-tape-body" :style="tapeBodyStyle(item)">
-          <span class="tape-fiber" />
-        </div>
+        <div class="masking-tape-body" :style="tapeBodyStyle(item)" />
         <template v-if="tool === 'tape'">
           <div class="tape-move" title="拖动位置" @pointerdown.stop="onTapeDragStart($event, item)" />
           <div class="tape-len a" title="调整长度" @pointerdown.stop="onTapeLenStart($event, item, 'a')" />
@@ -183,9 +181,7 @@
       class="tape-layer drafting"
       :style="tapeStyle(draftingTape, overlayStack.length + 2)"
     >
-      <div class="masking-tape-body" :style="tapeBodyStyle(draftingTape)">
-        <span class="tape-fiber" />
-      </div>
+      <div class="masking-tape-body" :style="tapeBodyStyle(draftingTape)" />
     </div>
   </div>
 </template>
@@ -214,9 +210,10 @@ import {
   tapePinsLayer
 } from './pageContent.js'
 import {
+  clampTapePosition,
   createTapeClip,
   defaultTapeThick,
-  resolveTapeClip,
+  maskingTapeUrl,
   tapeFromDrag
 } from './maskingTape.js'
 import {
@@ -403,9 +400,10 @@ function tapeStyle(t, idx = 0) {
   }
 }
 
-function tapeBodyStyle(t) {
-  const clip = resolveTapeClip(t)
-  return clip ? { clipPath: `polygon(${clip})` } : undefined
+function tapeBodyStyle(_t) {
+  return {
+    backgroundImage: `url(${maskingTapeUrl})`
+  }
 }
 
 function isInspectHidden(m) {
@@ -475,17 +473,19 @@ function upsertTapeLayer(layer, { toFront = false } = {}) {
     if (!crosses && (hostSide === 'left' || hostSide === 'right')) {
       const pageNo = hostSide === 'left' ? props.leftPageNo : props.rightPageNo
       const src = hostSide === 'left' ? props.leftContent : props.rightContent
+      // 允许单页坐标略超出 [0,1]，否则左侧探出在 *2 后被钳成 0，出现「左空气墙」
+      const pw = Math.min(1.2, Math.max(0.06, (payload.w || 0.12) * 2))
       const mapped =
         hostSide === 'left'
           ? {
-              x: Math.min(1, Math.max(0, (payload.x || 0) * 2)),
-              w: Math.min(0.95, Math.max(0.06, (payload.w || 0.12) * 2)),
+              x: (payload.x || 0) * 2,
+              w: pw,
               y: payload.y,
               h: payload.h
             }
           : {
-              x: Math.min(1, Math.max(0, ((payload.x || 0) - 0.5) * 2)),
-              w: Math.min(0.95, Math.max(0.06, (payload.w || 0.12) * 2)),
+              x: ((payload.x || 0) - 0.5) * 2,
+              w: pw,
               y: payload.y,
               h: payload.h
             }
@@ -1415,8 +1415,9 @@ function onTapeDragStart(e, t) {
     kind: 'tape',
     id: e.pointerId,
     box: { ...t },
-    ox: p.x - (t.x || 0),
-    oy: p.y - (t.y || 0)
+    // 用未钳制坐标，才能把胶条拖到/探出页边
+    ox: p.nx - (t.x || 0),
+    oy: p.ny - (t.y || 0)
   }
   e.currentTarget?.setPointerCapture?.(e.pointerId)
   window.addEventListener('pointermove', onDragMove)
@@ -1595,10 +1596,18 @@ function onDragMove(e) {
   const isTicket = d.kind === 'ticket' || d.box?.type === 'ticket'
   const w = d.box.w || (isTicket ? 0.4 : isMedia ? 0.32 : isTape ? 0.12 : 0.28)
   const h = d.box.h || (isTicket ? 0.25 : isMedia ? 0.28 : isTape ? 0.058 : 0.1)
-  // 贴图/文字必须整框在页内；胶条允许轻微探出（由容器裁切）
-  const maxY = isTape ? 1 - h * 0.35 : 1 - h
-  const nx = Math.min(1 - w, Math.max(0, p.x - d.ox))
-  const ny = Math.min(maxY, Math.max(0, p.y - d.oy))
+  let nx
+  let ny
+  if (isTape) {
+    // 按旋转后包围盒钳制，避免斜放时上下两端被页边大量裁掉
+    const clamped = clampTapePosition(p.nx - d.ox, p.ny - d.oy, w, h, d.box.rot || 0)
+    nx = clamped.x
+    ny = clamped.y
+  } else {
+    // 贴图/文字必须整框在页内
+    nx = Math.min(1 - w, Math.max(0, p.x - d.ox))
+    ny = Math.min(1 - h, Math.max(0, p.y - d.oy))
+  }
   d.box = { ...d.box, x: nx, y: ny }
 
   const id = d.box._pageId || d.box.id
@@ -2087,8 +2096,9 @@ onUnmounted(() => {
     &:active { cursor: grabbing; }
   }
   &.selected .masking-tape-body {
-    outline: 1px dashed rgba(62, 52, 38, 0.4);
-    outline-offset: 2px;
+    filter:
+      drop-shadow(0 0 0.5px rgba(62, 52, 38, 0.55))
+      drop-shadow(0 1px 1.5px rgba(40, 30, 18, 0.28));
   }
   &.drafting {
     pointer-events: none;
@@ -2099,33 +2109,14 @@ onUnmounted(() => {
 .masking-tape-body {
   position: absolute;
   inset: 0;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      #efe0b8 0px,
-      #efe0b8 1px,
-      #e6d4a6 1px,
-      #e6d4a6 2px,
-      #deca98 2px,
-      #deca98 3.5px
-    ),
-    linear-gradient(180deg, #f2e4c2 0%, #e2ce9e 55%, #d4bc88 100%);
-  box-shadow:
-    0 1px 2px rgba(60, 42, 18, 0.28),
-    inset 0 1px 0 rgba(255, 248, 220, 0.45),
-    inset 0 -2px 3px rgba(120, 90, 40, 0.12);
-}
-
-.tape-fiber {
-  position: absolute;
-  inset: 0;
+  background-color: transparent;
+  background-position: center;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  /* 禁止 multiply：浅色胶带乘在车票/笔画上会几乎消失，看起来像被压在下面 */
+  opacity: 0.96;
+  filter: drop-shadow(0 1px 1.5px rgba(40, 30, 18, 0.28));
   pointer-events: none;
-  background:
-    repeating-linear-gradient(
-      0deg,
-      transparent 0 3px,
-      rgba(140, 110, 60, 0.07) 3px 4px
-    );
 }
 
 .tape-move {
