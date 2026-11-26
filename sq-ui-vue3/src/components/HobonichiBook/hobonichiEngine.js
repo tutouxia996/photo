@@ -1079,12 +1079,13 @@ function drawGLFrame(R, items, cam, W, H, now, faces, under, dpr) {
     gl.bindTexture(gl.TEXTURE_2D, uploadTex(R, it.bKey, faces[it.bKey], it.fresh))
     gl.uniform2f(U.uWH, it.G.W, it.G.H)
     gl.uniform1f(U.uLift, L.lift)
-    gl.uniform1f(U.uTrans, b ? 0 : 0.11 * L.amp)
-    gl.uniform1f(U.uShow, b ? 0 : 0.08 * L.amp)
+    // 翻页时纸页轻微透光：约 5%，封面不透
+    gl.uniform1f(U.uTrans, b ? 0 : 0.05)
+    gl.uniform1f(U.uShow, b ? 0 : 0.04 * L.amp)
     // 纸页哑光粗糙；封面布面略保留；胶片本身光泽在贴图/ FilmFrame，不靠纸页 specular
     gl.uniform1f(U.uSpec, b ? 0.1 : 0.045)
     gl.uniform1f(U.uShin, b ? 28 : 9)
-    gl.uniform1f(U.uGlow, b ? 0 : 0.12 * L.amp)
+    gl.uniform1f(U.uGlow, b ? 0 : 0.06 * L.amp)
     gl.uniform1f(U.uEdge, 1)
     gl.uniform1f(U.uBoard, b ? 0.8 : 0)
     gl.uniform1f(U.uBias, L.bias || 0)
@@ -1379,7 +1380,7 @@ export function createEngine({ bookCanvas, leafCanvas }) {
         const w = 150
         if (st < 0.08) return
         const gr = g.createLinearGradient(0, 0, side * w, 0)
-        gr.addColorStop(0, `rgba(255,222,170,${(0.12 * st).toFixed(3)})`)
+        gr.addColorStop(0, `rgba(255,222,170,${(0.06 * st).toFixed(3)})`)
         gr.addColorStop(1, 'rgba(255,222,170,0)')
         g.fillStyle = gr
         g.fillRect(Math.min(0, side * w), 0, w, H)

@@ -1,5 +1,5 @@
 <template>
-  <div class="diary-page">
+  <div class="diary-page" @contextmenu.prevent>
     <header class="diary-header">
       <button type="button" class="back-btn" title="返回" @click="goBack">
         <el-icon :size="20"><ArrowLeft /></el-icon>

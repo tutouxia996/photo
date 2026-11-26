@@ -234,8 +234,24 @@ export function spreadPageNos(bookIndex, pageCount) {
   return { left, right }
 }
 
-export function pagePointToSpread(x, y, side) {
-  return [side === 'left' ? x * 0.5 : 0.5 + x * 0.5, y]
+export function pagePointToSpread(x, y, side, pressure) {
+  const sx = side === 'left' ? x * 0.5 : 0.5 + x * 0.5
+  return pressure != null ? [sx, y, pressure] : [sx, y]
+}
+
+/** 点压力；旧数据无第三维时视为中档 0.5 */
+export function pointPressure(p) {
+  if (!p || p[2] == null || Number.isNaN(p[2])) return 0.5
+  return Math.min(1, Math.max(0.05, p[2]))
+}
+
+/** pressure 0.5 → 1× 基准宽（鼠标/旧笔迹不变）；轻压变细、重压变粗 */
+export function pressureWidthScale(pressure) {
+  const pr =
+    pressure == null || Number.isNaN(pressure)
+      ? 0.5
+      : Math.min(1, Math.max(0.05, pressure))
+  return 0.4 + pr * 1.2
 }
 
 /** 把单页 layer 映射到对开坐标 */
@@ -256,7 +272,7 @@ export function layerToSpread(layer, side) {
       ...layer,
       _side: side,
       _pageId: layer.id,
-      points: (layer.points || []).map((p) => pagePointToSpread(p[0], p[1], side)),
+      points: (layer.points || []).map((p) => pagePointToSpread(p[0], p[1], side, p[2])),
       width: (layer.width || 0.004) * 0.5
     }
   }
@@ -329,10 +345,10 @@ export function mergeSpreadLayers(leftContent, rightContent) {
     const pts = []
     const sample = (parts.L || parts.R).layer
     if (parts.L) {
-      for (const p of parts.L.layer.points || []) pts.push(pagePointToSpread(p[0], p[1], 'left'))
+      for (const p of parts.L.layer.points || []) pts.push(pagePointToSpread(p[0], p[1], 'left', p[2]))
     }
     if (parts.R) {
-      for (const p of parts.R.layer.points || []) pts.push(pagePointToSpread(p[0], p[1], 'right'))
+      for (const p of parts.R.layer.points || []) pts.push(pagePointToSpread(p[0], p[1], 'right', p[2]))
     }
     out.push({
       id: base,
@@ -566,27 +582,54 @@ export function paintLayers(
   }
 }
 
-/** 覆盖层画笔（坐标已是画布 0–1） */
-export function paintStrokeOnCtx(g, layer, W, H, widthScale = 1) {
-  if (!layer || !layer.points || !layer.points.length) return
+function strokePxWidth(layer, point, W, widthScale = 1) {
+  const base = (layer.width || 0.004) * widthScale * W
+  return Math.max(1, base * pressureWidthScale(pointPressure(point)))
+}
+
+function paintVariableStroke(g, layer, W, H, widthScale = 1) {
   const pts = layer.points
+  if (!pts || !pts.length) return
   g.save()
   g.strokeStyle = layer.color || '#2B2A33'
   g.fillStyle = layer.color || '#2B2A33'
-  g.lineWidth = Math.max(1, (layer.width || 0.004) * widthScale * W)
   g.lineCap = 'round'
   g.lineJoin = 'round'
   if (pts.length === 1) {
+    const r = strokePxWidth(layer, pts[0], W, widthScale) / 2
     g.beginPath()
-    g.arc(pts[0][0] * W, pts[0][1] * H, g.lineWidth / 2, 0, Math.PI * 2)
+    g.arc(pts[0][0] * W, pts[0][1] * H, r, 0, Math.PI * 2)
     g.fill()
-  } else {
+    g.restore()
+    return
+  }
+  // 无压感数据：一条定宽 stroke，兼容旧笔迹且更省
+  const hasPressure = pts.some((p) => p && p[2] != null)
+  if (!hasPressure) {
+    g.lineWidth = Math.max(1, (layer.width || 0.004) * widthScale * W)
     g.beginPath()
     g.moveTo(pts[0][0] * W, pts[0][1] * H)
     for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0] * W, pts[i][1] * H)
     g.stroke()
+    g.restore()
+    return
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    g.lineWidth = (strokePxWidth(layer, a, W, widthScale) + strokePxWidth(layer, b, W, widthScale)) / 2
+    g.beginPath()
+    g.moveTo(a[0] * W, a[1] * H)
+    g.lineTo(b[0] * W, b[1] * H)
+    g.stroke()
   }
   g.restore()
+}
+
+/** 覆盖层画笔（坐标已是画布 0–1） */
+export function paintStrokeOnCtx(g, layer, W, H, widthScale = 1) {
+  if (!layer || !layer.points || !layer.points.length) return
+  paintVariableStroke(g, layer, W, H, widthScale)
 }
 
 /**
@@ -603,23 +646,34 @@ function drawSpreadStrokeOnPage(g, layer, W, H, side) {
   const xMin = side === 'left' ? -Infinity : 0.5 - 0.015
   const xMax = side === 'left' ? 0.5 + 0.015 : Infinity
 
-  function mapPoint(sx, sy) {
-    if (side === 'left') return [Math.min(1.03, Math.max(0, sx * 2)), sy]
-    return [Math.min(1, Math.max(-0.03, (sx - 0.5) * 2)), sy]
+  function mapPoint(p) {
+    const sx = p[0]
+    const sy = p[1]
+    const mapped =
+      side === 'left'
+        ? [Math.min(1.03, Math.max(0, sx * 2)), sy]
+        : [Math.min(1, Math.max(-0.03, (sx - 0.5) * 2)), sy]
+    if (p[2] != null) mapped.push(p[2])
+    return mapped
   }
 
   function inside(sx) {
     return sx >= xMin && sx <= xMax
   }
 
-  /** 裁剪线段到本页 x 带，返回 [p0, p1] 或 null */
+  function lerpPoint(a, b, t) {
+    const pt = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    if (a[2] != null || b[2] != null) {
+      pt.push(pointPressure(a) + (pointPressure(b) - pointPressure(a)) * t)
+    }
+    return pt
+  }
+
+  /** 裁剪线段到本页 x 带，返回 [p0, p1] 或 null；保留压力插值 */
   function clipEdge(a, b) {
     const ax = a[0]
-    const ay = a[1]
     const bx = b[0]
-    const by = b[1]
     const dx = bx - ax
-    const dy = by - ay
     let t0 = 0
     let t1 = 1
     if (xMin !== -Infinity) {
@@ -641,15 +695,12 @@ function drawSpreadStrokeOnPage(g, layer, W, H, side) {
       }
     }
     if (t0 > t1) return null
-    return [
-      [ax + t0 * dx, ay + t0 * dy],
-      [ax + t1 * dx, ay + t1 * dy]
-    ]
+    return [lerpPoint(a, b, t0), lerpPoint(a, b, t1)]
   }
 
   if (pts.length === 1) {
     if (!inside(pts[0][0])) return
-    drawStroke(g, { ...layer, points: [mapPoint(pts[0][0], pts[0][1])], width }, W, H)
+    drawStroke(g, { ...layer, points: [mapPoint(pts[0])], width }, W, H)
     return
   }
 
@@ -660,8 +711,8 @@ function drawSpreadStrokeOnPage(g, layer, W, H, side) {
     return Math.abs(p[0] - q[0]) < 1e-7 && Math.abs(p[1] - q[1]) < 1e-7
   }
 
-  function pushMapped(sx, sy) {
-    const m = mapPoint(sx, sy)
+  function pushMapped(p) {
+    const m = mapPoint(p)
     if (cur.length && sameMapped(cur[cur.length - 1], m)) return
     cur.push(m)
   }
@@ -680,16 +731,16 @@ function drawSpreadStrokeOnPage(g, layer, W, H, side) {
     }
     const [p0, p1] = clipped
     if (!cur.length) {
-      pushMapped(p0[0], p0[1])
-      pushMapped(p1[0], p1[1])
+      pushMapped(p0)
+      pushMapped(p1)
       continue
     }
-    const m0 = mapPoint(p0[0], p0[1])
+    const m0 = mapPoint(p0)
     if (!sameMapped(cur[cur.length - 1], m0)) {
       flush()
-      pushMapped(p0[0], p0[1])
+      pushMapped(p0)
     }
-    pushMapped(p1[0], p1[1])
+    pushMapped(p1)
   }
   flush()
 
@@ -736,25 +787,7 @@ function drawSpreadTextOnPage(g, layer, W, H, side) {
 }
 
 function drawStroke(g, layer, W, H) {
-  const pts = layer.points
-  if (!pts || pts.length < 1) return
-  g.save()
-  g.strokeStyle = layer.color || '#2B2A33'
-  g.fillStyle = layer.color || '#2B2A33'
-  g.lineWidth = Math.max(1, (layer.width || 0.004) * W)
-  g.lineCap = 'round'
-  g.lineJoin = 'round'
-  if (pts.length === 1) {
-    g.beginPath()
-    g.arc(pts[0][0] * W, pts[0][1] * H, g.lineWidth / 2, 0, Math.PI * 2)
-    g.fill()
-  } else {
-    g.beginPath()
-    g.moveTo(pts[0][0] * W, pts[0][1] * H)
-    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0] * W, pts[i][1] * H)
-    g.stroke()
-  }
-  g.restore()
+  paintVariableStroke(g, layer, W, H, 1)
 }
 
 function drawTextbox(g, layer, W, H) {

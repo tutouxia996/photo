@@ -926,6 +926,14 @@ function redrawInk() {
   paintStrokeOnCtx(g, { ...d, width: showW }, cv.width, cv.height, 1)
 }
 
+function readPressure(e) {
+  // 鼠标无压感，固定中档，保证粗细与改前一致
+  if (e.pointerType === 'mouse') return 0.5
+  const p = e.pressure
+  if (p == null || p <= 0) return 0.5
+  return Math.min(1, Math.max(0.05, p))
+}
+
 function localNorm(e) {
   const el = drawRef.value
   const r = el.getBoundingClientRect()
@@ -935,7 +943,8 @@ function localNorm(e) {
     x: Math.min(1, Math.max(0, x)),
     y: Math.min(1, Math.max(0, y)),
     nx: x,
-    ny: y
+    ny: y,
+    pressure: readPressure(e)
   }
 }
 
@@ -1077,7 +1086,7 @@ function onDrawDown(e) {
       tool: 'pen',
       color: props.color,
       width: props.penWidth,
-      points: [[p.x, p.y]]
+      points: [[p.x, p.y, p.pressure]]
     }
     try {
       drawRef.value?.setPointerCapture?.(e.pointerId)
@@ -1164,7 +1173,7 @@ function onDrawMove(e) {
   }
   if (!drafting.value) return
   const p = localNorm(e)
-  drafting.value.points.push([p.x, p.y])
+  drafting.value.points.push([p.x, p.y, p.pressure])
   redrawInk()
 }
 
